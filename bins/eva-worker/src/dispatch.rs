@@ -392,6 +392,9 @@ async fn handle_intent(ctx: &WorkerContext, request_id: Uuid, intent: Intent) ->
         Intent::AgentTask { prompt } => {
             events.extend(dispatch_agent_task(ctx, request_id, &intent_json, prompt).await);
         }
+        Intent::ContinueAgentTask { extra_prompt } => {
+            events.extend(handle_continue_agent_task(ctx, request_id, &intent_json, extra_prompt).await);
+        }
     }
 
     events
@@ -437,9 +440,26 @@ async fn dispatch_agent_task(
     intent_json: &serde_json::Value,
     prompt: String,
 ) -> Vec<WorkerToShell> {
+    dispatch_agent_task_inner(ctx, request_id, intent_json, prompt, None, None).await
+}
+
+/// A new session id is minted for every dispatched task — even a resumed
+/// one — because `docs/PLAN.md` fase 7's own session-id design point is
+/// that EVA assigns ids, never the CLI: `resume_session_id` tells the
+/// provider which of *its* sessions to continue, while `task.session_id`
+/// stays EVA's own bookkeeping key, which is what gets saved as the
+/// project's "last session" afterward.
+async fn dispatch_agent_task_inner(
+    ctx: &WorkerContext,
+    request_id: Uuid,
+    intent_json: &serde_json::Value,
+    prompt: String,
+    forced_provider_id: Option<&str>,
+    resume_session_id: Option<Uuid>,
+) -> Vec<WorkerToShell> {
     let audit_id = ctx.store.log_decision(None, intent_json, Decision::AutoApproved).ok();
 
-    let provider = match ctx.agents.select(None).await {
+    let provider = match ctx.agents.select(forced_provider_id).await {
         Ok(provider) => provider,
         Err(e) => {
             if let Some(id) = audit_id {
@@ -456,7 +476,7 @@ async fn dispatch_agent_task(
         prompt,
         project_dir: ctx.project_dir.clone(),
         session_id: request_id,
-        resume_session_id: None,
+        resume_session_id,
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -474,6 +494,15 @@ async fn dispatch_agent_task(
         }
     };
 
+    // Recorded as soon as the provider actually accepted the task — a
+    // future "continúa" in this project should find it even if the task
+    // itself later fails, the same way a real conversation stays resumable
+    // after an error.
+    let project_key = ctx.project_dir.to_string_lossy();
+    if let Err(e) = ctx.store.save_last_session(&project_key, provider.id(), task.session_id) {
+        tracing::warn!("no se pudo guardar la sesión del agente para 'continúa': {e}");
+    }
+
     while let Some(event) = rx.recv().await {
         forward_agent_event(&mut events, request_id, &event);
     }
@@ -486,6 +515,56 @@ async fn dispatch_agent_task(
     events.push(WorkerToShell::StateChanged { state: final_state, request_id: Some(request_id) });
 
     events
+}
+
+/// "Adán, continúa" — looks up the last agent session for the active
+/// project and resumes it on the *same* provider that ran it (never
+/// priority order: resuming on the wrong CLI would not find the session at
+/// all). No prior session in this project is a clear, immediate error, not
+/// a silent fallback to starting something new — "continúa" said nothing to
+/// start fresh with.
+async fn handle_continue_agent_task(
+    ctx: &WorkerContext,
+    request_id: Uuid,
+    intent_json: &serde_json::Value,
+    extra_prompt: String,
+) -> Vec<WorkerToShell> {
+    let project_key = ctx.project_dir.to_string_lossy().to_string();
+    let last_session = match ctx.store.get_last_session(&project_key) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return vec![
+                WorkerToShell::Error {
+                    request_id: Some(request_id),
+                    message: "no hay ninguna tarea de agente que continuar en este proyecto".to_string(),
+                    recoverable: true,
+                },
+                WorkerToShell::StateChanged { state: WorkerState::Done(false), request_id: Some(request_id) },
+            ];
+        }
+        Err(e) => {
+            return vec![
+                WorkerToShell::Error { request_id: Some(request_id), message: e.to_string(), recoverable: true },
+                WorkerToShell::StateChanged { state: WorkerState::Done(false), request_id: Some(request_id) },
+            ];
+        }
+    };
+
+    let prompt = if extra_prompt.trim().is_empty() {
+        "continúa".to_string()
+    } else {
+        extra_prompt
+    };
+
+    dispatch_agent_task_inner(
+        ctx,
+        request_id,
+        intent_json,
+        prompt,
+        Some(last_session.provider_id.as_str()),
+        Some(last_session.session_id),
+    )
+    .await
 }
 
 fn forward_agent_event(events: &mut Vec<WorkerToShell>, request_id: Uuid, event: &AgentEvent) {
@@ -779,6 +858,97 @@ mod tests {
         let ctx = test_context(MockDesktop::new(), empty_registry());
         let events = handle(&ctx, ShellToWorker::AddCustomWord { request_id: Uuid::new_v4(), word: "   ".to_string() }).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn continue_with_no_prior_session_in_the_project_is_a_clear_error() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        let events =
+            handle(&ctx, ShellToWorker::RunIntentText { request_id: Uuid::new_v4(), text: "Adán, continúa".to_string() })
+                .await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("continuar"))));
+    }
+
+    #[tokio::test]
+    async fn continue_resumes_the_same_session_on_the_same_provider_that_ran_it() {
+        let mock_codex = std::sync::Arc::new(eva_agents::mock::MockProvider::always_completes("codex", "listo"));
+        let registry = AgentRegistry::new(vec![Box::new(TrackedProvider(mock_codex.clone()))]);
+        let ctx = test_context(MockDesktop::new(), registry);
+
+        // First task: starts a session and, on success, must record it.
+        let first_request = Uuid::new_v4();
+        handle(&ctx, ShellToWorker::RunIntentText { request_id: first_request, text: "Adán, arregla el login".to_string() })
+            .await;
+
+        let saved = ctx
+            .store
+            .get_last_session(&ctx.project_dir.to_string_lossy())
+            .expect("must succeed")
+            .expect("a session must have been saved after a successful dispatch");
+        assert_eq!(saved.provider_id, "codex");
+        assert_eq!(saved.session_id, first_request, "eva assigns the session id, not the CLI");
+
+        // "Adán, continúa": must resume that exact session, on the same provider.
+        let continue_request = Uuid::new_v4();
+        let events = handle(
+            &ctx,
+            ShellToWorker::RunIntentText { request_id: continue_request, text: "Adán, continúa".to_string() },
+        )
+        .await;
+
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+        let tasks = mock_codex.received_tasks();
+        assert_eq!(tasks.len(), 2, "the initial dispatch plus the continue, both through the tracking wrapper");
+        assert_eq!(tasks[0].resume_session_id, None, "the first dispatch starts a fresh session");
+        assert_eq!(tasks[1].resume_session_id, Some(first_request), "the continue must resume exactly that session");
+    }
+
+    #[tokio::test]
+    async fn continue_with_an_extra_instruction_passes_it_as_the_prompt() {
+        let mock_codex = std::sync::Arc::new(eva_agents::mock::MockProvider::always_completes("codex", "listo"));
+        let registry = AgentRegistry::new(vec![Box::new(TrackedProvider(mock_codex.clone()))]);
+        let ctx = test_context(MockDesktop::new(), registry);
+
+        let first_request = Uuid::new_v4();
+        handle(&ctx, ShellToWorker::RunIntentText { request_id: first_request, text: "Adán, arregla el login".to_string() })
+            .await;
+        handle(
+            &ctx,
+            ShellToWorker::RunIntentText {
+                request_id: Uuid::new_v4(),
+                text: "Adán, continúa y agrega también tests".to_string(),
+            },
+        )
+        .await;
+
+        let tasks = mock_codex.received_tasks();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1].prompt, "y agrega también tests");
+    }
+
+    /// Wraps a shared [`eva_agents::mock::MockProvider`] so its recorded
+    /// calls can be inspected after `AgentRegistry` has taken ownership of a
+    /// `Box<dyn AgentProvider>` — the registry needs to own its providers,
+    /// but the test needs a handle that survives past that move.
+    struct TrackedProvider(std::sync::Arc<eva_agents::mock::MockProvider>);
+
+    #[async_trait::async_trait]
+    impl eva_agents::AgentProvider for TrackedProvider {
+        fn id(&self) -> &'static str {
+            self.0.id()
+        }
+        async fn detect(&self) -> eva_agents::ProviderStatus {
+            self.0.detect().await
+        }
+        async fn execute(
+            &self,
+            task: &AgentTask,
+            events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+        ) -> Result<eva_agents::RunningAgent, eva_agents::AgentError> {
+            self.0.execute(task, events).await
+        }
     }
 
     #[tokio::test]

@@ -24,11 +24,13 @@ pub mod audit;
 pub mod dictionary;
 mod error;
 pub mod schema;
+pub mod sessions;
 pub mod settings;
 pub mod transcripts;
 
 pub use audit::{AuditRecord, Decision};
 pub use error::StoreError;
+pub use sessions::AgentSessionRecord;
 pub use transcripts::TranscriptRecord;
 
 use rusqlite::Connection;
@@ -157,6 +159,18 @@ impl Store {
     /// See [`audit::find`].
     pub fn find_audit(&self, id: Uuid) -> Result<Option<AuditRecord>, StoreError> {
         self.with_conn(|c| audit::find(c, id))
+    }
+
+    // -- agent sessions ("Adán, continúa") ---------------------------------
+
+    /// See [`sessions::save_last_session`].
+    pub fn save_last_session(&self, project_dir: &str, provider_id: &str, session_id: Uuid) -> Result<(), StoreError> {
+        self.with_conn(|c| sessions::save_last_session(c, project_dir, provider_id, session_id))
+    }
+
+    /// See [`sessions::get_last_session`].
+    pub fn get_last_session(&self, project_dir: &str) -> Result<Option<AgentSessionRecord>, StoreError> {
+        self.with_conn(|c| sessions::get_last_session(c, project_dir))
     }
 }
 

@@ -62,6 +62,17 @@ pub enum Intent {
         /// What to ask the agent to do.
         prompt: String,
     },
+
+    /// "Adán, continúa" (or "…y agrega también X") — resume the last agent
+    /// session for the active project, per `docs/PLAN.md` fase 7. Which
+    /// session that is, and whether one even exists, is `eva-worker`'s job
+    /// (it needs the store); this crate only recognizes that the user asked
+    /// to continue, and carries whatever extra instruction followed.
+    ContinueAgentTask {
+        /// Anything said after "continúa" ("continúa y agrega tests" → "y
+        /// agrega tests"), or empty if nothing more was said.
+        extra_prompt: String,
+    },
 }
 
 /// Parses `command_text` (text with the wake word already stripped by
@@ -106,6 +117,11 @@ const RULES: &[(&[&str], RuleBuilder)] = &[
     (&["abre", "abrir"], build_open),
     (&["cierra", "cerrar"], build_close),
     (&["busca", "buscar"], build_search),
+    // Both spellings, not just the accented one: `strip_verb` (unlike the
+    // wake-word gate) does not accent-fold, and this session's own testing
+    // found an STT engine drop a tilde on a much more common word — no
+    // reason to assume "continúa" survives every engine unaccented-safe.
+    (&["continúa", "continua", "continuar"], build_continue),
 ];
 
 /// If `text` starts with one of `verbs` as a whole word, returns the rest of
@@ -147,6 +163,10 @@ fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
 
 fn build_search(rest: &str, _app_index: &AppIndex) -> Intent {
     Intent::WebSearch { query: rest.to_string() }
+}
+
+fn build_continue(rest: &str, _app_index: &AppIndex) -> Intent {
+    Intent::ContinueAgentTask { extra_prompt: rest.to_string() }
 }
 
 /// A conservative heuristic for "this looks like a URL, not an app name":
@@ -194,6 +214,26 @@ mod tests {
     fn parses_web_search() {
         let intent = parse("busca gatos en internet", &sample_index());
         assert_eq!(intent, Intent::WebSearch { query: "gatos en internet".to_string() });
+    }
+
+    #[test]
+    fn parses_continue_with_no_extra_instruction() {
+        let intent = parse("continúa", &sample_index());
+        assert_eq!(intent, Intent::ContinueAgentTask { extra_prompt: String::new() });
+    }
+
+    #[test]
+    fn parses_continue_without_the_accent_too() {
+        // strip_verb itself does not accent-fold — both spellings are
+        // listed in RULES precisely so a dropped tilde still resolves here.
+        let intent = parse("continua", &sample_index());
+        assert_eq!(intent, Intent::ContinueAgentTask { extra_prompt: String::new() });
+    }
+
+    #[test]
+    fn parses_continue_with_an_extra_instruction() {
+        let intent = parse("continúa y agrega también tests", &sample_index());
+        assert_eq!(intent, Intent::ContinueAgentTask { extra_prompt: "y agrega también tests".to_string() });
     }
 
     #[test]

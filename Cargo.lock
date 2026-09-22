@@ -1045,6 +1045,7 @@ dependencies = [
 name = "eva-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dirs 5.0.1",
  "eva-agents",
  "eva-audio",

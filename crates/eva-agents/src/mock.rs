@@ -19,6 +19,10 @@ pub struct MockProvider {
     /// can script a sequence of different runs from the same mock.
     scripts: Mutex<Vec<(Vec<AgentEvent>, AgentOutcome)>>,
     executions: AtomicUsize,
+    /// Every [`AgentTask`] this mock has actually received, in order — lets
+    /// a test assert on what was asked for (a resumed session id, the right
+    /// project directory, …), not just that *something* was called.
+    received_tasks: Mutex<Vec<AgentTask>>,
 }
 
 impl MockProvider {
@@ -31,7 +35,14 @@ impl MockProvider {
             status,
             scripts: Mutex::new(scripts),
             executions: AtomicUsize::new(0),
+            received_tasks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Every task received so far, in order.
+    pub fn received_tasks(&self) -> Vec<AgentTask> {
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        self.received_tasks.lock().unwrap().clone()
     }
 
     /// A convenience constructor for the common case: always `Active`, and
@@ -62,10 +73,12 @@ impl AgentProvider for MockProvider {
 
     async fn execute(
         &self,
-        _task: &AgentTask,
+        task: &AgentTask,
         events: UnboundedSender<AgentEvent>,
     ) -> Result<RunningAgent, AgentError> {
         self.executions.fetch_add(1, Ordering::SeqCst);
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        self.received_tasks.lock().unwrap().push(task.clone());
 
         #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
         let mut scripts = self.scripts.lock().unwrap();

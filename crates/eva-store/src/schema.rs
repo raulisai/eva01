@@ -13,7 +13,7 @@ use std::path::Path;
 /// The schema version this build of `eva-store` expects. Bumped whenever
 /// [`migrate`] gains a new step. Stored in SQLite's own `PRAGMA user_version`,
 /// so no extra table is needed to track it.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Opens (or creates) the database at `path`, verifying its integrity first.
 ///
@@ -101,6 +101,9 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
     if current_version < 1 {
         migrate_to_v1(conn)?;
     }
+    if current_version < 2 {
+        migrate_to_v2(conn)?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -139,6 +142,24 @@ fn migrate_to_v1(conn: &Connection) -> Result<(), StoreError> {
 
         CREATE INDEX IF NOT EXISTS idx_transcripts_created_at ON transcripts(created_at);
         CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+        ",
+    )?;
+    Ok(())
+}
+
+/// The "Adán, continúa" session table from `docs/PLAN.md` fase 7: one row
+/// per project directory, holding the most recent agent session run there,
+/// so a bare "continúa" knows which provider and session id to resume
+/// without the user having to name either.
+fn migrate_to_v2(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            project_dir TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            session_id  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
         ",
     )?;
     Ok(())
