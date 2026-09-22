@@ -21,5 +21,5 @@ pub mod workspace;
 pub use error::MacosError;
 pub use overlay::{Overlay, OverlayState};
 pub use paste::{paste_text, DEFAULT_RESTORE_DELAY};
-pub use secure_input::is_secure_input_enabled;
+pub use secure_input::{is_accessibility_trusted, is_secure_input_enabled};
 pub use workspace::{close_app, frontmost_app, open_app, open_url, RunningAppInfo};

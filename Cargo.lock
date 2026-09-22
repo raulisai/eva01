@@ -1006,6 +1006,7 @@ dependencies = [
  "eva-ipc",
  "eva-macos",
  "global-hotkey",
+ "notify-rust",
  "objc2",
  "serde_json",
  "tao",

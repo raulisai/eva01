@@ -39,6 +39,8 @@ fn main() {
     let mtm = MainThreadMarker::new().expect("eva-shell debe ejecutarse en el hilo principal");
     let overlay = Overlay::new(mtm);
 
+    warn_if_accessibility_not_trusted();
+
     let supervisor = Supervisor::spawn(worker_binary_path());
 
     let mut recording_request_id: Option<Uuid> = None;
@@ -187,6 +189,28 @@ fn worker_binary_path() -> std::path::PathBuf {
     let mut path = std::env::current_exe().expect("no se pudo determinar la ruta de este ejecutable");
     path.set_file_name("eva-worker");
     path
+}
+
+/// Checks Accessibility trust and, if it is missing, shows a real system
+/// notification with exact instructions — closing the gap
+/// `packaging/build-app.sh` documents: `eva-macos::paste`'s synthesized
+/// Cmd+V needs this permission, but posting a `CGEvent` never triggers the
+/// system's own request dialog on its own, so a silent failure to paste is
+/// otherwise the only symptom the user would ever see.
+fn warn_if_accessibility_not_trusted() {
+    if eva_macos::is_accessibility_trusted() {
+        tracing::info!("permiso de Accesibilidad concedido");
+        return;
+    }
+
+    tracing::warn!("EVA01 no tiene permiso de Accesibilidad; el pegado por voz no funcionará");
+    let notification = notify_rust::Notification::new()
+        .summary("EVA01 necesita Accesibilidad")
+        .body("Sin este permiso, EVA01 no puede pegar lo que dictas. Ajustes → Privacidad y seguridad → Accesibilidad → activa EVA01.")
+        .show();
+    if let Err(e) = notification {
+        tracing::warn!("no se pudo mostrar la notificación de Accesibilidad: {e}");
+    }
 }
 
 fn init_logging() {

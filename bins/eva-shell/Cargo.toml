@@ -17,3 +17,4 @@ tracing-appender = "0.2"
 objc2 = "0.6"
 uuid = { workspace = true }
 dirs = "5"
+notify-rust = "4"
