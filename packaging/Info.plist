@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.eva01.app</string>
+	<key>CFBundleName</key>
+	<string>EVA01</string>
+	<key>CFBundleDisplayName</key>
+	<string>EVA01</string>
+	<key>CFBundleExecutable</key>
+	<string>eva-shell</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+
+	<!-- No Dock icon, no menu bar app switcher entry — same pattern Handy
+	     uses; EVA01 lives in the status bar only (docs/PLAN.md fase 2). -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Without this string, macOS denies (or never even prompts for)
+	     microphone access to an unbundled binary — this is the concrete
+	     fix for the gap identified when reviewing what blocks testing the
+	     MVP end to end: cpal's input stream would otherwise fail silently. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>EVA01 necesita el micrófono para transcribir lo que dictas mientras mantienes presionado el atajo de dictado.</string>
+
+	<!-- Reserved for when eva-macos::secure_input / Accessibility-based
+	     features (fase 9, selection context) need it — declared now so
+	     adding that feature later does not need a second Info.plist pass. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>EVA01 usa esto para leer qué aplicación tienes en primer plano y actuar sobre ella cuando se lo pides por voz.</string>
+</dict>
+</plist>
