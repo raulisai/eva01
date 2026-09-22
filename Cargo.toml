@@ -11,6 +11,7 @@ members = [
     "crates/eva-intent",
     "crates/eva-agents",
     "crates/eva-macos",
+    "crates/eva-mcp",
 ]
 
 [workspace.package]
