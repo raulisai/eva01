@@ -92,7 +92,28 @@ async fn build_context() -> Result<WorkerContext, Box<dyn std::error::Error>> {
         Arc::new(eva_mcp::SystemDesktop),
         eva_agents::default_registry(),
         audio,
+        load_formatter(),
     ))
+}
+
+/// Picks the context-aware formatter (`docs/PLAN.md` §3 fase 3 point 4):
+/// Apple Intelligence when this device reports it available right now,
+/// [`eva_text::RuleOnlyFormatter`] otherwise — the graceful-degradation
+/// default from §3.3 point 5, never "no formatter at all".
+fn load_formatter() -> Arc<dyn eva_text::Formatter> {
+    match eva_text::AppleIntelligenceFormatter::new() {
+        Some(formatter) => {
+            tracing::info!("formateador: Apple Intelligence (Foundation Models on-device)");
+            Arc::new(formatter)
+        }
+        None => {
+            tracing::warn!(
+                "formateador: Apple Intelligence no disponible en este equipo, usando reglas únicamente \
+                 (revisa Ajustes del Sistema → Apple Intelligence y Siri)"
+            );
+            Arc::new(eva_text::RuleOnlyFormatter)
+        }
+    }
 }
 
 /// Scans `/Applications` for `.app` bundles and builds an [`eva_intent::AppIndex`]

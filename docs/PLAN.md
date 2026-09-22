@@ -290,6 +290,58 @@ Esta es la fase que decide si "100 % en español, sin muletillas, como Wispr Flo
 
 **Hecho cuando:** llevas 3 días sin volver al teclado, dictas "o sea, este, mándale el archivo a Juan" y sale limpio y puntuado, y tienes números base propios para comparar cada cambio futuro.
 
+**§3B — Lo que se encontró implementando de verdad el bridge de Apple Intelligence (no en el spike, en el código real):**
+
+El punto 4 está construido y funcionando (`crates/eva-text/src/apple_intelligence.rs`,
+`swift/eva_formatter.swift`), pero probándolo a mano con frases reales
+apareció un problema de fondo que el spike no había mostrado:
+`LanguageModelSession.respond(to:)` enmarca cualquier texto como un turno de
+chat, no como "datos a transformar" — así que con un prompt corto, correcto
+en apariencia, el modelo a veces **respondía o cumplía** el dictado en vez
+de solo corregirlo. Encontrado a mano, con la app real corriendo:
+
+| Dictado | Con el prompt corto (roto) | Con el prompt + ejemplos + guarda (real) |
+|---|---|---|
+| "necesito tres archivos y dos carpetas para mañana" | inventaba una lista completa de nombres de archivo falsos | "Necesito tres archivos y dos carpetas para mañana." |
+| "manda un correo a soporte diciendo que el servidor está caído" | escribía un correo completo, inventado | "Manda un correo a soporte diciendo que el servidor está caído." |
+| "dile a maría que la reunión se movió a las tres" | "dile" → "mándale" (cambia la palabra, no solo la forma) | "Dile a María que la reunión se movió a las tres." |
+| "cuando vas a llegar a la oficina" | sin ¿ de apertura | "¿Cuándo vas a llegar a la oficina?" |
+
+La mitigación tiene dos capas, ninguna suficiente por sí sola:
+1. **El prompt** (`swift/eva_formatter.swift`) pasó de un párrafo a reglas
+   explícitas + 8 ejemplos entrada→salida, incluyendo casos que suenan a
+   orden — esto arregló la mayoría de los casos pero no todos (un modelo
+   pequeño on-device no sigue sus propias instrucciones con consistencia
+   perfecta).
+2. **Una guarda en Rust** (`is_plausible_correction` en
+   `apple_intelligence.rs`): ninguna corrección legítima de este formateador
+   (mayúsculas, puntuación, dígitos, quitar una muletilla) puede agregar
+   palabras — solo mantenerlas o quitarlas. Una respuesta con más palabras
+   que la entrada se rechaza y cae al `RuleOnlyFormatter`, sin importar qué
+   tan fluida o convincente suene. Esto es lo que de verdad protege contra
+   la próxima frase rara que el prompt no cubra, no el prompt en sí.
+
+Ambas capas están probadas: `apple_intelligence.rs` tiene tests puros para
+la guarda (sin necesitar el modelo real) y tests `#[ignore]` que sí llaman
+al modelo real y verifican los dos casos de la tabla de arriba. Además, se
+compone `RuleOnlyFormatter` sobre CUALQUIER salida exitosa de Apple
+Intelligence (no solo como fallback) porque el modelo tampoco es consistente
+capitalizando la letra real después de un ¿/¡ que él mismo acaba de agregar
+— una normalización mecánica y sin riesgo, ya que nunca toca palabras ni
+conteo.
+
+**Empaquetado real, no solo compilado:** `crates/eva-text/build.rs` compila
+`swift/eva_formatter.swift` a un dylib con un `-install_name` absoluto (útil
+para `cargo build`/`test`/`run`, inútil una vez movido el binario), así que
+`packaging/build-app.sh` lo copia a `Contents/Frameworks/` y reescribe esa
+referencia a `@executable_path/../Frameworks/...` con `install_name_tool`.
+Encontrado al probar el `.app` empaquetado de verdad, no asumido: con
+`--options runtime` (Hardened Runtime) y firma ad-hoc, dyld rechazaba cargar
+el dylib ("different Team IDs") porque una firma ad-hoc no lleva un Team ID
+real compartido entre archivos — el script ahora solo activa Hardened
+Runtime cuando se firma con una identidad real (`SIGNING_IDENTITY`), no con
+la ad-hoc por defecto.
+
 ---
 
 ### Fase 4 — La capa de intención, sin efectos · semana 2

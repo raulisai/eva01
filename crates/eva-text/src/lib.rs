@@ -8,11 +8,13 @@
 //! is independently testable (see each module's unit tests); [`clean`] wires
 //! them together the way `eva-worker` uses them in production.
 
+pub mod apple_intelligence;
 pub mod dictionary;
 pub mod filler;
 pub mod formatter;
 mod normalize;
 
+pub use apple_intelligence::AppleIntelligenceFormatter;
 pub use dictionary::Dictionary;
 pub use formatter::{FormatError, Formatter, RuleOnlyFormatter};
 pub use normalize::fold_diacritics;

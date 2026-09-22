@@ -61,6 +61,15 @@ pub struct WorkerContext {
     /// [`AudioContext`]'s doc for why `StartRecording` reports a real error
     /// rather than pretending to record when this is `None`.
     pub audio: Option<AudioContext>,
+    /// The context-aware formatting pass — [`AppleIntelligenceFormatter`]
+    /// when `main.rs` found it available at startup, [`RuleOnlyFormatter`]
+    /// otherwise (`docs/PLAN.md` §3.3 point 5: never no formatter at all).
+    /// Every call still goes through [`eva_text::clean`]'s own fallback, so
+    /// even a formatter that starts failing mid-session degrades instead of
+    /// losing the transcript.
+    ///
+    /// [`AppleIntelligenceFormatter`]: eva_text::AppleIntelligenceFormatter
+    pub formatter: Arc<dyn eva_text::Formatter>,
     /// The in-progress recording, if any. A plain `std::sync::Mutex`
     /// (not `tokio::sync::Mutex`): every lock is held only across
     /// synchronous code, never across an `.await`, so the cheaper
@@ -71,6 +80,7 @@ pub struct WorkerContext {
 impl WorkerContext {
     /// Builds a context. `recording` always starts empty; every other field
     /// is supplied by the caller.
+    #[allow(clippy::too_many_arguments)] // one field per parameter, all required, only 2 call sites (main.rs and test_context)
     pub fn new(
         store: Store,
         app_index: AppIndex,
@@ -79,8 +89,19 @@ impl WorkerContext {
         desktop: Arc<dyn Desktop>,
         agents: AgentRegistry,
         audio: Option<AudioContext>,
+        formatter: Arc<dyn eva_text::Formatter>,
     ) -> Self {
-        WorkerContext { store, app_index, wake_word, project_dir, desktop, agents, audio, recording: Mutex::new(None) }
+        WorkerContext {
+            store,
+            app_index,
+            wake_word,
+            project_dir,
+            desktop,
+            agents,
+            audio,
+            formatter,
+            recording: Mutex::new(None),
+        }
     }
 }
 
@@ -164,10 +185,30 @@ async fn handle_run_intent_text(ctx: &WorkerContext, request_id: Uuid, text: &st
 /// text, e.g. from the `eva intent` CLI) and [`handle_stop_recording`] (a
 /// real transcript) — both are, deliberately, the exact same downstream
 /// logic, per `eva-ipc`'s own doc comment on `RunIntentText`.
-fn process_dictation(ctx: &WorkerContext, request_id: Uuid, raw: &str) -> Vec<WorkerToShell> {
+///
+/// The whole clean-and-format pass runs on a blocking thread: when
+/// `ctx.formatter` is the Apple Intelligence bridge, this call can take real
+/// wall-clock time waiting on the on-device model (bounded by its own
+/// internal timeout, `docs/PLAN.md` §3.3 point 3) — running it directly here
+/// would stall this task's async worker thread for that whole duration,
+/// exactly the reason `handle_stop_recording` already does the same for STT
+/// inference below.
+async fn process_dictation(ctx: &WorkerContext, request_id: Uuid, raw: &str) -> Vec<WorkerToShell> {
     let custom_words = ctx.store.list_custom_words().unwrap_or_default();
     let dictionary = Dictionary::new(custom_words);
-    let cleaned = eva_text::clean(raw, &dictionary, &RuleOnlyFormatter);
+    let formatter = Arc::clone(&ctx.formatter);
+    let raw_owned = raw.to_string();
+    let cleaned = tokio::task::spawn_blocking(move || eva_text::clean(&raw_owned, &dictionary, formatter.as_ref()))
+        .await
+        .unwrap_or_else(|join_error| {
+            // Cannot happen in practice — `eva_text::clean` never panics,
+            // per the workspace's no-panic policy — but a `JoinError` here
+            // (e.g. the runtime shutting down mid-call) must still degrade
+            // to the same "never silent" guarantee as every other failure
+            // path, not propagate as a lost transcript.
+            tracing::error!("la tarea de formateo terminó de forma inesperada: {join_error}");
+            eva_text::clean(raw, &Dictionary::new(Vec::<String>::new()), &RuleOnlyFormatter)
+        });
 
     if let Err(e) = ctx.store.save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted) {
         tracing::warn!("no se pudo guardar el transcript para el corpus: {e}");
@@ -333,7 +374,7 @@ async fn process_dictation_or_intent(ctx: &WorkerContext, request_id: Uuid, text
     let gate_input = eva_text::filler::remove_universal_fillers(text);
 
     match eva_intent::interpret(&gate_input, &ctx.wake_word, &ctx.app_index) {
-        InterpretResult::Dictation => process_dictation(ctx, request_id, text),
+        InterpretResult::Dictation => process_dictation(ctx, request_id, text).await,
         InterpretResult::Command(intent) => handle_intent(ctx, request_id, intent).await,
     }
 }
@@ -628,6 +669,12 @@ mod tests {
             Arc::new(desktop),
             agents,
             None,
+            // Deterministic on purpose: tests must produce the same output
+            // on every machine, whereas the real Apple Intelligence bridge
+            // depends on this device's own Apple Intelligence state — see
+            // `eva-text::apple_intelligence`'s own real-system tests for
+            // that coverage instead.
+            Arc::new(RuleOnlyFormatter),
         )
     }
 
