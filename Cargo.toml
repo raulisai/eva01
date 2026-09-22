@@ -9,6 +9,7 @@ members = [
     "crates/eva-text",
     "crates/eva-store",
     "crates/eva-intent",
+    "crates/eva-agents",
 ]
 
 [workspace.package]
