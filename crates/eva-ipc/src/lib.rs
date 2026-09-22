@@ -52,6 +52,34 @@ pub enum ShellToWorker {
         /// Correlates this request with its response.
         request_id: uuid::Uuid,
     },
+    /// Adds a word to the persisted personal dictionary
+    /// (`docs/PLAN.md` fase 3) — closing the gap where `eva-store` could
+    /// hold custom words but nothing in the protocol could ever add one.
+    AddCustomWord {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+        /// The word to add, in its preferred display form (e.g. `"García"`).
+        word: String,
+    },
+    /// Removes a word from the persisted personal dictionary.
+    RemoveCustomWord {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+        /// The word to remove.
+        word: String,
+    },
+    /// Lists every word currently in the persisted personal dictionary.
+    ListCustomWords {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+    },
+    /// Sets the wake word ("Adán" by default), persisted for future runs.
+    SetWakeWord {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+        /// The new wake word.
+        word: String,
+    },
     /// Ask the worker to shut down cleanly before the shell terminates it.
     Shutdown,
 }
@@ -110,6 +138,22 @@ pub enum WorkerToShell {
         request_id: uuid::Uuid,
         /// Machine-readable health snapshot.
         report: HealthReport,
+    },
+    /// Response to [`ShellToWorker::ListCustomWords`], and also sent after
+    /// [`ShellToWorker::AddCustomWord`]/[`ShellToWorker::RemoveCustomWord`]
+    /// so the caller never has to issue a second request just to see the
+    /// list reflect its own change.
+    CustomWords {
+        /// Correlates with the request that produced this list.
+        request_id: uuid::Uuid,
+        /// Every word currently in the persisted personal dictionary.
+        words: Vec<String>,
+    },
+    /// A simple acknowledgement for commands with nothing more specific to
+    /// report (e.g. [`ShellToWorker::SetWakeWord`]).
+    Ack {
+        /// Correlates with the request being acknowledged.
+        request_id: uuid::Uuid,
     },
 }
 
@@ -189,6 +233,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shell_to_worker_round_trips_for_every_variant() {
+        let request_id = uuid::Uuid::nil();
+        let messages = vec![
+            ShellToWorker::StartRecording { request_id },
+            ShellToWorker::StopRecording { request_id },
+            ShellToWorker::Cancel { request_id },
+            ShellToWorker::RunIntentText { request_id, text: "Adán, abre brave".into() },
+            ShellToWorker::HealthCheck { request_id },
+            ShellToWorker::AddCustomWord { request_id, word: "García".into() },
+            ShellToWorker::RemoveCustomWord { request_id, word: "García".into() },
+            ShellToWorker::ListCustomWords { request_id },
+            ShellToWorker::SetWakeWord { request_id, word: "Eva".into() },
+            ShellToWorker::Shutdown,
+        ];
+
+        for msg in messages {
+            let line = encode_line(&msg).expect("serializing a plain enum never fails");
+            let decoded: ShellToWorker = decode_line(&line).expect("valid line must decode");
+            assert_eq!(decoded, msg, "round trip failed for {msg:?}");
+        }
+    }
+
+    #[test]
     fn shell_to_worker_round_trips_through_a_line() {
         let msg = ShellToWorker::StartRecording {
             request_id: uuid::Uuid::nil(),
@@ -235,6 +302,8 @@ mod tests {
                     agents: vec![("codex".into(), "active".into())],
                 },
             },
+            WorkerToShell::CustomWords { request_id, words: vec!["García".into(), "Núñez".into()] },
+            WorkerToShell::Ack { request_id },
         ];
 
         for msg in messages {

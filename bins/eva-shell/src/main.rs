@@ -98,12 +98,11 @@ fn handle_worker_event(overlay: &Overlay, event: WorkerToShell) {
         WorkerToShell::Ready => tracing::info!("eva-worker listo"),
         WorkerToShell::StateChanged { state, .. } => overlay.set_state(map_state(state)),
         WorkerToShell::Transcript { cleaned, .. } => {
+            // `eva-worker` already pastes the cleaned text itself, via
+            // `eva-mcp::Desktop::insert_text` (`docs/PLAN.md` fase 3) —
+            // this event is purely informational here, for logging/a future
+            // history view, not something `eva-shell` needs to act on.
             tracing::info!(%cleaned, "transcript listo");
-            // Pasting the cleaned transcript at the cursor is `eva-worker`'s
-            // job via `eva-mcp::Desktop::insert_text` in the dictation path
-            // once `eva-audio` capture is wired in (`docs/PLAN.md` fase 3) —
-            // this event exists today for the `RunIntentText`/CLI path,
-            // where there is deliberately nothing to paste into.
         }
         WorkerToShell::IntentRecognized { intent_json, .. } => {
             tracing::info!(%intent_json, "intent reconocido");
@@ -117,6 +116,12 @@ fn handle_worker_event(overlay: &Overlay, event: WorkerToShell) {
         }
         WorkerToShell::Health { report, .. } => {
             tracing::info!(?report, "reporte de salud");
+        }
+        WorkerToShell::CustomWords { words, .. } => {
+            tracing::info!(count = words.len(), "diccionario personal actualizado");
+        }
+        WorkerToShell::Ack { .. } => {
+            tracing::info!("comando confirmado por eva-worker");
         }
     }
 }

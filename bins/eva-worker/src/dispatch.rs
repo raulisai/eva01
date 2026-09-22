@@ -97,7 +97,59 @@ pub async fn handle(ctx: &WorkerContext, command: ShellToWorker) -> Vec<WorkerTo
             }
             vec![WorkerToShell::StateChanged { state: WorkerState::Idle, request_id: Some(request_id) }]
         }
+        ShellToWorker::AddCustomWord { request_id, word } => handle_add_custom_word(ctx, request_id, &word),
+        ShellToWorker::RemoveCustomWord { request_id, word } => handle_remove_custom_word(ctx, request_id, &word),
+        ShellToWorker::ListCustomWords { request_id } => vec![list_custom_words_event(ctx, request_id)],
+        ShellToWorker::SetWakeWord { request_id, word } => handle_set_wake_word(ctx, request_id, word),
         ShellToWorker::Shutdown => Vec::new(),
+    }
+}
+
+fn list_custom_words_event(ctx: &WorkerContext, request_id: Uuid) -> WorkerToShell {
+    let words = ctx.store.list_custom_words().unwrap_or_default();
+    WorkerToShell::CustomWords { request_id, words }
+}
+
+fn handle_add_custom_word(ctx: &WorkerContext, request_id: Uuid, word: &str) -> Vec<WorkerToShell> {
+    if word.trim().is_empty() {
+        return vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "la palabra está vacía".to_string(),
+            recoverable: true,
+        }];
+    }
+    match ctx.store.add_custom_word(word) {
+        Ok(()) => vec![list_custom_words_event(ctx, request_id)],
+        Err(e) => vec![WorkerToShell::Error { request_id: Some(request_id), message: e.to_string(), recoverable: true }],
+    }
+}
+
+fn handle_remove_custom_word(ctx: &WorkerContext, request_id: Uuid, word: &str) -> Vec<WorkerToShell> {
+    match ctx.store.remove_custom_word(word) {
+        Ok(()) => vec![list_custom_words_event(ctx, request_id)],
+        Err(e) => vec![WorkerToShell::Error { request_id: Some(request_id), message: e.to_string(), recoverable: true }],
+    }
+}
+
+/// Setting the wake word takes effect immediately for this run (a plain
+/// `String`, not `Mutex`-guarded, would need `&mut self` throughout —
+/// `ctx.wake_word` staying fixed for the process's lifetime and requiring a
+/// restart to pick up a change is a small, deliberate trade-off, not an
+/// oversight: `docs/PLAN.md` never asked for changing it without a restart,
+/// and this is far simpler than adding interior mutability for one setting).
+fn handle_set_wake_word(ctx: &WorkerContext, request_id: Uuid, word: String) -> Vec<WorkerToShell> {
+    if word.trim().is_empty() {
+        return vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "la palabra de activación no puede estar vacía".to_string(),
+            recoverable: true,
+        }];
+    }
+    match ctx.store.set_setting("wake_word", &word) {
+        // Takes effect on the next start (see the doc comment above) —
+        // `Ack` alone, with no false-alarm `Error` for what is not one.
+        Ok(()) => vec![WorkerToShell::Ack { request_id }],
+        Err(e) => vec![WorkerToShell::Error { request_id: Some(request_id), message: e.to_string(), recoverable: true }],
     }
 }
 
@@ -681,5 +733,63 @@ mod tests {
     fn urlencode_handles_spaces_and_accents() {
         assert_eq!(urlencode("clima hoy"), "clima%20hoy");
         assert!(urlencode("café").starts_with("caf"));
+    }
+
+    #[tokio::test]
+    async fn add_custom_word_persists_it_and_returns_the_updated_list() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        let request_id = Uuid::new_v4();
+
+        let events = handle(&ctx, ShellToWorker::AddCustomWord { request_id, word: "García".to_string() }).await;
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::CustomWords { words, .. } if words == &vec!["García".to_string()])));
+        assert_eq!(ctx.store.list_custom_words().expect("must succeed"), vec!["García"]);
+    }
+
+    #[tokio::test]
+    async fn adding_a_custom_word_actually_improves_later_dictation() {
+        // The point of the whole feature, exercised end to end: a word
+        // added via the IPC command must be picked up by the very next
+        // dictation, not just sit in the store unused.
+        let desktop = Arc::new(MockDesktop::new());
+        let ctx = WorkerContext { desktop: desktop.clone(), ..test_context(MockDesktop::new(), empty_registry()) };
+
+        handle(&ctx, ShellToWorker::AddCustomWord { request_id: Uuid::new_v4(), word: "García".to_string() }).await;
+        handle(&ctx, ShellToWorker::RunIntentText { request_id: Uuid::new_v4(), text: "hola Garcia".to_string() }).await;
+
+        assert_eq!(desktop.calls(), vec![Call::InsertText("Hola García.".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn remove_custom_word_takes_it_out_of_the_list() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        ctx.store.add_custom_word("García").expect("must succeed");
+
+        let events =
+            handle(&ctx, ShellToWorker::RemoveCustomWord { request_id: Uuid::new_v4(), word: "García".to_string() })
+                .await;
+
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::CustomWords { words, .. } if words.is_empty())));
+    }
+
+    #[tokio::test]
+    async fn adding_an_empty_word_is_a_clear_error_not_a_silent_no_op() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        let events = handle(&ctx, ShellToWorker::AddCustomWord { request_id: Uuid::new_v4(), word: "   ".to_string() }).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn set_wake_word_persists_to_settings_and_acknowledges() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        let request_id = Uuid::new_v4();
+
+        let events = handle(&ctx, ShellToWorker::SetWakeWord { request_id, word: "Eva".to_string() }).await;
+
+        assert_eq!(events, vec![WorkerToShell::Ack { request_id }]);
+        let saved: Option<String> = ctx.store.get_setting("wake_word").expect("must succeed");
+        assert_eq!(saved, Some("Eva".to_string()));
     }
 }
