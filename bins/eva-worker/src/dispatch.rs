@@ -6,14 +6,36 @@
 //! to test what happens to a given transcript.
 
 use eva_agents::{AgentEvent, AgentRegistry, AgentTask};
+use eva_audio::{AudioSource, CaptureHandle, SpeechToText};
 use eva_intent::{AppIndex, Intent, InterpretResult};
 use eva_ipc::{HealthReport, ShellToWorker, WorkerState, WorkerToShell};
 use eva_mcp::Desktop;
 use eva_store::{Decision, Store};
 use eva_text::{Dictionary, RuleOnlyFormatter};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// The audio capture + speech-to-text pieces, present only when a model was
+/// successfully configured and loaded at startup (`docs/PLAN.md` §3.3 point
+/// 5: "el modelo STT no carga → overlay en rojo + notificación clara al
+/// primer intento de grabar", never a silent no-op).
+pub struct AudioContext {
+    /// Captures the microphone, resampled to 16 kHz mono.
+    pub source: Arc<dyn AudioSource>,
+    /// Transcribes a finished recording.
+    pub stt: Arc<dyn SpeechToText>,
+    /// A human-readable identifier for the loaded model, for `eva doctor`.
+    pub model_id: String,
+}
+
+/// The buffer and capture handle for a recording currently in progress,
+/// between a `StartRecording` and its matching `StopRecording`.
+struct RecordingSession {
+    request_id: Uuid,
+    handle: Box<dyn CaptureHandle>,
+    buffer: Arc<Mutex<Vec<f32>>>,
+}
 
 /// Everything a single command needs to be handled — the pieces `main.rs`
 /// builds once at startup and passes in by reference for every command.
@@ -35,6 +57,31 @@ pub struct WorkerContext {
     pub desktop: Arc<dyn Desktop>,
     /// Codex/Claude Code, in priority order.
     pub agents: AgentRegistry,
+    /// `None` until a real STT model is configured and loaded — see
+    /// [`AudioContext`]'s doc for why `StartRecording` reports a real error
+    /// rather than pretending to record when this is `None`.
+    pub audio: Option<AudioContext>,
+    /// The in-progress recording, if any. A plain `std::sync::Mutex`
+    /// (not `tokio::sync::Mutex`): every lock is held only across
+    /// synchronous code, never across an `.await`, so the cheaper
+    /// std-library lock is the correct choice, not a shortcut.
+    recording: Mutex<Option<RecordingSession>>,
+}
+
+impl WorkerContext {
+    /// Builds a context. `recording` always starts empty; every other field
+    /// is supplied by the caller.
+    pub fn new(
+        store: Store,
+        app_index: AppIndex,
+        wake_word: String,
+        project_dir: PathBuf,
+        desktop: Arc<dyn Desktop>,
+        agents: AgentRegistry,
+        audio: Option<AudioContext>,
+    ) -> Self {
+        WorkerContext { store, app_index, wake_word, project_dir, desktop, agents, audio, recording: Mutex::new(None) }
+    }
 }
 
 /// Handles one command, returning every event it produced, in order.
@@ -42,20 +89,12 @@ pub async fn handle(ctx: &WorkerContext, command: ShellToWorker) -> Vec<WorkerTo
     match command {
         ShellToWorker::RunIntentText { request_id, text } => handle_run_intent_text(ctx, request_id, &text).await,
         ShellToWorker::HealthCheck { request_id } => vec![handle_health_check(ctx, request_id)],
-        ShellToWorker::StartRecording { request_id } | ShellToWorker::StopRecording { request_id } => {
-            // Real microphone capture needs a configured STT model
-            // (`docs/PLAN.md` fase 3) — an external file the user downloads,
-            // not something this binary bundles. Until `WorkerContext` grows
-            // an STT engine field wired to one, this is reported as the
-            // real, documented "model not loaded" degradation from
-            // `docs/PLAN.md` §3.3 point 5, not silently ignored.
-            vec![WorkerToShell::Error {
-                request_id: Some(request_id),
-                message: "el modelo de reconocimiento de voz no está configurado todavía".to_string(),
-                recoverable: true,
-            }]
-        }
+        ShellToWorker::StartRecording { request_id } => handle_start_recording(ctx, request_id),
+        ShellToWorker::StopRecording { request_id } => handle_stop_recording(ctx, request_id).await,
         ShellToWorker::Cancel { request_id } => {
+            if let Some(session) = take_recording_session(ctx, request_id) {
+                session.handle.stop();
+            }
             vec![WorkerToShell::StateChanged { state: WorkerState::Idle, request_id: Some(request_id) }]
         }
         ShellToWorker::Shutdown => Vec::new(),
@@ -64,26 +103,187 @@ pub async fn handle(ctx: &WorkerContext, command: ShellToWorker) -> Vec<WorkerTo
 
 async fn handle_run_intent_text(ctx: &WorkerContext, request_id: Uuid, text: &str) -> Vec<WorkerToShell> {
     let mut events = vec![WorkerToShell::StateChanged { state: WorkerState::Thinking, request_id: Some(request_id) }];
+    events.extend(process_dictation_or_intent(ctx, request_id, text).await);
+    events
+}
 
-    match eva_intent::interpret(text, &ctx.wake_word, &ctx.app_index) {
-        InterpretResult::Dictation => {
-            let custom_words = ctx.store.list_custom_words().unwrap_or_default();
-            let dictionary = Dictionary::new(custom_words);
-            let cleaned = eva_text::clean(text, &dictionary, &RuleOnlyFormatter);
+/// Cleans `raw` text, saves it to the corpus, pastes it at the cursor, and
+/// returns the resulting events. Shared by [`handle_run_intent_text`] (typed
+/// text, e.g. from the `eva intent` CLI) and [`handle_stop_recording`] (a
+/// real transcript) — both are, deliberately, the exact same downstream
+/// logic, per `eva-ipc`'s own doc comment on `RunIntentText`.
+fn process_dictation(ctx: &WorkerContext, request_id: Uuid, raw: &str) -> Vec<WorkerToShell> {
+    let custom_words = ctx.store.list_custom_words().unwrap_or_default();
+    let dictionary = Dictionary::new(custom_words);
+    let cleaned = eva_text::clean(raw, &dictionary, &RuleOnlyFormatter);
 
-            if let Err(e) = ctx.store.save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted) {
-                tracing::warn!("no se pudo guardar el transcript para el corpus: {e}");
+    if let Err(e) = ctx.store.save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted) {
+        tracing::warn!("no se pudo guardar el transcript para el corpus: {e}");
+    }
+
+    let mut events = vec![WorkerToShell::Transcript {
+        request_id,
+        raw: cleaned.raw,
+        cleaned: cleaned.formatted.clone(),
+    }];
+
+    let final_state = if cleaned.formatted.trim().is_empty() {
+        // Nothing worth pasting (e.g. the whole utterance was filler) — not
+        // an error, just nothing to do.
+        WorkerState::Done(true)
+    } else {
+        match ctx.desktop.insert_text(&cleaned.formatted) {
+            Ok(()) => WorkerState::Done(true),
+            Err(e) => {
+                events.push(WorkerToShell::Error {
+                    request_id: Some(request_id),
+                    message: e.to_string(),
+                    recoverable: true,
+                });
+                WorkerState::Done(false)
             }
+        }
+    };
+    events.push(WorkerToShell::StateChanged { state: final_state, request_id: Some(request_id) });
 
-            events.push(WorkerToShell::Transcript { request_id, raw: cleaned.raw, cleaned: cleaned.formatted });
-            events.push(WorkerToShell::StateChanged { state: WorkerState::Idle, request_id: Some(request_id) });
+    events
+}
+
+/// Starts capturing audio, if a model is configured. `chunk_size` is
+/// arbitrary here (push-to-talk needs no VAD segmentation — the hotkey
+/// itself marks the utterance's boundaries) but must be non-zero for
+/// `AudioSource::start`'s rechunking; 1600 samples is 100ms at 16 kHz, a
+/// reasonable balance between callback frequency and overhead.
+const CAPTURE_CHUNK_SIZE: usize = 1_600;
+
+fn handle_start_recording(ctx: &WorkerContext, request_id: Uuid) -> Vec<WorkerToShell> {
+    let Some(audio) = &ctx.audio else {
+        // The real, documented "model not loaded" degradation from
+        // `docs/PLAN.md` §3.3 point 5 — never a silent no-op.
+        return vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "el modelo de reconocimiento de voz no está configurado (falta EVA_STT_MODEL_PATH)".to_string(),
+            recoverable: true,
+        }];
+    };
+
+    #[allow(clippy::unwrap_used)] // only poisoned if a prior lock-holder panicked, forbidden by workspace policy
+    let mut recording = ctx.recording.lock().unwrap();
+    if recording.is_some() {
+        return vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "ya hay una grabación en curso".to_string(),
+            recoverable: true,
+        }];
+    }
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let buffer_for_callback = Arc::clone(&buffer);
+    let start_result = audio.source.start(
+        CAPTURE_CHUNK_SIZE,
+        Box::new(move |chunk| {
+            #[allow(clippy::unwrap_used)] // only poisoned if this same callback panicked, forbidden by workspace policy
+            buffer_for_callback.lock().unwrap().extend(chunk);
+        }),
+    );
+
+    match start_result {
+        Ok(handle) => {
+            *recording = Some(RecordingSession { request_id, handle, buffer });
+            vec![WorkerToShell::StateChanged { state: WorkerState::Listening, request_id: Some(request_id) }]
         }
-        InterpretResult::Command(intent) => {
-            events.extend(handle_intent(ctx, request_id, intent).await);
-        }
+        Err(e) => vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: e.to_string(),
+            recoverable: true,
+        }],
+    }
+}
+
+/// Takes the current recording session, if `request_id` matches it — used by
+/// both `StopRecording` and `Cancel` so a stray, mismatched id (e.g. a
+/// duplicate or delayed message) can never stop someone else's recording.
+fn take_recording_session(ctx: &WorkerContext, request_id: Uuid) -> Option<RecordingSession> {
+    #[allow(clippy::unwrap_used)] // only poisoned if a prior lock-holder panicked, forbidden by workspace policy
+    let mut recording = ctx.recording.lock().unwrap();
+    if recording.as_ref().is_some_and(|s| s.request_id == request_id) {
+        recording.take()
+    } else {
+        None
+    }
+}
+
+async fn handle_stop_recording(ctx: &WorkerContext, request_id: Uuid) -> Vec<WorkerToShell> {
+    let Some(session) = take_recording_session(ctx, request_id) else {
+        return vec![WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "no había una grabación en curso con ese id".to_string(),
+            recoverable: true,
+        }];
+    };
+    session.handle.stop();
+
+    #[allow(clippy::unwrap_used)] // only poisoned if the capture callback panicked, forbidden by workspace policy
+    let samples = std::mem::take(&mut *session.buffer.lock().unwrap());
+
+    let mut events = vec![WorkerToShell::StateChanged { state: WorkerState::Thinking, request_id: Some(request_id) }];
+
+    let Some(audio) = &ctx.audio else {
+        // Can only happen if the model was unloaded between Start and Stop,
+        // which nothing in this binary does today — defensive, not expected.
+        events.push(WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: "el modelo de reconocimiento de voz ya no está disponible".to_string(),
+            recoverable: true,
+        });
+        return events;
+    };
+
+    // Whisper inference is CPU-bound and can take real time; running it
+    // directly here would block the async task's thread for that whole
+    // duration. `spawn_blocking` moves it to a thread meant for exactly
+    // this, so the runtime's other work (an agent task's event streaming,
+    // for instance) is never held up by one transcription.
+    let stt = Arc::clone(&audio.stt);
+    let transcribe_result =
+        tokio::task::spawn_blocking(move || stt.transcribe(&samples)).await;
+
+    match transcribe_result {
+        Ok(Ok(transcript)) => events.extend(process_dictation_or_intent(ctx, request_id, &transcript.text).await),
+        Ok(Err(e)) => events.push(WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: e.to_string(),
+            recoverable: true,
+        }),
+        Err(join_error) => events.push(WorkerToShell::Error {
+            request_id: Some(request_id),
+            message: format!("la tarea de transcripción falló: {join_error}"),
+            recoverable: true,
+        }),
     }
 
     events
+}
+
+/// A real transcript, from either STT or (in `RunIntentText`'s case) typed
+/// text, is either plain dictation or a wake-word-prefixed command —
+/// exactly what [`handle_run_intent_text`] already does, factored out so
+/// [`handle_stop_recording`] does not duplicate it.
+async fn process_dictation_or_intent(ctx: &WorkerContext, request_id: Uuid, text: &str) -> Vec<WorkerToShell> {
+    // A hesitation before the wake word ("eh, Adán, abre Brave") is normal,
+    // natural speech, but `strip_wake_word` requires the wake word to be the
+    // literal first word — found while testing the recording pipeline
+    // end to end: a leading "eh" silently defeated the gate and the whole
+    // utterance fell through to plain dictation instead of a command.
+    // Stripping universal (never-a-real-word) fillers first is always safe
+    // — see `eva_text::filler`'s own doc for why — and fixes this without
+    // weakening the gate itself.
+    let gate_input = eva_text::filler::remove_universal_fillers(text);
+
+    match eva_intent::interpret(&gate_input, &ctx.wake_word, &ctx.app_index) {
+        InterpretResult::Dictation => process_dictation(ctx, request_id, text),
+        InterpretResult::Command(intent) => handle_intent(ctx, request_id, intent).await,
+    }
 }
 
 async fn handle_intent(ctx: &WorkerContext, request_id: Uuid, intent: Intent) -> Vec<WorkerToShell> {
@@ -252,14 +452,19 @@ fn summarize_outcome(outcome: &eva_agents::AgentOutcome) -> (String, WorkerState
     }
 }
 
-fn handle_health_check(_ctx: &WorkerContext, request_id: Uuid) -> WorkerToShell {
+fn handle_health_check(ctx: &WorkerContext, request_id: Uuid) -> WorkerToShell {
     // Agent detection is deliberately not run here (it spawns real
     // processes and can take real time); `eva doctor` per `docs/PLAN.md`
     // §3.4 is a separate, explicit command for that. This health check
     // reports what is cheap and instant to know.
     WorkerToShell::Health {
         request_id,
-        report: HealthReport { stt_model_loaded: false, stt_model_id: None, store_ok: true, agents: Vec::new() },
+        report: HealthReport {
+            stt_model_loaded: ctx.audio.is_some(),
+            stt_model_id: ctx.audio.as_ref().map(|a| a.model_id.clone()),
+            store_ok: true,
+            agents: Vec::new(),
+        },
     }
 }
 
@@ -284,14 +489,15 @@ mod tests {
     use eva_mcp::desktop::mock::{Call, MockDesktop};
 
     fn test_context(desktop: MockDesktop, agents: AgentRegistry) -> WorkerContext {
-        WorkerContext {
-            store: Store::open_in_memory().expect("in-memory store must open"),
-            app_index: AppIndex::new(vec![eva_intent::AppEntry::new("Brave Browser").with_aliases(["brave"])]),
-            wake_word: "Adán".to_string(),
-            project_dir: std::env::temp_dir(),
-            desktop: Arc::new(desktop),
+        WorkerContext::new(
+            Store::open_in_memory().expect("in-memory store must open"),
+            AppIndex::new(vec![eva_intent::AppEntry::new("Brave Browser").with_aliases(["brave"])]),
+            "Adán".to_string(),
+            std::env::temp_dir(),
+            Arc::new(desktop),
             agents,
-        }
+            None,
+        )
     }
 
     fn empty_registry() -> AgentRegistry {
@@ -299,14 +505,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_dictation_produces_a_cleaned_transcript_and_saves_it() {
-        let ctx = test_context(MockDesktop::new(), empty_registry());
+    async fn plain_dictation_produces_a_cleaned_transcript_saves_it_and_pastes_it() {
+        let desktop = Arc::new(MockDesktop::new());
+        let ctx = WorkerContext { desktop: desktop.clone(), ..test_context(MockDesktop::new(), empty_registry()) };
         let request_id = Uuid::new_v4();
 
         let events = handle(&ctx, ShellToWorker::RunIntentText { request_id, text: "eh hola mundo".to_string() }).await;
 
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Hola mundo.")));
         assert_eq!(ctx.store.recent_transcripts(10).expect("must succeed").len(), 1);
+        // The fix for the gap found while testing the MVP end to end: plain
+        // dictation must actually reach the cursor, not just get logged.
+        assert_eq!(desktop.calls(), vec![Call::InsertText("Hola mundo.".to_string())]);
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+    }
+
+    #[tokio::test]
+    async fn a_full_recording_is_captured_transcribed_cleaned_and_pasted() {
+        let script = vec![0.0_f32; CAPTURE_CHUNK_SIZE * 2];
+        let source = eva_audio::capture::mock::ScriptedSource::new(script);
+        let stt = eva_audio::transcribe::mock::FixedTranscript::new("eh adán abre brave");
+        let audio = AudioContext {
+            source: Arc::new(source),
+            stt: Arc::new(stt),
+            model_id: "mock-model".to_string(),
+        };
+
+        let desktop = Arc::new(MockDesktop::new());
+        let mut ctx = test_context(MockDesktop::new(), empty_registry());
+        ctx.desktop = desktop.clone();
+        ctx.audio = Some(audio);
+        let request_id = Uuid::new_v4();
+
+        let start_events = handle(&ctx, ShellToWorker::StartRecording { request_id }).await;
+        assert!(start_events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Listening, .. })));
+
+        let stop_events = handle(&ctx, ShellToWorker::StopRecording { request_id }).await;
+
+        // The mock STT ignores the audio and always returns the same text,
+        // which starts with the wake word — so this must resolve to a
+        // command (OpenApp), not dictation, exercising the exact same
+        // interpret-then-act pipeline a real transcript would go through.
+        assert_eq!(desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+        assert!(stop_events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::IntentRecognized { .. })));
+    }
+
+    #[tokio::test]
+    async fn stop_recording_with_an_unknown_request_id_is_a_clear_error() {
+        let ctx = test_context(MockDesktop::new(), empty_registry());
+        let events = handle(&ctx, ShellToWorker::StopRecording { request_id: Uuid::new_v4() }).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn starting_a_second_recording_while_one_is_active_is_rejected() {
+        let script = vec![0.0_f32; CAPTURE_CHUNK_SIZE];
+        let audio = AudioContext {
+            source: Arc::new(eva_audio::capture::mock::ScriptedSource::new(script)),
+            stt: Arc::new(eva_audio::transcribe::mock::FixedTranscript::new("hola")),
+            model_id: "mock-model".to_string(),
+        };
+        let mut ctx = test_context(MockDesktop::new(), empty_registry());
+        ctx.audio = Some(audio);
+
+        let first = handle(&ctx, ShellToWorker::StartRecording { request_id: Uuid::new_v4() }).await;
+        assert!(first.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Listening, .. })));
+
+        let second = handle(&ctx, ShellToWorker::StartRecording { request_id: Uuid::new_v4() }).await;
+        assert!(second.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_an_in_progress_recording() {
+        let script = vec![0.0_f32; CAPTURE_CHUNK_SIZE];
+        let audio = AudioContext {
+            source: Arc::new(eva_audio::capture::mock::ScriptedSource::new(script)),
+            stt: Arc::new(eva_audio::transcribe::mock::FixedTranscript::new("hola")),
+            model_id: "mock-model".to_string(),
+        };
+        let mut ctx = test_context(MockDesktop::new(), empty_registry());
+        ctx.audio = Some(audio);
+        let request_id = Uuid::new_v4();
+
+        handle(&ctx, ShellToWorker::StartRecording { request_id }).await;
+        let events = handle(&ctx, ShellToWorker::Cancel { request_id }).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Idle, .. })));
+
+        // The session must actually be gone — stopping it again is now an error.
+        let stop_events = handle(&ctx, ShellToWorker::StopRecording { request_id }).await;
+        assert!(stop_events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
     }
 
     #[tokio::test]

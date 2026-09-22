@@ -81,16 +81,70 @@ async fn main() {
 async fn build_context() -> Result<WorkerContext, Box<dyn std::error::Error>> {
     let store = eva_store::Store::open(&store_path()?)?;
     let wake_word: String = store.get_setting("wake_word")?.unwrap_or_else(|| "Adán".to_string());
+    let app_index = scan_applications();
+    let audio = load_audio_context();
 
-    Ok(WorkerContext {
+    Ok(WorkerContext::new(
         store,
-        // Empty for the MVP — see the field's own doc in dispatch.rs for why.
-        app_index: eva_intent::AppIndex::new(Vec::new()),
+        app_index,
         wake_word,
-        project_dir: std::env::current_dir()?,
-        desktop: Arc::new(eva_mcp::SystemDesktop),
-        agents: eva_agents::default_registry(),
-    })
+        std::env::current_dir()?,
+        Arc::new(eva_mcp::SystemDesktop),
+        eva_agents::default_registry(),
+        audio,
+    ))
+}
+
+/// Scans `/Applications` for `.app` bundles and builds an [`eva_intent::AppIndex`]
+/// from their names — closing the gap from `docs/PLAN.md` §10 decision 8's
+/// "the focused project/app is used instead" default: an empty index meant
+/// "Adán, abre Brave" always fell through to an agent instead of actually
+/// opening Brave. This is deliberately simple (one directory, no recursion
+/// into `/System/Applications` or `~/Applications`, no bundle metadata
+/// beyond the file name) — the full "índice de apps" from `docs/PLAN.md`
+/// fase 5 can grow this later; this closes the immediate, user-visible gap.
+fn scan_applications() -> eva_intent::AppIndex {
+    let entries = std::fs::read_dir("/Applications")
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "app"))
+        .filter_map(|entry| {
+            let name = entry.path().file_stem()?.to_str()?.to_string();
+            Some(eva_intent::AppEntry::new(name))
+        })
+        .collect::<Vec<_>>();
+
+    tracing::info!(count = entries.len(), "aplicaciones indexadas desde /Applications");
+    eva_intent::AppIndex::new(entries)
+}
+
+/// Loads the STT model named by `EVA_STT_MODEL_PATH`, if set. Returns `None`
+/// (not an error) when unset or unloadable — [`WorkerContext`]'s `audio`
+/// field being `None` is exactly the documented, honest "not configured"
+/// state `dispatch::handle_start_recording` reports to the user, per
+/// `docs/PLAN.md` §3.3 point 5. There is no bundled default model: per
+/// `docs/PLAN.md` §5, the production default is `canary-1b-flash`, a
+/// multi-file ONNX model that is a packaging decision (fase 1's download
+/// step), not something this binary can reasonably embed.
+fn load_audio_context() -> Option<dispatch::AudioContext> {
+    let model_path = std::env::var("EVA_STT_MODEL_PATH").ok()?;
+    let path = std::path::PathBuf::from(&model_path);
+
+    match eva_audio::WhisperSpeechToText::load(&path) {
+        Ok(stt) => {
+            tracing::info!(model = %model_path, "modelo de reconocimiento de voz cargado");
+            Some(dispatch::AudioContext {
+                source: Arc::new(eva_audio::MicrophoneSource),
+                stt: Arc::new(stt),
+                model_id: model_path,
+            })
+        }
+        Err(e) => {
+            tracing::error!(model = %model_path, error = %e, "no se pudo cargar el modelo de reconocimiento de voz");
+            None
+        }
+    }
 }
 
 fn store_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
