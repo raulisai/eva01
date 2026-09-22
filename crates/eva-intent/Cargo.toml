@@ -1,0 +1,15 @@
+[package]
+name = "eva-intent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eva-text = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strsim = { workspace = true }
+regex = "1"
+
+[dev-dependencies]
+proptest = "1"

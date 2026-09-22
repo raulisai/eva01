@@ -100,6 +100,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "eva-intent"
+version = "0.1.0"
+dependencies = [
+ "eva-text",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "strsim",
+]
+
+[[package]]
 name = "eva-ipc"
 version = "0.1.0"
 dependencies = [
