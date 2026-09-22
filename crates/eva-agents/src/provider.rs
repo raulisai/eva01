@@ -115,9 +115,14 @@ impl RunningAgent {
             send_signal(pid, Signal::Term);
         }
 
-        let exited_gracefully = tokio::time::timeout(std::time::Duration::from_secs(3), self.child.wait())
-            .await
-            .is_ok();
+        // Deliberately not `.is_ok()` on the outer `Result` alone: that only
+        // tells you the timeout didn't elapse, not that the process actually
+        // exited — `Ok(Err(io_error))` (the wait call itself failing, fast,
+        // for some other reason) would satisfy `.is_ok()` too and skip the
+        // SIGKILL escalation for a process nobody confirmed is gone. Found
+        // by the test below actually exercising this path, not by inspection.
+        let wait_result = tokio::time::timeout(std::time::Duration::from_secs(3), self.child.wait()).await;
+        let exited_gracefully = matches!(wait_result, Ok(Ok(_)));
 
         if !exited_gracefully {
             if let Some(pid) = self.child.id() {
@@ -206,4 +211,132 @@ pub trait AgentProvider: Send + Sync {
         task: &AgentTask,
         events: UnboundedSender<AgentEvent>,
     ) -> Result<RunningAgent, AgentError>;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A stand-in for the real stdout-reading task: it never resolves on
+    /// its own, exactly like a real one blocked reading from a child that
+    /// is still running — the only way it ends is `cancel()` aborting it.
+    fn pending_output_task() -> tokio::task::JoinHandle<AgentOutcome> {
+        tokio::spawn(async {
+            std::future::pending::<()>().await;
+            #[allow(clippy::panic)] // unreachable; see docs/ENGINEERING.md #2's inline-comment escape hatch
+            {
+                panic!("this task is never supposed to resolve on its own")
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_a_well_behaved_process_quickly_via_sigterm_alone() {
+        let child = tokio::process::Command::new("sleep")
+            .arg("100")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawning `sleep` must succeed on any Unix test runner");
+        let running = RunningAgent::new(child, pending_output_task());
+
+        let start = std::time::Instant::now();
+        let outcome = running.cancel().await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome, AgentOutcome::Cancelled);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "a process that honors SIGTERM must not pay the SIGKILL escalation's grace period; took {elapsed:?}"
+        );
+    }
+
+    // Known, accepted trade-off found while writing this test: `sh -c
+    // "trap '' TERM; sleep 100"` forks `sleep` as a real grandchild rather
+    // than exec-replacing into it, so SIGKILLing the shell leaves `sleep`
+    // orphaned to run out its own 100s lifetime. The `Stdio::null()` calls
+    // below stop that orphan from holding open the file descriptors this
+    // very test's own output is written through — without them, the
+    // orphan silently kept the pipe to `cargo test`'s caller open for the
+    // full 100s, making the test *look* hung long after it had actually
+    // passed. Harmless once isolated like this (no shared file descriptors,
+    // self-terminating), so left as-is rather than adding process-group
+    // management just to avoid a background `sleep` nobody observes.
+    #[tokio::test]
+    async fn cancel_escalates_to_sigkill_when_the_process_ignores_sigterm() {
+        // A shell that explicitly traps (ignores) SIGTERM — the real-world
+        // case the escalation exists for: an agent CLI or a subprocess it
+        // spawned that does not exit cleanly on the first signal.
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 100")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawning `sh` must succeed on any Unix test runner");
+
+        // The shell needs a moment to actually execute `trap '' TERM` before
+        // it can ignore anything — sending SIGTERM immediately after spawn
+        // races the shell's own startup and can catch it before the trap is
+        // installed, which made this test flaky against real timing rather
+        // than against the behavior it means to verify.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let running = RunningAgent::new(child, pending_output_task());
+
+        let start = std::time::Instant::now();
+        let outcome = running.cancel().await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome, AgentOutcome::Cancelled);
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "must actually wait out the full grace period before escalating, not skip straight to SIGKILL; took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_on_an_already_exited_process_does_not_hang_or_error() {
+        let mut child = tokio::process::Command::new("true").spawn().expect("spawning `true` must succeed");
+        // Let it exit on its own before cancel() ever touches it — cancelling
+        // something already gone must be a graceful no-op, not a hang on a
+        // signal to a pid that no longer exists.
+        let _ = child.wait().await;
+        let running = RunningAgent::new(child, pending_output_task());
+
+        let outcome = running.cancel().await;
+        assert_eq!(outcome, AgentOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn wait_returns_the_output_tasks_outcome_once_the_process_exits() {
+        let child = tokio::process::Command::new("true").spawn().expect("spawning `true` must succeed");
+        let output_task = tokio::spawn(async { AgentOutcome::Completed { summary: Some("listo".to_string()) } });
+        let running = RunningAgent::new(child, output_task);
+
+        let outcome = running.wait().await;
+        assert_eq!(outcome, AgentOutcome::Completed { summary: Some("listo".to_string()) });
+    }
+
+    #[tokio::test]
+    async fn wait_reports_a_failed_outcome_if_the_reader_task_itself_panics() {
+        let child = tokio::process::Command::new("true").spawn().expect("spawning `true` must succeed");
+        #[allow(clippy::panic)] // deliberately simulating a reader-task crash, to prove `wait()` degrades instead of propagating it
+        let output_task = tokio::spawn(async { panic!("simulated reader-task crash") });
+        let running = RunningAgent::new(child, output_task);
+
+        let outcome = running.wait().await;
+        assert!(matches!(outcome, AgentOutcome::Failed { .. }), "a panicked reader task must degrade to Failed, not propagate the panic");
+    }
+
+    #[test]
+    fn provider_status_is_active_is_true_only_for_active() {
+        assert!(ProviderStatus::Active { version: "1.0".to_string() }.is_active());
+        assert!(!ProviderStatus::NotInstalled.is_active());
+        assert!(!ProviderStatus::InstalledNoSession { version: None }.is_active());
+    }
 }
