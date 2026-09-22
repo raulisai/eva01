@@ -13,6 +13,7 @@ members = [
     "crates/eva-macos",
     "crates/eva-mcp",
     "crates/eva-audio",
+    "bins/eva-worker",
 ]
 
 [workspace.package]
