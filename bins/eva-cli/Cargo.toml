@@ -1,0 +1,19 @@
+[package]
+# The crate is named `eva-cli` (matching every other package in this
+# workspace's `eva-*` naming) but the binary it produces is plain `eva` —
+# `docs/PLAN.md` §3.1: "eva intent \"abre brave\"", not "eva-cli intent …".
+name = "eva-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "eva"
+path = "src/main.rs"
+
+[dependencies]
+eva-ipc = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

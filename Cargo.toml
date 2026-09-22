@@ -15,6 +15,7 @@ members = [
     "crates/eva-audio",
     "bins/eva-worker",
     "bins/eva-shell",
+    "bins/eva-cli",
 ]
 
 [workspace.package]
