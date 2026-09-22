@@ -127,21 +127,46 @@ fn scan_applications() -> eva_intent::AppIndex {
 /// `docs/PLAN.md` §5, the production default is `canary-1b-flash`, a
 /// multi-file ONNX model that is a packaging decision (fase 1's download
 /// step), not something this binary can reasonably embed.
+/// Prefers Canary (`EVA_CANARY_MODEL_DIR`) — `docs/PLAN.md` §5's actual
+/// production default, native Spanish, no translation bolt-on — and falls
+/// back to Whisper (`EVA_STT_MODEL_PATH`) if only that is configured. Both
+/// are real, working `SpeechToText` implementations as of this increment;
+/// which one loads is purely a matter of which environment variable is set,
+/// not a code difference.
 fn load_audio_context() -> Option<dispatch::AudioContext> {
+    if let Ok(canary_dir) = std::env::var("EVA_CANARY_MODEL_DIR") {
+        let language = std::env::var("EVA_STT_LANGUAGE").unwrap_or_else(|_| "es".to_string());
+        let path = std::path::PathBuf::from(&canary_dir);
+        return match eva_audio::CanarySpeechToText::load(&path, language) {
+            Ok(stt) => {
+                tracing::info!(model = %canary_dir, "modelo Canary cargado");
+                Some(dispatch::AudioContext {
+                    source: Arc::new(eva_audio::MicrophoneSource),
+                    stt: Arc::new(stt),
+                    model_id: format!("canary:{canary_dir}"),
+                })
+            }
+            Err(e) => {
+                tracing::error!(model = %canary_dir, error = %e, "no se pudo cargar el modelo Canary");
+                None
+            }
+        };
+    }
+
     let model_path = std::env::var("EVA_STT_MODEL_PATH").ok()?;
     let path = std::path::PathBuf::from(&model_path);
 
     match eva_audio::WhisperSpeechToText::load(&path) {
         Ok(stt) => {
-            tracing::info!(model = %model_path, "modelo de reconocimiento de voz cargado");
+            tracing::info!(model = %model_path, "modelo Whisper cargado");
             Some(dispatch::AudioContext {
                 source: Arc::new(eva_audio::MicrophoneSource),
                 stt: Arc::new(stt),
-                model_id: model_path,
+                model_id: format!("whisper:{model_path}"),
             })
         }
         Err(e) => {
-            tracing::error!(model = %model_path, error = %e, "no se pudo cargar el modelo de reconocimiento de voz");
+            tracing::error!(model = %model_path, error = %e, "no se pudo cargar el modelo Whisper");
             None
         }
     }

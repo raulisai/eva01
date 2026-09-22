@@ -80,6 +80,55 @@ impl SpeechToText for WhisperSpeechToText {
     }
 }
 
+/// The real `transcribe-rs`-backed [`SpeechToText`], using the `onnx`
+/// feature's Canary engine — `docs/PLAN.md` §5's actual production default
+/// (`canary-1b-flash`, native Spanish support, not a translation bolt-on).
+/// Verified against the smaller `canary-180m-flash` variant (~213 MB vs.
+/// 1B-flash's ~1.7 GB) in this increment, which exercises the exact same
+/// `transcribe-rs` code path — swapping the model directory for
+/// `canary-1b-flash` needs no code change, only a bigger download.
+pub struct CanarySpeechToText {
+    model: std::sync::Mutex<transcribe_rs::onnx::canary::CanaryModel>,
+    /// BCP-47 language hint passed to every call — `docs/PLAN.md`'s target
+    /// audience dictates in Spanish, so this defaults to `"es"` rather than
+    /// leaving Canary to guess per utterance.
+    language: String,
+}
+
+impl CanarySpeechToText {
+    /// Loads a Canary model from `model_dir` (the directory layout
+    /// `transcribe-rs`'s own README documents: `encoder-model*.onnx`,
+    /// `decoder-model*.onnx`, `vocab.txt`), int8-quantized.
+    ///
+    /// # Errors
+    /// Returns [`TranscribeError::ModelLoadFailed`] if the directory is
+    /// missing expected files or `transcribe-rs` otherwise rejects it.
+    pub fn load(model_dir: &Path, language: impl Into<String>) -> Result<Self, TranscribeError> {
+        let model = transcribe_rs::onnx::canary::CanaryModel::load(model_dir, &transcribe_rs::onnx::Quantization::Int8)
+            .map_err(|e| TranscribeError::ModelLoadFailed(e.to_string()))?;
+        Ok(CanarySpeechToText { model: std::sync::Mutex::new(model), language: language.into() })
+    }
+}
+
+impl SpeechToText for CanarySpeechToText {
+    fn transcribe(&self, samples: &[f32]) -> Result<Transcript, TranscribeError> {
+        let mut model = self
+            .model
+            .lock()
+            .map_err(|_| TranscribeError::TranscriptionFailed("el modelo está en un estado inconsistente".to_string()))?;
+
+        let params = transcribe_rs::onnx::canary::CanaryParams {
+            language: Some(self.language.clone()),
+            ..Default::default()
+        };
+        let result = model
+            .transcribe_with(samples, &params)
+            .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
+
+        Ok(Transcript { text: result.text })
+    }
+}
+
 /// A test double for [`SpeechToText`], per `docs/ENGINEERING.md` #5.
 pub mod mock {
     use super::{SpeechToText, Transcript, TranscribeError};
@@ -134,6 +183,12 @@ mod tests {
     #[test]
     fn loading_a_model_from_a_path_that_does_not_exist_is_a_typed_error_not_a_panic() {
         let result = WhisperSpeechToText::load(Path::new("/no/existe/modelo.bin"));
+        assert!(matches!(result, Err(TranscribeError::ModelLoadFailed(_))));
+    }
+
+    #[test]
+    fn loading_a_canary_model_from_a_missing_directory_is_a_typed_error_not_a_panic() {
+        let result = CanarySpeechToText::load(Path::new("/no/existe/directorio"), "es");
         assert!(matches!(result, Err(TranscribeError::ModelLoadFailed(_))));
     }
 }

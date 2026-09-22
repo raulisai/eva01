@@ -18,6 +18,16 @@ pub trait SpeechProbability: Send {
 }
 
 /// The real Silero-VAD-backed [`SpeechProbability`].
+///
+/// Gated behind the `hands-free-vad` Cargo feature (off by default) — see
+/// the feature's own doc comment in `Cargo.toml` for why: it and
+/// `transcribe-rs`'s `onnx` feature (Canary, this crate's real STT engine)
+/// currently pin two different, mutually-exclusive exact versions of `ort`.
+/// [`SpeechProbability`], [`Segmenter`], and [`mock::ScriptedProbability`]
+/// stay available unconditionally; only this real implementation needs the
+/// feature, and nothing in the MVP's push-to-talk flow uses it yet anyway
+/// (`docs/PLAN.md` fase 10 is where it gets wired in).
+#[cfg(feature = "hands-free-vad")]
 pub struct SileroVad {
     inner: voice_activity_detector::VoiceActivityDetector,
 }
@@ -30,6 +40,7 @@ pub enum VadError {
     BuildFailed(String),
 }
 
+#[cfg(feature = "hands-free-vad")]
 impl SileroVad {
     /// Builds a Silero VAD for `sample_rate` Hz audio delivered in chunks of
     /// `chunk_size` samples. Silero's published model expects 8 kHz or
@@ -47,6 +58,7 @@ impl SileroVad {
     }
 }
 
+#[cfg(feature = "hands-free-vad")]
 impl SpeechProbability for SileroVad {
     fn predict(&mut self, chunk: &[f32]) -> f32 {
         self.inner.predict(chunk.to_vec())

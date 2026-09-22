@@ -7,11 +7,30 @@ license.workspace = true
 [dependencies]
 cpal = "0.18"
 rubato = "5"
-voice_activity_detector = "0.2"
-transcribe-rs = { version = "0.3", features = ["whisper-cpp"] }
+transcribe-rs = { version = "0.3", features = ["whisper-cpp", "onnx"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Optional: real Silero VAD, gated behind its own feature — see the
+# `[features]` section for why this cannot just be an unconditional
+# dependency alongside `transcribe-rs`'s `onnx` feature.
+voice_activity_detector = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
+
+[features]
+default = []
+# `voice_activity_detector` 0.2.x and `transcribe-rs`'s `onnx` feature (used
+# for the Canary STT engine) both depend on `ort`, pinned to two different,
+# mutually-exclusive exact versions (rc.10 vs rc.12) — a real, currently
+# unresolved conflict between the two crates, not something `cargo update`
+# can fix. Since real Silero VAD is only needed for the hands-free listening
+# mode (`docs/PLAN.md` fase 10), which nothing in the MVP wires up yet (the
+# push-to-talk `StartRecording`/`StopRecording` flow never segments audio —
+# the hotkey itself marks the utterance boundaries), it is kept behind this
+# opt-in feature rather than blocking the STT engine every build needs.
+# `crate::vad::SpeechProbability`, `Segmenter`, and the scripted mock stay
+# available unconditionally — only the real `SileroVad` struct needs this.
+hands-free-vad = ["dep:voice_activity_detector"]
