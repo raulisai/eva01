@@ -1,0 +1,15 @@
+[package]
+name = "eva-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eva-audio = { workspace = true }
+eva-text = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+transcribe-rs = { version = "0.3", features = ["whisper-cpp", "onnx"] }
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"

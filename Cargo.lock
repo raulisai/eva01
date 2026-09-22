@@ -1055,6 +1055,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "eva-eval"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eva-audio",
+ "eva-text",
+ "proptest",
+ "tempfile",
+ "transcribe-rs",
+]
+
+[[package]]
 name = "eva-intent"
 version = "0.1.0"
 dependencies = [
