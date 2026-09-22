@@ -1,0 +1,14 @@
+[package]
+name = "eva-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+unicode-normalization = { workspace = true }
+strsim = { workspace = true }
+regex = "1"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

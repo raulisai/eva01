@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+# Crates are added here as they are finished, never as placeholders — see
+# docs/ENGINEERING.md for why. The full target set (tracked in docs/PLAN.md
+# §3) is bins/eva-shell, bins/eva-worker, and crates/{eva-text, eva-store,
+# eva-intent, eva-agents, eva-macos, eva-audio, eva-mcp, eva-ipc}.
+members = [
+    "crates/eva-ipc",
+    "crates/eva-text",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["EVA01"]
+repository = "https://github.com/raulisai97/eva01"
+
+# Shared dependency versions across the workspace, pinned in one place so every
+# crate stays in lock-step and `cargo update` only ever needs to touch this file.
+[workspace.dependencies]
+eva-text = { path = "crates/eva-text" }
+eva-store = { path = "crates/eva-store" }
+eva-intent = { path = "crates/eva-intent" }
+eva-agents = { path = "crates/eva-agents" }
+eva-macos = { path = "crates/eva-macos" }
+eva-audio = { path = "crates/eva-audio" }
+eva-mcp = { path = "crates/eva-mcp" }
+eva-ipc = { path = "crates/eva-ipc" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time", "sync", "signal"] }
+strsim = "0.11"
+unicode-normalization = "0.1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "unwind" # keep unwind so catch_unwind at task boundaries (see docs/PLAN.md §3.3) works in release too

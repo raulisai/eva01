@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/models/
+/eval/audio/
+/eval/results/
+*.log
+.env
