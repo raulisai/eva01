@@ -50,6 +50,11 @@ struct Cli {
     #[arg(long)]
     strict: bool,
 
+    /// Qué rodea cada audio antes de la voz: `auto`, `silence` o `none` (como
+    /// `[stt] padding` en la configuración). Sirve para compararlos con tu corpus.
+    #[arg(long, default_value = "auto")]
+    padding: String,
+
     /// Formatea con Apple Intelligence en vez de solo reglas, para medir el
     /// camino real de un dictado (y su latencia) en este equipo.
     #[arg(long)]
@@ -69,7 +74,11 @@ struct SampleResult {
 fn main() {
     let cli = Cli::parse();
 
-    let stt = match load_stt() {
+    let Some(padding) = eva_audio::transcribe::Padding::from_name(&cli.padding) else {
+        eprintln!("--padding {}: usa auto, silence o none", cli.padding);
+        std::process::exit(2);
+    };
+    let stt = match load_stt(padding) {
         Ok(stt) => stt,
         Err(message) => {
             eprintln!("{message}");
@@ -119,11 +128,11 @@ fn main() {
     print_report(&results, cli.strict, cli.apple_intelligence);
 }
 
-fn load_stt() -> Result<Box<dyn SpeechToText>, String> {
+fn load_stt(padding: eva_audio::transcribe::Padding) -> Result<Box<dyn SpeechToText>, String> {
     if let Ok(dir) = std::env::var("EVA_CANARY_MODEL_DIR") {
         let language = std::env::var("EVA_STT_LANGUAGE").unwrap_or_else(|_| "es".to_string());
         return eva_audio::CanarySpeechToText::load(&PathBuf::from(&dir), language)
-            .map(|stt| Box::new(stt) as Box<dyn SpeechToText>)
+            .map(|stt| Box::new(stt.with_padding(padding)) as Box<dyn SpeechToText>)
             .map_err(|e| format!("no se pudo cargar el modelo Canary en {dir}: {e}"));
     }
     if let Ok(path) = std::env::var("EVA_STT_MODEL_PATH") {

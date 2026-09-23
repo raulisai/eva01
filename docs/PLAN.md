@@ -119,6 +119,13 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     salen exactos (el resto se calla o inventa). Se probó más y menos relleno de silencio (0–3 s): no cambia la
     cifra. Se deja documentado en `eval/README.md` en vez de esconderlo con una heurística sin datos que la respalden.
 
+17. **El «arreglo» de la primera palabra empeoraba el ruido, y solo lo mostró probar con ruido.** El relleno de 300 ms
+    de silencio digital que quitaba el error «Hay que → Que» en audio limpio, con ruido de fondo (incluso a 40 dB por
+    debajo de la voz) hacía subir el WER de 3 % a 25 %, y con ruido de ventilador a 10 dB, de 10 % a 154 %. Ahora
+    `Padding::Auto` solo rellena si la propia grabación tiene el fondo silencioso; el resto queda igual (ver
+    `eval/README.md`, «Ruido de fondo»). Se probó también relleno con ruido del mismo nivel: peor que no rellenar.
+    Sigue siendo audio sintético: `[stt] padding` y `eva-eval --padding` existen para repetirlo con dictados reales.
+
 ### Lo que falta y por qué
 
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado

@@ -174,6 +174,8 @@ fn load_audio(config: &Config, support: &Path) -> Option<AudioContext> {
     match eva_config::models::discover(config, support, &|key| std::env::var(key).ok()) {
         ModelChoice::Canary(path) => match eva_audio::CanarySpeechToText::load(&path, language) {
             Ok(stt) => {
+                let padding = eva_audio::transcribe::Padding::from_name(&config.stt.padding).unwrap_or_default();
+                let stt = stt.with_padding(padding);
                 tracing::info!(model = %path.display(), "modelo Canary cargado");
                 Some(AudioContext {
                     source: Arc::new(eva_audio::MicrophoneSource),

@@ -26,6 +26,10 @@
 # canary_dir = "~/Library/Application Support/EVA01/models/canary-1b-flash"
 # whisper_path = "~/Library/Application Support/EVA01/models/ggml-base.bin"
 # language = "es"
+# Qué rodea la grabación antes de que Canary la oiga: "auto" (por defecto: silencio
+# digital solo si el fondo de la propia grabación es silencioso), "silence" o "none".
+# Mídelo con tus propios dictados marcados (eval/README.md, eva-eval --padding).
+# padding = "auto"
 
 [agents]
 # Qué agente probar primero. Si falla antes de hacer algo, se prueba el siguiente.

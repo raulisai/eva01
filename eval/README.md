@@ -76,14 +76,18 @@ Línea base medida (canary-1b-flash int8, M-series, macOS 26, 12 frases):
 
 | | WER | voz p50/p95 | voz+formato p50/p95 |
 |---|---|---|---|
-| solo reglas | 4,2 % (11/12 perfectas) | 243 / 426 ms | igual (formato < 2 ms) |
-| Apple Intelligence | 4,2 % | 247 / 413 ms | 968 / 1238 ms |
+| solo reglas | 5,6 % | ~245 / ~420 ms | igual (formato < 2 ms) |
+| Apple Intelligence | 5,6 % | ~245 / ~415 ms | ~970 / ~1240 ms |
+
+(Con `--padding silence`, que era el comportamiento anterior, el WER limpio es 4,2 %; ver «Ruido de fondo»
+para por qué ya no es el predeterminado.)
 
 Lo que enseñó (y quedó corregido o anotado):
 
 - Sin silencio previo, Canary **se comía la primera palabra** ("Hay que
-  actualizar…" → "Que actualizar…"). `CanarySpeechToText` ahora añade
-  300 ms de silencio antes y 200 ms después; el WER bajó de 6,6 % a 4,2 %.
+  actualizar…" → "Que actualizar…"). Añadir 300 ms de silencio antes y 200 después
+  lo arregló en este corpus (6,6 % → 4,2 %)… hasta que se probó con ruido (abajo):
+  ese relleno es lo que peor lleva el modelo cuando hay ruido de fondo.
 - La primera llamada a Apple Intelligence tarda ~2 s (carga del modelo) y
   las siguientes ~0,7 s: el worker la calienta al arrancar.
 - El formateo es ~70 % de la latencia total con Apple Intelligence. Con
@@ -91,6 +95,24 @@ Lo que enseñó (y quedó corregido o anotado):
   siguiente número a bajar, no algo resuelto.
 - La única frase que falla es la de 0,5 s ("Ya voy"): con audios tan
   cortos el modelo alucina, con o sin relleno.
+
+## Ruido de fondo
+
+Las mismas 12 frases con ruido añadido (blanco a 40 y 30 dB por debajo de la voz; ruido grave de
+ventilador a 20 y 10 dB; blanco a 20 dB). WER medio:
+
+| relleno de la grabación | limpio | blanco −40 dB | blanco −30 dB | ventilador −20 dB | ventilador −10 dB | blanco −20 dB |
+|---|---|---|---|---|---|---|
+| silencio digital siempre | 4,2 % | 25 % | 47 % | 27 % | **154 %** | 77 % |
+| ninguno | 6,6 % | 3,3 % | 5,8 % | 5,0 % | 9,7 % | 25 % |
+| **`auto` (el actual)** | 5,6 % | 3,3 % | 5,8 % | 5,0 % | 9,7 % | 25 % |
+
+Un tramo de ceros exactos junto a una grabación con ruido hace tropezar al modelo (repite «me estoy me
+estoy…», inventa frases). `auto` solo rodea de silencio digital la grabación cuya propia base es silenciosa
+(el fragmento más callado por debajo de 0,001 de RMS) y deja las demás como vienen. También se probó rellenar con
+ruido del mismo nivel que la propia grabación: pierde contra no rellenar en todo menos en audio limpio. El
+ajuste `[stt] padding` (`auto` / `silence` / `none`) y `eva-eval --padding` permiten repetir la comparación
+con **tus** dictados marcados: el ruido de estas pruebas es sintético y el de tu micrófono no lo es.
 
 ## Frases de una o dos palabras
 

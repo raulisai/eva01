@@ -110,11 +110,16 @@ pub struct SttConfig {
     pub whisper_path: Option<String>,
     /// The spoken language, as an ISO 639-1 code.
     pub language: String,
+    /// What surrounds a recording before Canary hears it: `"auto"` (default:
+    /// digital silence only around a clip whose own background is silent),
+    /// `"silence"` or `"none"`. See `eval/README.md`: it is worth measuring on
+    /// your own flagged dictations.
+    pub padding: String,
 }
 
 impl Default for SttConfig {
     fn default() -> Self {
-        SttConfig { canary_dir: None, whisper_path: None, language: "es".to_string() }
+        SttConfig { canary_dir: None, whisper_path: None, language: "es".to_string(), padding: "auto".to_string() }
     }
 }
 
@@ -401,6 +406,12 @@ impl Config {
             if self.remote.api_key_env.trim().is_empty() {
                 problems.push("remote.enabled está activo pero falta remote.api_key_env".to_string());
             }
+        }
+        if !["auto", "silence", "none"].contains(&self.stt.padding.trim()) {
+            problems.push(format!(
+                "stt.padding: \"{}\" no existe (usa \"auto\", \"silence\" o \"none\")",
+                self.stt.padding
+            ));
         }
         if self.wake_word.0.trim().is_empty() {
             problems.push("wake_word no puede estar vacía".to_string());
