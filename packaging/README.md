@@ -13,6 +13,11 @@ y `eva` lado a lado en `Contents/MacOS/` (cada uno encuentra a los otros mirando
 sí mismo) y `libeva_formatter.dylib` (el puente de Apple Intelligence) en
 `Contents/Frameworks/`. La versión sale de `Cargo.toml`.
 
+`LICENSE` y `THIRD_PARTY_NOTICES.md` (dependencias y atribución de los modelos, que son CC BY
+4.0) van en `Contents/Resources/`. Después de cambiar dependencias, regenera los avisos con
+`sh packaging/third-party.sh` (CI corre `--check` y también rechaza dependencias sin licencia
+o con copyleft fuerte).
+
 **Firma ad-hoc vs. real.** Con ad-hoc no hay Hardened Runtime (macOS rechaza cargar el
 dylib con «different Team IDs») y macOS puede olvidar los permisos de Micrófono y
 Accesibilidad al recompilar. Con Developer ID el permiso se mantiene, y es lo único que

@@ -21,7 +21,7 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 
 **Workspace:** 4 binarios (`eva-shell`, `eva-worker`, `eva-cli` → `eva`, `eva-eval`) y 10 crates
 (`eva-audio`, `eva-text`, `eva-intent`, `eva-agents`, `eva-mcp`, `eva-macos`, `eva-store`, `eva-gateway`,
-`eva-config`, `eva-ipc`). ~630 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
+`eva-config`, `eva-ipc`). ~650 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
 `#[ignore]` que solo corren con recursos reales (modelo STT, Apple Intelligence, CLIs de agente).
 
 | Fase | Estado | Notas |
