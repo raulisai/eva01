@@ -21,7 +21,7 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 
 **Workspace:** 4 binarios (`eva-shell`, `eva-worker`, `eva-cli` → `eva`, `eva-eval`) y 10 crates
 (`eva-audio`, `eva-text`, `eva-intent`, `eva-agents`, `eva-mcp`, `eva-macos`, `eva-store`, `eva-gateway`,
-`eva-config`, `eva-ipc`). ~650 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
+`eva-config`, `eva-ipc`). 691 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
 `#[ignore]` que solo corren con recursos reales (modelo STT, Apple Intelligence, CLIs de agente).
 
 | Fase | Estado | Notas |
@@ -128,13 +128,21 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
 
 ### Lo que falta y por qué
 
+- **Verificar con tu voz y tu micrófono.** Todo lo medido usa voz sintética (`say`) y ruido añadido; lo que sí se
+  ejercitó de verdad es la ruta del paquete (arranque, `kill -9` al worker, apagado, `eva doctor`, el overlay dibujado
+  a PNG, el modelo real con Apple Intelligence). No se pudo: la tecla fn y el pegado (necesitan el permiso de
+  Accesibilidad, que el paquete pide al abrirse) ni capturar del micrófono (pide permiso a quien lo abre). El
+  primer día de uso es la verificación que falta: marca lo que salga mal (⌃⌥⌘M) y repite `eva-eval` con
+  `--padding` sobre eso.
+- **Un agente de verdad.** En esta máquina Codex pide actualizarse y Claude Code tiene la sesión caducada (lo que
+  `eva doctor --smoke` explica), así que el circuito MCP se probó hasta el socket y el arranque del agente, no
+  hasta una llamada de herramienta hecha por el modelo.
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado
   está probado; el workflow de release está escrito pero **sin ejecutar** y espera los secretos
   (`packaging/README.md`).
-- **Verificación de extremo a extremo de la GUI con un agente real:** en esta máquina ambos CLIs de agente
-  están rotos (lo que `eva doctor` reporta y explica), así que el circuito MCP se probó hasta el socket y
-  el arranque del agente, no hasta una llamada de herramienta hecha por el modelo.
-- **Corpus real:** el sintético (`say`) es piso de humo. La cosecha con tu voz es lo que fija la línea base.
+- **Respuestas de una palabra** (hallazgo 16) y **latencia p95 de 1,2 s** con Apple Intelligence (hallazgo 7): los
+  dos números por mejorar.
+- **Confirmación con clic en el overlay:** hoy se responde con ⌘⏎ / ⌘⎋ (o, en el futuro, un botón).
 - **Fase 10 y GUI de ajustes:** diferidas (§8, decisión #9).
 
 ---
