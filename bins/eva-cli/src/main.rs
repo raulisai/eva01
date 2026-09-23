@@ -32,11 +32,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Interpreta un texto como si acabara de ser transcrito — el mismo
-    /// camino que usa el dictado real, sin necesitar audio ni micrófono.
+    /// Dice cómo se entendería un texto si acabara de ser transcrito — el mismo
+    /// camino que usa el dictado real, sin audio y, por defecto, sin hacer nada.
     Intent {
         /// El texto a interpretar, p. ej. "Adán, abre brave".
         text: String,
+        /// Además lo ejecuta de verdad: abre la app, pega el texto, lanza el agente.
+        #[arg(long)]
+        run: bool,
     },
     /// Revisa que este equipo esté listo para EVA01 y dice cómo arreglar lo que no.
     Doctor {
@@ -152,7 +155,12 @@ async fn main() {
     let timeout = Duration::from_secs(cli.timeout_secs);
 
     let exit_code = match cli.command {
-        Command::Intent { text } => talk(|request_id| ShellToWorker::RunIntentText { request_id, text }, timeout).await,
+        Command::Intent { text, run: false } => {
+            talk(|request_id| ShellToWorker::InterpretText { request_id, text }, timeout).await
+        }
+        Command::Intent { text, run: true } => {
+            talk(|request_id| ShellToWorker::RunIntentText { request_id, text }, timeout).await
+        }
         Command::Health => talk(|request_id| ShellToWorker::HealthCheck { request_id }, timeout).await,
         Command::Tasks => talk(|request_id| ShellToWorker::ListTasks { request_id }, timeout).await,
         Command::WakeWord { word } => talk(|request_id| ShellToWorker::SetWakeWord { request_id, word }, timeout).await,

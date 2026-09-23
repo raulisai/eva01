@@ -77,6 +77,14 @@ pub enum Intent {
         instruction: String,
     },
 
+    /// One of the user's own phrases (`[[commands]]` in the config): "Adán,
+    /// mi correo". What it does is `eva-worker`'s business — it holds the
+    /// config — so this carries only which phrase matched.
+    Custom {
+        /// The phrase as written in the config.
+        phrase: String,
+    },
+
     /// "Adán, continúa" (or "…y agrega también X") — resume the last agent
     /// session for the active project, per `docs/PLAN.md` fase 7. Which
     /// session that is, and whether one even exists, is `eva-worker`'s job
@@ -87,6 +95,20 @@ pub enum Intent {
         /// agrega tests"), or empty if nothing more was said.
         extra_prompt: String,
     },
+}
+
+/// Whether `spoken` is the user's `phrase`: the same words, whatever the
+/// accents, case or punctuation the speech model happened to give them.
+pub fn is_phrase(spoken: &str, phrase: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        eva_text::fold_diacritics(text)
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let wanted = words(phrase);
+    !wanted.is_empty() && words(spoken) == wanted
 }
 
 /// Parses `command_text` (text with the wake word already stripped by

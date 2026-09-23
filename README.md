@@ -71,6 +71,28 @@ Si usas la tecla fn: Ajustes → Teclado → «Pulsar la tecla 🌐 para» → *
 El ícono de la barra de menú muestra el estado (reposo, escuchando, trabajando, requiere
 atención) y las tareas en curso, con «Cancelar tareas».
 
+## Tus propias órdenes
+
+En `config.toml`, cada `[[commands]]` es una orden tuya que hace **una** cosa:
+
+```toml
+[[commands]]
+say = "mi correo"                      # «Adán, mi correo»
+insert = "yo@ejemplo.com"              # pega este texto, tal cual
+
+[[commands]]
+say = "modo enfoque"
+open = ["Notion", "Spotify", "https://calendar.google.com"]   # apps y direcciones, en orden
+
+[[commands]]
+say = "revisa los tests"
+task = "corre los tests del proyecto y dime cuáles fallan y por qué"   # para el agente
+```
+
+Acentos, mayúsculas y puntuación no importan, pero tiene que ser **toda** la orden («Adán, mi
+correo es un desastre» no dispara «mi correo»). Pasan por el mismo gateway que cualquier orden,
+así que `[gateway.voice]` las rige. Compruébalas sin ejecutarlas: `eva intent "Adán, mi correo"`.
+
 ## Configuración
 
 Todo es opcional. Crea el archivo con ayuda y edítalo:
@@ -80,7 +102,7 @@ $E config edit
 ```
 
 Vive en `~/Library/Application Support/EVA01/config.toml`. Ahí cambias la tecla, la
-palabra de activación, qué agente se prueba primero, qué pide confirmación (`auto` /
+palabra de activación, tus propias órdenes, qué agente se prueba primero, qué pide confirmación (`auto` /
 `confirm` / `block`, por acción y por origen: voz o agente), los estilos por app y el
 modelo remoto opcional. Un error de tipeo no tumba nada: `eva doctor` lo señala y se usan
 los valores por defecto.
@@ -92,7 +114,7 @@ los valores por defecto.
 | `eva doctor [--smoke]` | diagnóstico; `--smoke` hace responder de verdad a cada agente |
 | `eva model list / install / verify` | modelos de voz |
 | `eva config path / show / edit` | configuración |
-| `eva intent "Adán, abre Brave"` | qué entendería EVA01, sin audio y sin ejecutar |
+| `eva intent "Adán, abre Brave"` | cómo lo entendería EVA01, sin ejecutarlo; con `--run` lo ejecuta de verdad |
 | `eva tasks` · `eva audit` | tareas de agente · lo que el gateway dejó pasar o rechazó |
 | `eva history [--flagged]` | dictados recientes y los que marcaste como mal transcritos |
 | `eva dictionary` · `eva wake-word` | diccionario personal · palabra de activación |

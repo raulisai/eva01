@@ -147,7 +147,7 @@ fn config_file(loaded: &eva_config::Loaded) -> Check {
                 loaded.warnings.len(),
                 loaded.warnings.join("; ")
             ),
-            "corrígelos con `eva config edit`; mientras tanto se usan los valores por defecto",
+            "corrígelos con `eva config edit` y reinicia EVA01",
         );
     }
     if loaded.path.exists() {

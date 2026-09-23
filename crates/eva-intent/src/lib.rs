@@ -31,10 +31,19 @@ pub enum InterpretResult {
 /// CLI command call — see `docs/PLAN.md` §3.1, "esto es lo que hace testeable
 /// la capa de intención sin grabar audio."
 pub fn interpret(raw_text: &str, wake_word: &str, app_index: &AppIndex) -> InterpretResult {
-    match wake::strip_wake_word(raw_text, wake_word) {
-        Some(command_text) => InterpretResult::Command(intent::parse(command_text, app_index)),
-        None => InterpretResult::Dictation,
+    interpret_with(raw_text, wake_word, app_index, &[])
+}
+
+/// Like [`interpret`], with the user's own phrases (`[[commands]]`): if what
+/// follows the wake word is exactly one of them, it is [`Intent::Custom`] —
+/// checked before any built-in rule, since the user wrote it on purpose (the
+/// gateway still rules on whatever it does).
+pub fn interpret_with(raw_text: &str, wake_word: &str, app_index: &AppIndex, custom: &[&str]) -> InterpretResult {
+    let Some(command_text) = wake::strip_wake_word(raw_text, wake_word) else { return InterpretResult::Dictation };
+    if let Some(phrase) = custom.iter().find(|phrase| intent::is_phrase(command_text, phrase)) {
+        return InterpretResult::Command(Intent::Custom { phrase: (*phrase).to_string() });
     }
+    InterpretResult::Command(intent::parse(command_text, app_index))
 }
 
 #[cfg(test)]
@@ -66,6 +75,33 @@ mod tests {
         // gate as a command, not get pasted as dictation.
         let result = interpret("adan abre brave", "Adán", &sample_index());
         assert_eq!(result, InterpretResult::Command(Intent::OpenApp { app: "Brave Browser".to_string() }));
+    }
+
+    #[test]
+    fn a_users_own_phrase_wins_over_the_built_in_rules_and_ignores_accents_and_punctuation() {
+        // "abre brave" would be OpenApp; the user's phrase gets there first.
+        let custom = ["abre brave", "mi correo"];
+        for spoken in ["Adán, mi correo.", "adan, Mí  correo", "Adán: MI CORREO!"] {
+            assert_eq!(
+                interpret_with(spoken, "Adán", &sample_index(), &custom),
+                InterpretResult::Command(Intent::Custom { phrase: "mi correo".to_string() }),
+                "{spoken}"
+            );
+        }
+        assert_eq!(
+            interpret_with("Adán, abre Brave", "Adán", &sample_index(), &custom),
+            InterpretResult::Command(Intent::Custom { phrase: "abre brave".to_string() })
+        );
+    }
+
+    #[test]
+    fn a_phrase_must_match_the_whole_command_not_a_part_of_it() {
+        let custom = ["mi correo"];
+        assert!(matches!(
+            interpret_with("Adán, mi correo es un desastre", "Adán", &sample_index(), &custom),
+            InterpretResult::Command(Intent::AgentTask { .. })
+        ));
+        assert_eq!(interpret_with("mi correo", "Adán", &sample_index(), &custom), InterpretResult::Dictation);
     }
 
     #[test]

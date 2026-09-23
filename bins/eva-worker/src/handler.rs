@@ -20,6 +20,7 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
             let job_ctx = Arc::clone(ctx);
             ctx.spawn_job(async move { dictation::process_text(&job_ctx, request_id, &text).await });
         }
+        ShellToWorker::InterpretText { request_id, text } => dictation::interpret_text(ctx, request_id, &text),
         ShellToWorker::StartRecording { request_id } => recording::start(ctx, request_id),
         ShellToWorker::StopRecording { request_id } => recording::stop(ctx, request_id),
         ShellToWorker::Cancel { request_id } => {

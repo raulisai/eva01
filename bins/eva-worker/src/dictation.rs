@@ -17,6 +17,19 @@ use uuid::Uuid;
 /// A real transcript, from either STT or (in `RunIntentText`'s case) typed
 /// text, is either plain dictation or a wake-word-prefixed command.
 pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str) {
+    match classify(ctx, text) {
+        InterpretResult::Dictation => dictate(ctx, request_id, text).await,
+        InterpretResult::Command(intent) => {
+            // A misheard command is as worth flagging as a misheard dictation.
+            ctx.harvest.remember_dictation(request_id, None, text, None);
+            crate::commands::run_intent(ctx, request_id, intent).await
+        }
+    }
+}
+
+/// What `text` is: dictation, or a command (the user's own phrases included).
+/// Does nothing about it.
+fn classify(ctx: &WorkerContext, text: &str) -> InterpretResult {
     // A hesitation before the wake word ("eh, Adán, abre Brave") is normal,
     // natural speech, but `strip_wake_word` requires the wake word to be the
     // literal first word — found while testing the recording pipeline end
@@ -27,14 +40,19 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
     // weakening the gate itself.
     let gate_input = eva_text::filler::remove_universal_fillers(text);
 
-    match eva_intent::interpret(&gate_input, &ctx.wake_word, &ctx.app_index) {
-        InterpretResult::Dictation => dictate(ctx, request_id, text).await,
-        InterpretResult::Command(intent) => {
-            // A misheard command is as worth flagging as a misheard dictation.
-            ctx.harvest.remember_dictation(request_id, None, text, None);
-            crate::commands::run_intent(ctx, request_id, intent).await
-        }
-    }
+    let phrases: Vec<&str> = ctx.config.custom_commands().map(|c| c.say.as_str()).collect();
+    eva_intent::interpret_with(&gate_input, &ctx.wake_word, &ctx.app_index, &phrases)
+}
+
+/// Says what `text` would be taken for — `eva intent`'s default — without
+/// pasting, opening or asking anything.
+pub fn interpret_text(ctx: &WorkerContext, request_id: Uuid, text: &str) {
+    let intent_json = match classify(ctx, text) {
+        InterpretResult::Dictation => serde_json::json!({ "kind": "dictation" }),
+        InterpretResult::Command(intent) => serde_json::to_value(intent).unwrap_or(serde_json::Value::Null),
+    };
+    ctx.events.emit(WorkerToShell::IntentRecognized { request_id, intent_json });
+    ctx.events.emit(WorkerToShell::Ack { request_id });
 }
 
 /// Cleans `raw` in the style of the frontmost app, saves it to the corpus and
@@ -143,6 +161,23 @@ fn paste_or_copy(desktop: &dyn Desktop, text: &str) -> Result<Delivery, eva_mcp:
         return Ok(Delivery::CopiedInstead);
     }
     desktop.insert_text(text).map(|()| Delivery::Pasted)
+}
+
+/// A custom command's `insert`: the user's own text, pasted through the
+/// gateway like any other paste (and to the clipboard instead, in a password
+/// field), with nothing added to it.
+pub async fn insert_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str, intent_json: serde_json::Value) {
+    let action = Action::new(ActionKind::InsertText, Origin::Voice, text).with_intent(intent_json);
+    let ticket = match ctx.gateway.authorize(&action).await {
+        Verdict::Allowed(ticket) => ticket,
+        Verdict::Refused { reason } => {
+            ctx.events.fail(request_id, reason);
+            return;
+        }
+    };
+    ctx.events.state(request_id, WorkerState::Executing);
+    ctx.gateway.record_result(&ticket, "texto pegado");
+    deliver(ctx, request_id, text.to_string()).await;
 }
 
 /// "Adán, hazlo más formal": rewrites the selected text following the spoken

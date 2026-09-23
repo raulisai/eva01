@@ -83,6 +83,22 @@
 #   { bundle_id = "com.tinyspeck.slackmacgap", style = "casual" },
 # ]
 
+# Tus propias órdenes: «Adán, mi correo». Cada una hace UNA cosa: `insert` pega un
+# texto, `open` abre apps y/o direcciones web (en orden), `task` se lo da a un agente.
+# Pasan por el mismo gateway que cualquier orden (una `task` pregunta antes si
+# [gateway.voice] agent_task = "confirm"). Acentos, mayúsculas y puntuación no importan.
+# [[commands]]
+# say = "mi correo"
+# insert = "yo@ejemplo.com"
+#
+# [[commands]]
+# say = "modo enfoque"
+# open = ["Notion", "Spotify", "https://calendar.google.com"]
+#
+# [[commands]]
+# say = "revisa los tests"
+# task = "corre los tests del proyecto y dime cuáles fallan y por qué"
+
 [remote]
 # Modelo remoto compatible con OpenAI para editar texto o formatear. APAGADO por
 # defecto: los dictados llevan secretos y nada sale de tu Mac salvo que lo actives.

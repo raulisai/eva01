@@ -52,6 +52,8 @@ pub struct Config {
     pub styles: StylesConfig,
     /// The optional remote (OpenAI-compatible) text model.
     pub remote: RemoteConfig,
+    /// The user's own voice commands (`[[commands]]`).
+    pub commands: Vec<CommandConfig>,
 }
 
 /// The default wake word. Kept as a type so `Config::default()` can carry it.
@@ -182,6 +184,62 @@ pub struct DictationConfig {
 impl Default for DictationConfig {
     fn default() -> Self {
         DictationConfig { trailing_space: true }
+    }
+}
+
+/// One voice command of the user's own: "Adán, `say`" does one thing.
+///
+/// Exactly one of `insert`, `open` or `task` says what. The action is carried
+/// out through the same gateway as any other command, so the policy in
+/// `[gateway.voice]` applies to it (a `task` asks first if `agent_task` is
+/// set to `confirm`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandConfig {
+    /// What is said after the wake word, e.g. `"mi correo"`. Accents, case and
+    /// punctuation do not matter; the words do (it must match the whole command).
+    pub say: String,
+    /// Text to paste at the cursor.
+    pub insert: Option<String>,
+    /// Apps (by name) and web addresses to open, in order.
+    pub open: Vec<String>,
+    /// A task to hand to an agent, exactly as written.
+    pub task: Option<String>,
+}
+
+/// What a [`CommandConfig`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAction<'a> {
+    /// Paste this text.
+    Insert(&'a str),
+    /// Open these apps and addresses.
+    Open(&'a [String]),
+    /// Give this to an agent.
+    Task(&'a str),
+}
+
+impl CommandConfig {
+    /// What the command does, or why it cannot do anything.
+    ///
+    /// # Errors
+    /// A message for the user: no phrase, no action, or more than one.
+    pub fn action(&self) -> Result<CommandAction<'_>, String> {
+        if self.say.trim().is_empty() {
+            return Err("falta `say` (lo que dices después de la palabra de activación)".to_string());
+        }
+        let insert = self.insert.as_deref().filter(|t| !t.trim().is_empty());
+        let task = self.task.as_deref().filter(|t| !t.trim().is_empty());
+        let open = !self.open.is_empty();
+        match (insert, open, task) {
+            (Some(text), false, None) => Ok(CommandAction::Insert(text)),
+            (None, true, None) if self.open.iter().all(|item| !item.trim().is_empty()) => {
+                Ok(CommandAction::Open(&self.open))
+            }
+            (None, true, None) => Err("`open` tiene un elemento vacío".to_string()),
+            (None, false, Some(prompt)) => Ok(CommandAction::Task(prompt)),
+            (None, false, None) => Err("no hace nada: pon `insert`, `open` o `task`".to_string()),
+            _ => Err("usa una sola de `insert`, `open` o `task`".to_string()),
+        }
     }
 }
 
@@ -347,7 +405,23 @@ impl Config {
         if self.wake_word.0.trim().is_empty() {
             problems.push("wake_word no puede estar vacía".to_string());
         }
+        let mut heard = std::collections::HashSet::new();
+        for command in &self.commands {
+            let name = command.say.trim();
+            if let Err(why) = command.action() {
+                problems.push(format!("commands \"{name}\": {why}"));
+            } else if !heard.insert(name.to_lowercase()) {
+                problems.push(format!("commands \"{name}\": está repetido; solo cuenta el primero"));
+            }
+        }
         problems
+    }
+
+    /// The `[[commands]]` that can actually run, in the order written: the
+    /// ones with a phrase and exactly one action. A broken one is reported by
+    /// [`Config::validate`] and skipped here, never guessed at.
+    pub fn custom_commands(&self) -> impl Iterator<Item = &CommandConfig> {
+        self.commands.iter().filter(|c| c.action().is_ok())
     }
 }
 
@@ -393,6 +467,71 @@ mod tests {
         assert!(Config::default().dictation.trailing_space);
         let config = Config::parse("[dictation]\ntrailing_space = false").expect("valid");
         assert!(!config.dictation.trailing_space);
+    }
+
+    #[test]
+    fn a_custom_command_does_exactly_one_thing() {
+        let config = Config::parse(
+            r#"
+            [[commands]]
+            say = "mi correo"
+            insert = "yo@ejemplo.com"
+
+            [[commands]]
+            say = "modo enfoque"
+            open = ["Notion", "https://ejemplo.com"]
+
+            [[commands]]
+            say = "revisa los tests"
+            task = "corre los tests y dime qué falla"
+            "#,
+        )
+        .expect("valid");
+        let actions: Vec<_> = config.custom_commands().map(|c| c.action().unwrap()).collect();
+        assert_eq!(actions.len(), 3);
+        assert_eq!(actions[0], CommandAction::Insert("yo@ejemplo.com"));
+        assert!(matches!(actions[1], CommandAction::Open(items) if items.len() == 2));
+        assert_eq!(actions[2], CommandAction::Task("corre los tests y dime qué falla"));
+        assert!(config.validate().is_empty());
+    }
+
+    #[test]
+    fn broken_custom_commands_are_reported_and_skipped_not_guessed_at() {
+        let config = Config::parse(
+            r#"
+            [[commands]]
+            say = "nada"
+
+            [[commands]]
+            say = "dos cosas"
+            insert = "x"
+            task = "y"
+
+            [[commands]]
+            insert = "sin frase"
+
+            [[commands]]
+            say = "vacío"
+            open = ["Notion", " "]
+
+            [[commands]]
+            say = "ok"
+            insert = "bien"
+
+            [[commands]]
+            say = "OK"
+            insert = "repetido"
+            "#,
+        )
+        .expect("parses");
+        let problems = config.validate();
+        assert!(problems.iter().any(|p| p.contains("\"nada\"") && p.contains("no hace nada")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("dos cosas") && p.contains("una sola")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("falta `say`")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("elemento vacío")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("\"OK\"") && p.contains("repetido")), "{problems:?}");
+        let runnable: Vec<_> = config.custom_commands().map(|c| c.say.as_str()).collect();
+        assert_eq!(runnable, vec!["ok", "OK"], "only the well-formed ones run");
     }
 
     #[test]

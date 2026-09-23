@@ -39,7 +39,7 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 
 **Fuera del plan original, añadido porque el uso lo pidió:** CLI `eva` (`doctor`, `model list/install/verify`,
 `startup enable`, `config`, `intent`, `tasks`, `audit`, `dictionary`, `wake-word`, `health`), gestión de modelos con verificación de tamaño y prueba de
-voz real, configuración en `~/Library/Application Support/EVA01/config.toml` (claves desconocidas
+voz real, órdenes propias (`[[commands]]`: pegar un texto, abrir apps y direcciones, o dar una tarea al agente), configuración en `~/Library/Application Support/EVA01/config.toml` (claves desconocidas
 avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones con hotkey.
 
 ### Lo que la implementación real cambió respecto del plan
@@ -96,6 +96,10 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     a una línea y la pregunta de confirmación de 3 líneas perdía la primera. Se vio al renderizar cada estado
     con `cargo run -p eva-macos --example overlay_gallery -- <carpeta>` (dibuja el panel a PNG en el propio
     proceso, sin permiso de grabación de pantalla). Ahora la altura sale de medir el texto ya envuelto.
+
+12. **`eva intent` ejecutaba.** La regla de oro de la fase 4 era «no ejecuta nada», pero la CLI mandaba el texto por
+    el camino de ejecución: `eva intent "Adán, abre Brave"` abría Brave de verdad y `eva intent "hola"` pegaba en la app
+    activa. Ahora es un ensayo (`InterpretText`: clasifica y responde) y `--run` ejecuta.
 
 ### Lo que falta y por qué
 

@@ -49,6 +49,15 @@ pub enum ShellToWorker {
         /// The text to parse as if it had just been transcribed.
         text: String,
     },
+    /// Say what a string would be understood as — dictation, or which
+    /// command — without doing any of it. The safe cousin of
+    /// [`ShellToWorker::RunIntentText`], and what `eva intent` sends by default.
+    InterpretText {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+        /// The text to classify as if it had just been transcribed.
+        text: String,
+    },
     /// Ask the worker to report its health (models loaded, DB status, etc.).
     HealthCheck {
         /// Correlates this request with its response.
@@ -360,6 +369,7 @@ mod tests {
             ShellToWorker::StopRecording { request_id },
             ShellToWorker::Cancel { request_id },
             ShellToWorker::RunIntentText { request_id, text: "Adán, abre brave".into() },
+            ShellToWorker::InterpretText { request_id, text: "Adán, abre brave".into() },
             ShellToWorker::HealthCheck { request_id },
             ShellToWorker::AddCustomWord { request_id, word: "García".into() },
             ShellToWorker::RemoveCustomWord { request_id, word: "García".into() },
