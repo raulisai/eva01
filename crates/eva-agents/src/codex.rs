@@ -1,7 +1,7 @@
 //! The Codex provider: runs `codex exec --json` and normalizes its JSONL to
 //! [`AgentEvent`]s.
 //!
-//! [`parse_line`] is verified two ways. The thread/turn/error lines are
+//! `parse_line` is verified two ways. The thread/turn/error lines are
 //! checked against a real, captured session, saved at
 //! `tests/fixtures/codex_exec_sample.jsonl` (produced by literally running
 //! `codex exec "di hola en una frase corta" --json --skip-git-repo-check`

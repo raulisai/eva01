@@ -2,7 +2,7 @@
 //! shared by reference: the store, the config, the gateway and the two
 //! services acting through it, the agent registry, the STT model, and the
 //! outgoing event channel. `main.rs` builds one; tests build many through
-//! [`crate::testkit`].
+//! the test kit.
 
 use crate::confirm::ConfirmationBroker;
 use crate::harvest::Harvest;

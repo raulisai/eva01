@@ -9,7 +9,7 @@
 //! deadline, since a `@_cdecl` function cannot itself be `async`), and a
 //! failure of any kind — unavailable, errored, empty output, timed out —
 //! collapses to a single `Err` so `eva_text::clean` degrades to
-//! [`RuleOnlyFormatter`](crate::RuleOnlyFormatter) exactly as it would for
+//! [`RuleOnlyFormatter`] exactly as it would for
 //! any other formatter failure. This struct is never "the only way text
 //! gets formatted."
 

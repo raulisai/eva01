@@ -121,7 +121,7 @@ pub struct TaskRequest {
     pub resume: Option<Resume>,
 }
 
-/// "Adán, <tarea>": resolves the active project and runs a new task there.
+/// "Adán, `tarea`": resolves the active project and runs a new task there.
 pub async fn start_new(
     ctx: &Arc<WorkerContext>,
     request_id: Uuid,

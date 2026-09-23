@@ -35,7 +35,7 @@ const FILLER_WATCHLIST: &[&str] = &["eh", "este", "o sea", "pues", "bueno", "dig
 #[derive(Parser)]
 #[command(name = "eva-eval", about = "Corre el corpus de EVA01 y reporta WER, latencia y muletillas")]
 struct Cli {
-    /// Carpeta con pares <nombre>.wav / <nombre>.txt.
+    /// Carpeta con pares `nombre.wav` / `nombre.txt`.
     #[arg(long, default_value = "eval/corpus")]
     corpus: PathBuf,
 

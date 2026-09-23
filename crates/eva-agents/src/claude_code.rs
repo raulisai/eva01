@@ -1,7 +1,7 @@
 //! The Claude Code provider: runs `claude -p --output-format stream-json
 //! --verbose` and normalizes its JSONL to [`AgentEvent`]s.
 //!
-//! [`parse_line`] is verified against a real, captured session, saved at
+//! `parse_line` is verified against a real, captured session, saved at
 //! `tests/fixtures/claude_stream_sample.jsonl` (produced by literally running
 //! `claude -p "Di hola en una frase corta" --output-format stream-json
 //! --verbose --model claude-haiku-4-5-20251001` on 2026-09-22 and redirecting

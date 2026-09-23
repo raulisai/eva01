@@ -63,7 +63,7 @@ impl AppIndex {
 
     /// Finds the application whose canonical name or an alias best matches
     /// `query`, accent- and case-insensitively. Returns `None` if nothing
-    /// clears [`MATCH_THRESHOLD`].
+    /// clears `MATCH_THRESHOLD`.
     pub fn find(&self, query: &str) -> Option<&AppEntry> {
         let folded_query = fold_diacritics(query);
         if folded_query.is_empty() {

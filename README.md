@@ -131,6 +131,7 @@ shell reinicia solo al worker si muere.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
 eval/generate-synthetic.sh && cargo run --release -p eva-eval -- --corpus eval/audio
 cargo run -p eva-macos --example overlay_gallery -- /tmp/overlay   # el overlay en cada estado, a PNG
 ```
