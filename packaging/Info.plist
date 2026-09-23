@@ -10,6 +10,8 @@
 	<string>EVA01</string>
 	<key>CFBundleExecutable</key>
 	<string>eva-shell</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

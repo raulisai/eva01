@@ -45,7 +45,7 @@ for binary in eva-shell eva-worker eva-mcp eva; do
 done
 cp "$REPO_ROOT/packaging/Info.plist" "$APP_PATH/Contents/Info.plist"
 mkdir -p "$APP_PATH/Contents/Resources"
-cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$APP_PATH/Contents/Resources/"
+cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$REPO_ROOT/packaging/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_PATH/Contents/Info.plist"
 

@@ -13,7 +13,8 @@ La capa de voz de tu Mac, escrita en Rust y en español.
 - **Servidor MCP**: los agentes pueden abrir apps, pegar texto o preguntarte algo por
   las mismas herramientas (y el mismo control de permisos) que tus órdenes de voz.
 
-Requiere una Mac con Apple Silicon y **macOS 26** (Apple Intelligence activado, con
+Requiere una Mac con Apple Silicon, ~1 GB de RAM libre (el modelo de voz se queda cargado; en
+reposo el proceso no gasta CPU) y **macOS 26** (Apple Intelligence activado, con
 español, para el formateo con contexto; sin él, EVA01 sigue dictando con reglas).
 
 ## Instalar
