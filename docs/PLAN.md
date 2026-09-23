@@ -101,6 +101,20 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     el camino de ejecución: `eva intent "Adán, abre Brave"` abría Brave de verdad y `eva intent "hola"` pegaba en la app
     activa. Ahora es un ensayo (`InterpretText`: clasifica y responde) y `--run` ejecuta.
 
+13. **Los dictados largos no funcionaban, y ningún corpus de frases lo iba a mostrar.** `canary-1b-flash` rinde
+    hasta ~25 s por pasada; con voz continua de 91 s el WER fue 110 % (y 29 s de espera), con 227 s, 93 %.
+    `CanarySpeechToText` ahora corta en la pausa más cercana a los 20 s (`eva-audio::segment`): 0 % WER a 91 y
+    227 s, 8,6 s y 21 s. El límite de 2 min de grabación del shell queda así muy dentro del vigilante de 45 s.
+14. **Apple Intelligence tampoco aguanta textos largos**: con 120–190 palabras cambia palabras y la guarda rechaza
+    todo el dictado, que sale sin puntuar. Se formatea por trozos de ≤ 30 palabras (`eva-text::pieces`), cortados
+    en puntos, comas o antes de conjunciones, y las costuras cortadas a media frase se cosen (el punto se vuelve
+    coma y la siguiente palabra recupera su minúscula).
+15. **La guarda de fidelidad tenía dos agujeros**, encontrados con esos dictados largos: comparaba *conjuntos* de
+    palabras (un párrafo repetido que el modelo colapsaba en uno pasaba, porque todas las palabras seguían
+    existiendo) y cualquier punto o coma «justificaba» perder «por», «más» o «dos» (palabras de símbolo). Ahora
+    cuenta ocurrencias (perdonando solo la repetición inmediata, «el el coche») y un símbolo solo cuenta si va
+    *dentro* de una palabra («ejemplo.com», «3,5», «pre-registro»).
+
 ### Lo que falta y por qué
 
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado

@@ -22,7 +22,7 @@
 //! unit test here without needing the model.
 
 use crate::normalize::fold_diacritics;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Words a formatter may remove because they carry no meaning
 /// (`docs/PLAN.md` §2A: "quítalas solo si no cambian el significado").
@@ -126,8 +126,24 @@ const SYMBOL_WORDS: &[&str] = &[
     "dos",
 ];
 
-/// Characters a spoken symbol word becomes.
-const SYMBOL_CHARS: &[char] = &['@', '.', ':', ',', '/', '%', '$', '€', '-', '+', '=', '_'];
+/// Characters a spoken symbol word becomes, wherever they are.
+const SYMBOL_CHARS: &[char] = &['@', ':', '/', '%', '$', '€', '+', '=', '_'];
+
+/// Characters that are a spoken symbol only *inside* a token ("ejemplo.com",
+/// "3,5", "pre-registro"): at the edge of a word they are ordinary
+/// punctuation, which every formatted sentence has.
+const INNER_SYMBOL_CHARS: &[char] = &['.', ',', '-'];
+
+/// Whether the text has a symbol a spoken symbol word could have turned into.
+/// A plain full stop or comma does not count — if it did, "por", "más" or
+/// "dos" could vanish from any punctuated sentence.
+fn has_symbol(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    chars.iter().any(|c| SYMBOL_CHARS.contains(c))
+        || chars
+            .windows(3)
+            .any(|w| INNER_SYMBOL_CHARS.contains(&w[1]) && w[0].is_alphanumeric() && w[2].is_alphanumeric())
+}
 
 /// Checks that `output` is a faithful formatting of `input`.
 ///
@@ -161,9 +177,22 @@ pub(crate) fn check_format(input: &str, output: &str) -> Result<(), String> {
     }
 
     let output_has_digit = output.chars().any(|c| c.is_ascii_digit());
-    let output_has_symbol = output.chars().any(|c| SYMBOL_CHARS.contains(&c));
-    for word in input_words.iter().filter(|w| has_letter(w) && !output_set.contains(w.as_str())) {
-        let word = word.as_str();
+    let output_has_symbol = has_symbol(output);
+    let output_counts = counts(&output_words);
+    let stutters = stutters(&input_words);
+    let input_counts = counts(&input_words);
+    // In the order they were said, so the reason names the first word lost.
+    let mut checked = HashSet::new();
+    for word in input_words.iter().map(String::as_str).filter(|w| has_letter(w) && checked.insert(*w)) {
+        let in_input = input_counts[word];
+        // Counted, not just present: a sentence whose words all occur
+        // elsewhere in a long dictation is still a sentence the model dropped.
+        let missing = in_input.saturating_sub(output_counts.get(word).copied().unwrap_or(0));
+        // "el el coche" said once is one word said twice; losing the echo is fine.
+        let missing = missing.saturating_sub(stutters.get(word).copied().unwrap_or(0));
+        if missing == 0 {
+            continue;
+        }
         // An accent restored on a question word replaced the input's plain
         // spelling, so the plain one is legitimately "missing".
         let replaced_by_accented = output_set.iter().any(|o| QUESTION_WORDS.contains(o) && fold_diacritics(o) == word);
@@ -177,6 +206,26 @@ pub(crate) fn check_format(input: &str, output: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// How many times each word occurs.
+fn counts(words: &[String]) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for word in words {
+        *counts.entry(word.as_str()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// For each word, how many times it was said again straight after itself.
+fn stutters(words: &[String]) -> HashMap<&str, usize> {
+    let mut repeats = HashMap::new();
+    for pair in words.windows(2) {
+        if pair[0] == pair[1] {
+            *repeats.entry(pair[0].as_str()).or_insert(0) += 1;
+        }
+    }
+    repeats
 }
 
 /// Chat-assistant leftovers that no formatting of one dictated line can
@@ -288,6 +337,23 @@ mod tests {
     // ---- the real failures found by measuring the model ----
 
     #[test]
+    fn a_dropped_sentence_is_rejected_even_when_every_word_appears_elsewhere() {
+        let input = "revisa el informe hoy y revisa el informe mañana";
+        let rejected = rejected(input, "Revisa el informe hoy y mañana.");
+        assert!(rejected.contains("perdió"), "{rejected}");
+        // …and a repeated paragraph collapsing into one is the same thing, in the large.
+        let twice = "necesito el informe de ventas. necesito el informe de ventas";
+        assert!(check_format(twice, "Necesito el informe de ventas.").is_err());
+    }
+
+    #[test]
+    fn an_immediate_stutter_may_lose_its_echo_but_nothing_else() {
+        ok("el el coche está roto", "El coche está roto.");
+        ok("es es es muy bueno", "Es muy bueno.");
+        assert!(check_format("el coche y el coche está roto", "El coche y está roto.").is_err());
+    }
+
+    #[test]
     fn a_changed_verb_is_rejected() {
         // "llego en diez minutos" → "Llegué en diez minutos." (same length).
         let reason = rejected("llego en diez minutos", "Llegué en diez minutos.");
@@ -299,6 +365,28 @@ mod tests {
         // "quedamos a las cinco" → "Quédamos a las cinco."
         let reason = rejected("quedamos a las cinco", "Quédamos a las cinco.");
         assert!(reason.contains("quédamos"), "{reason}");
+    }
+
+    #[test]
+    fn ordinary_punctuation_does_not_excuse_dropping_por_mas_or_dos() {
+        // Found on a 70 s dictation: "por si hay que compararlos" came back as
+        // "si hay que compararlos" and the guard let it through, because the
+        // sentence had a full stop and "por" is also a spoken symbol word.
+        for (input, output) in [
+            ("por si hay que compararlos", "Si hay que compararlos."),
+            ("quiero más café", "Quiero café."),
+            ("tengo dos hijos, y un perro", "Tengo hijos, y un perro."),
+        ] {
+            assert!(check_format(input, output).is_err(), "{input} → {output}");
+        }
+    }
+
+    #[test]
+    fn spoken_symbols_still_become_symbols() {
+        ok("mi correo es pedro arroba ejemplo punto com", "Mi correo es pedro@ejemplo.com.");
+        ok("son tres coma cinco", "Son 3,5.");
+        ok("el diez por ciento", "El 10%.");
+        ok("es un pre guion registro", "Es un pre-registro.");
     }
 
     #[test]

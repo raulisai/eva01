@@ -143,11 +143,19 @@ impl SpeechToText for CanarySpeechToText {
 
         let params =
             transcribe_rs::onnx::canary::CanaryParams { language: Some(self.language.clone()), ..Default::default() };
-        let result = model
-            .transcribe_with(&padded_with_silence(samples), &params)
-            .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
-
-        Ok(Transcript { text: result.text })
+        // The model only copes with utterance-sized audio: a long dictation is
+        // fed a piece at a time, cut at its pauses (see `crate::segment`).
+        let mut texts = Vec::new();
+        for piece in crate::segment::split_at_pauses(samples) {
+            let result = model
+                .transcribe_with(&padded_with_silence(piece), &params)
+                .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
+            let text = result.text.trim();
+            if !text.is_empty() {
+                texts.push(text.to_string());
+            }
+        }
+        Ok(Transcript { text: texts.join(" ") })
     }
 }
 

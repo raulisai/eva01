@@ -92,6 +92,29 @@ Lo que enseñó (y quedó corregido o anotado):
 - La única frase que falla es la de 0,5 s ("Ya voy"): con audios tan
   cortos el modelo alucina, con o sin relleno.
 
+## Dictados largos
+
+Un minuto de dictado es uso normal, y era lo que peor funcionaba. Voz continua de `say`
+(Paulina), `canary-1b-flash`, solo reglas:
+
+| Duración | Antes (una sola pasada) | Ahora (cortado en las pausas) |
+|---|---|---|
+| 16 s · 25 s | 3,8 % · 0 % WER | igual (cabe entero) |
+| 91 s | **110 %** WER, 29 s de espera | **0 %**, 8,6 s |
+| 227 s | **93 %**, 96 s | **0 %**, 21 s |
+
+Canary Flash rinde hasta ~25 s por pasada; más allá inventa, se calla o se pone lentísimo
+(el coste crece más rápido que el audio). `CanarySpeechToText` corta el audio en el momento
+más callado cerca de los 20 s (`eva-audio::segment`) y une los textos.
+
+El formateo tenía el mismo problema con textos largos: con 120–190 palabras Apple Intelligence
+cambia palabras («mándamelo» → «mándame») y la guarda rechaza *todo*, dejando el texto sin
+puntuar. Ahora un dictado de más de 40 palabras se formatea en trozos de ≤ 30 (cortados donde el
+modelo de voz ya puso un punto, o en una coma o antes de «porque», «y», «así»…), y un trozo que falla
+solo se cae a sí mismo. Un dictado de 70 s de párrafos distintos: 6,6 s de voz + 8,3 s de formato,
+WER 0,5 %, con puntuación completa. (El modelo del equipo no formatea trozos en paralelo: se probó y
+no gana tiempo.)
+
 ## Cómo cosechar muestras nuevas
 
 1. Usa EVA01 normalmente.

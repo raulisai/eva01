@@ -14,6 +14,7 @@ mod faithfulness;
 pub mod filler;
 pub mod formatter;
 mod normalize;
+mod pieces;
 pub mod remote;
 pub mod style;
 
@@ -53,18 +54,29 @@ pub fn clean_styled(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatte
     let after_fillers = filler::remove_universal_fillers(raw);
     let pre_formatted = dictionary.correct(&after_fillers, 0.88);
 
-    let formatted = match formatter.format_styled(&pre_formatted, style) {
-        Ok(text) if !text.trim().is_empty() || pre_formatted.trim().is_empty() => text,
-        _ => {
-            // Either the formatter errored, or it returned empty output for
-            // non-empty input (an InvalidOutput case worth degrading from
-            // too) — fall back rather than paste nothing.
-            #[allow(clippy::expect_used)] // RuleOnlyFormatter::format_styled never returns Err
-            RuleOnlyFormatter.format_styled(&pre_formatted, style).expect("RuleOnlyFormatter never fails")
-        }
-    };
+    // A long dictation goes to the formatter a piece at a time (see
+    // `pieces`): a piece that fails falls back alone, not the whole text.
+    let pieces = pieces::split_for_formatting(&pre_formatted);
+    let formatted_pieces: Vec<String> =
+        pieces.iter().map(|piece| format_or_fall_back(formatter, &piece.text, style)).collect();
+    let formatted = pieces::stitch(&pieces, &formatted_pieces);
 
     CleanedTranscript { raw: raw.to_string(), pre_formatted, formatted }
+}
+
+fn format_or_fall_back(formatter: &dyn Formatter, text: &str, style: Style) -> String {
+    match formatter.format_styled(text, style) {
+        Ok(formatted) if !formatted.trim().is_empty() || text.trim().is_empty() => formatted,
+        // Either the formatter errored, or it returned empty output for
+        // non-empty input (an InvalidOutput case worth degrading from
+        // too) — fall back rather than paste nothing.
+        _ => fall_back(text, style),
+    }
+}
+
+fn fall_back(text: &str, style: Style) -> String {
+    #[allow(clippy::expect_used)] // RuleOnlyFormatter::format_styled never returns Err
+    RuleOnlyFormatter.format_styled(text, style).expect("RuleOnlyFormatter never fails")
 }
 
 #[cfg(test)]
@@ -117,6 +129,52 @@ mod tests {
         assert_eq!(terminal.formatted, "git status", "a terminal must not get a capital or a period even on fallback");
         let casual = clean_styled("voy para allá", &dict, &AlwaysFails, Style::Casual);
         assert_eq!(casual.formatted, "Voy para allá");
+    }
+
+    /// Formats like a good model would, but refuses one particular piece, and
+    /// remembers every piece it was given.
+    struct FailsOn {
+        marker: &'static str,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+    impl Formatter for FailsOn {
+        fn format(&self, text: &str) -> Result<String, FormatError> {
+            self.seen.lock().unwrap().push(text.to_string());
+            if text.contains(self.marker) {
+                return Err(FormatError::InvalidOutput("no".into()));
+            }
+            RuleOnlyFormatter.format(text).map(|t| format!("«{t}»"))
+        }
+    }
+
+    #[test]
+    fn a_long_dictation_is_formatted_in_pieces_and_one_bad_piece_falls_back_alone() {
+        let text = (0..100).map(|i| format!("p{i}")).collect::<Vec<_>>().join(" ");
+        let formatter = FailsOn { marker: "p60", seen: Default::default() };
+        let result = clean(&text, &Dictionary::new(Vec::<String>::new()), &formatter);
+
+        let seen = formatter.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4, "four pieces of 25 words");
+        assert!(seen.iter().all(|p| p.split_whitespace().count() <= 30));
+        // The piece with p60 fell back to rules; the other three kept the model's version.
+        assert_eq!(result.formatted.matches('«').count(), 3, "{}", result.formatted);
+        assert_eq!(
+            result
+                .formatted
+                .replace(['«', '»', '.', ','], "")
+                .split_whitespace()
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>(),
+            text.split_whitespace().map(str::to_string).collect::<Vec<_>>(),
+            "every word survives, in order"
+        );
+    }
+
+    #[test]
+    fn a_short_dictation_is_still_one_call() {
+        let formatter = FailsOn { marker: "nunca", seen: Default::default() };
+        clean("hola qué tal", &Dictionary::new(Vec::<String>::new()), &formatter);
+        assert_eq!(formatter.seen.lock().unwrap().len(), 1);
     }
 
     #[test]
