@@ -126,7 +126,8 @@ mod tests {
     #[tokio::test]
     async fn adding_an_empty_word_is_a_clear_error_not_a_silent_no_op() {
         let mut rig = Rig::new();
-        let events = rig.run(ShellToWorker::AddCustomWord { request_id: Uuid::new_v4(), word: "   ".to_string() }).await;
+        let events =
+            rig.run(ShellToWorker::AddCustomWord { request_id: Uuid::new_v4(), word: "   ".to_string() }).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
     }
 
@@ -135,7 +136,9 @@ mod tests {
         let mut rig = Rig::new();
         rig.ctx.store.add_custom_word("Núñez").expect("must succeed");
         let events = rig.run(ShellToWorker::ListCustomWords { request_id: Uuid::new_v4() }).await;
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::CustomWords { words, .. } if words == &vec!["Núñez".to_string()])));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::CustomWords { words, .. } if words == &vec!["Núñez".to_string()])));
     }
 
     #[tokio::test]
@@ -159,7 +162,9 @@ mod tests {
 
     #[tokio::test]
     async fn health_reports_the_model_the_agents_the_formatter_and_the_config_warnings() {
-        let registry = eva_agents::AgentRegistry::new(vec![Box::new(eva_agents::mock::MockProvider::always_completes("codex", "listo"))]);
+        let registry = eva_agents::AgentRegistry::new(vec![Box::new(
+            eva_agents::mock::MockProvider::always_completes("codex", "listo"),
+        )]);
         let mut rig = Rig::builder()
             .agents(registry)
             .config_warnings(vec!["agents.priority: no conozco el agente \"x\"".into()])
@@ -167,7 +172,9 @@ mod tests {
         let request_id = Uuid::new_v4();
         let events = rig.run(ShellToWorker::HealthCheck { request_id }).await;
 
-        let Some(WorkerToShell::Health { report, .. }) = events.into_iter().find(|e| matches!(e, WorkerToShell::Health { .. })) else {
+        let Some(WorkerToShell::Health { report, .. }) =
+            events.into_iter().find(|e| matches!(e, WorkerToShell::Health { .. }))
+        else {
             panic!("a health report must come back");
         };
         assert!(!report.stt_model_loaded);

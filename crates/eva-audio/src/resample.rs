@@ -52,10 +52,7 @@ pub fn downmix_to_mono(input: &[f32], channels: u16) -> Vec<f32> {
         return input.to_vec();
     }
     let channels = channels as usize;
-    input
-        .chunks(channels)
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect()
+    input.chunks(channels).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect()
 }
 
 #[cfg(test)]

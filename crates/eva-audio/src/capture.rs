@@ -104,9 +104,7 @@ impl AudioSource for MicrophoneSource {
 
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoInputDevice)?;
-        let config = device
-            .default_input_config()
-            .map_err(|e| AudioError::ConfigFailed(e.to_string()))?;
+        let config = device.default_input_config().map_err(|e| AudioError::ConfigFailed(e.to_string()))?;
 
         let input_rate = config.sample_rate();
         let channels = config.channels();

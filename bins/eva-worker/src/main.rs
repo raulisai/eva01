@@ -41,7 +41,11 @@ async fn main() {
             // exit so the restart-with-backoff loop in eva-shell takes over.
             let _ = write_line(
                 &mut tokio::io::stdout(),
-                &WorkerToShell::Error { request_id: None, message: format!("eva-worker no pudo iniciar: {e}"), recoverable: false },
+                &WorkerToShell::Error {
+                    request_id: None,
+                    message: format!("eva-worker no pudo iniciar: {e}"),
+                    recoverable: false,
+                },
             )
             .await;
             tracing::error!("no se pudo construir el contexto del worker: {e}");

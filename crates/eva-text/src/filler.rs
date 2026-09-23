@@ -13,10 +13,8 @@ use std::sync::LazyLock;
 
 /// Interjections that are not a lexical word in Spanish or English in any
 /// position, so removing them can never change a sentence's meaning.
-const UNIVERSAL_FILLERS: &[&str] = &[
-    "eh", "ehh", "ehm", "ehem", "ah", "ahh", "ahm", "uh", "uhh", "uhm", "umm", "hmm", "hm", "mmm",
-    "mm",
-];
+const UNIVERSAL_FILLERS: &[&str] =
+    &["eh", "ehh", "ehm", "ehem", "ah", "ahh", "ahm", "uh", "uhh", "uhm", "umm", "hmm", "hm", "mmm", "mm"];
 
 /// One compiled case-insensitive, whole-word regex per filler, built once.
 /// Whole-word matching (`\b…\b`) is what stops "ah" from matching inside
@@ -50,14 +48,8 @@ mod tests {
 
     #[test]
     fn removes_pure_interjections_in_spanish_and_english() {
-        assert_eq!(
-            remove_universal_fillers("eh mándale el archivo a Juan"),
-            "mándale el archivo a Juan"
-        );
-        assert_eq!(
-            remove_universal_fillers("send it, uhm, tomorrow"),
-            "send it, tomorrow"
-        );
+        assert_eq!(remove_universal_fillers("eh mándale el archivo a Juan"), "mándale el archivo a Juan");
+        assert_eq!(remove_universal_fillers("send it, uhm, tomorrow"), "send it, tomorrow");
     }
 
     #[test]
@@ -77,10 +69,7 @@ mod tests {
 
     #[test]
     fn collapses_the_whitespace_a_removed_filler_leaves_behind() {
-        assert_eq!(
-            remove_universal_fillers("hola   eh   mundo"),
-            "hola mundo"
-        );
+        assert_eq!(remove_universal_fillers("hola   eh   mundo"), "hola mundo");
     }
 
     #[test]

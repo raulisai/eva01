@@ -14,7 +14,7 @@ pub mod transcribe;
 pub mod vad;
 
 pub use capture::{AudioError, AudioSource, CaptureHandle, MicrophoneSource, Rechunker, TARGET_SAMPLE_RATE};
-pub use transcribe::{CanarySpeechToText, SpeechToText, Transcript, TranscribeError, WhisperSpeechToText};
+pub use transcribe::{CanarySpeechToText, SpeechToText, TranscribeError, Transcript, WhisperSpeechToText};
 #[cfg(feature = "hands-free-vad")]
 pub use vad::SileroVad;
 pub use vad::{SegmentEvent, Segmenter, SegmenterConfig, SpeechProbability, VadError};

@@ -139,7 +139,12 @@ pub async fn start_new(
 /// CLI would not find the session at all). No prior session is a clear,
 /// immediate error, not a silent fallback to starting something new —
 /// "continúa" said nothing to start fresh with.
-pub async fn continue_last(ctx: &Arc<WorkerContext>, request_id: Uuid, intent_json: serde_json::Value, extra_prompt: String) {
+pub async fn continue_last(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    intent_json: serde_json::Value,
+    extra_prompt: String,
+) {
     let (project_dir, _why) = ctx.resolve_project().await;
     let key = project_dir.to_string_lossy().into_owned();
 
@@ -147,7 +152,8 @@ pub async fn continue_last(ctx: &Arc<WorkerContext>, request_id: Uuid, intent_js
         Ok(Some(session)) => session,
         Ok(None) => {
             let project = project_dir.file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().into_owned());
-            ctx.events.fail(request_id, format!("no hay ninguna tarea de agente que continuar en el proyecto {project}"));
+            ctx.events
+                .fail(request_id, format!("no hay ninguna tarea de agente que continuar en el proyecto {project}"));
             return;
         }
         Err(e) => {
@@ -162,7 +168,8 @@ pub async fn continue_last(ctx: &Arc<WorkerContext>, request_id: Uuid, intent_js
         provider_id: last.provider_id,
         work_dir: last.work_dir.map(PathBuf::from),
     };
-    run(ctx, TaskRequest { request_id, intent_json, prompt, forced_provider: None, project_dir, resume: Some(resume) }).await;
+    run(ctx, TaskRequest { request_id, intent_json, prompt, forced_provider: None, project_dir, resume: Some(resume) })
+        .await;
 }
 
 /// Runs one task from authorization to the final announcement. Returns when
@@ -177,7 +184,8 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
         return;
     }
 
-    let action = Action::new(ActionKind::AgentTask, Origin::Voice, req.prompt.as_str()).with_intent(req.intent_json.clone());
+    let action =
+        Action::new(ActionKind::AgentTask, Origin::Voice, req.prompt.as_str()).with_intent(req.intent_json.clone());
     let ticket = match ctx.gateway.authorize(&action).await {
         Verdict::Allowed(ticket) => ticket,
         Verdict::Refused { reason } => {
@@ -223,7 +231,11 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
                 tracing::warn!("no se pudo actualizar el agente de la tarea: {e}");
             }
         }
-        events.emit(WorkerToShell::TaskStarted { request_id: id, provider: provider.id().to_string(), prompt: req.prompt.clone() });
+        events.emit(WorkerToShell::TaskStarted {
+            request_id: id,
+            provider: provider.id().to_string(),
+            prompt: req.prompt.clone(),
+        });
 
         let attempt = run_one(ctx, *provider, &req, &prepared, &project_key, cancel_rx).await;
         let (attempt_outcome, did_work) = match attempt {
@@ -239,7 +251,8 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
         outcome = attempt_outcome;
         if failed_early && !is_last && forced.is_none() {
             let next = candidates[index + 1].id();
-            let reason = if let AgentOutcome::Failed { message } = &outcome { short(message, 120) } else { String::new() };
+            let reason =
+                if let AgentOutcome::Failed { message } = &outcome { short(message, 120) } else { String::new() };
             emit_notice(ctx, id, &format!("{} no pudo arrancar ({reason}); pruebo con {next}", provider.id()));
             continue;
         }
@@ -341,9 +354,9 @@ async fn run_one(
     let did_work = forwarder.await.unwrap_or(false);
 
     let outcome = match outcome {
-        AgentOutcome::Cancelled if timed_out.load(Ordering::SeqCst) => AgentOutcome::Failed {
-            message: format!("se agotó el tiempo límite de {} minutos", limit_secs / 60),
-        },
+        AgentOutcome::Cancelled if timed_out.load(Ordering::SeqCst) => {
+            AgentOutcome::Failed { message: format!("se agotó el tiempo límite de {} minutos", limit_secs / 60) }
+        }
         other => other,
     };
     Attempt::Ran { outcome, did_work }
@@ -386,7 +399,8 @@ async fn forward_events(
 }
 
 fn save_session(ctx: &WorkerContext, project_key: &str, provider_id: &str, session_id: Uuid, work_dir: &Path) {
-    if let Err(e) = ctx.store.save_last_session(project_key, provider_id, session_id, Some(&work_dir.to_string_lossy())) {
+    if let Err(e) = ctx.store.save_last_session(project_key, provider_id, session_id, Some(&work_dir.to_string_lossy()))
+    {
         tracing::warn!("no se pudo guardar la sesión del agente para 'continúa': {e}");
     }
 }
@@ -508,8 +522,8 @@ fn chrono_now() -> chrono::DateTime<chrono::Utc> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
     use super::*;
-    use eva_agents::AgentRegistry;
     use async_trait::async_trait;
+    use eva_agents::AgentRegistry;
 
     #[test]
     fn registering_lists_a_running_task_and_finishing_removes_it() {
@@ -542,7 +556,8 @@ mod tests {
     #[test]
     fn cancel_all_signals_every_running_task() {
         let registry = TaskRegistry::default();
-        let mut receivers: Vec<_> = (0..3).map(|i| registry.register(Uuid::new_v4(), "codex", &format!("t{i}"))).collect();
+        let mut receivers: Vec<_> =
+            (0..3).map(|i| registry.register(Uuid::new_v4(), "codex", &format!("t{i}"))).collect();
         assert_eq!(registry.cancel_all(), 3);
         assert!(receivers.iter_mut().all(|rx| rx.try_recv().is_ok()));
         assert_eq!(registry.cancel_all(), 0);
@@ -594,7 +609,9 @@ mod tests {
         let mut rig = Rig::new();
         let (_, command) = ask("Adán, agrega tests al login");
         let events = rig.run(command).await;
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("disponible"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("disponible"))));
     }
 
     #[tokio::test]
@@ -604,7 +621,8 @@ mod tests {
         let (request_id, command) = ask("Adán, agrega tests");
         let events = rig.run(command).await;
 
-        let started = events.iter().position(|e| matches!(e, WorkerToShell::TaskStarted { provider, .. } if provider == "codex"));
+        let started =
+            events.iter().position(|e| matches!(e, WorkerToShell::TaskStarted { provider, .. } if provider == "codex"));
         let ended = events.iter().position(|e| matches!(e, WorkerToShell::TaskFinished { .. }));
         assert!(started.expect("TaskStarted") < ended.expect("TaskFinished"));
         assert_eq!(finished(&events), Some((true, "3 archivos cambiados".to_string())));
@@ -628,7 +646,10 @@ mod tests {
         let (dictation_id, dictation) = ask("hola mundo");
         crate::handler::handle(&rig.ctx, dictation, None);
         let seen = rig.until(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), request_id: Some(id) } if *id == dictation_id)).await;
-        assert!(seen.iter().any(|e| matches!(e, WorkerToShell::Transcript { .. })), "the dictation must not wait for the agent");
+        assert!(
+            seen.iter().any(|e| matches!(e, WorkerToShell::Transcript { .. })),
+            "the dictation must not wait for the agent"
+        );
         assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Hola mundo. ".to_string())]);
 
         // The task is listed as running…
@@ -663,13 +684,17 @@ mod tests {
         crate::handler::handle(&rig.ctx, ShellToWorker::CancelAllTasks, None);
         rig.ctx.wait_idle().await;
         let events = rig.drain();
-        assert_eq!(events.iter().filter(|e| matches!(e, WorkerToShell::TaskFinished { success: false, .. })).count(), 2);
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, WorkerToShell::TaskFinished { success: false, .. })).count(),
+            2
+        );
     }
 
     #[tokio::test]
     async fn a_task_that_runs_past_the_time_limit_is_stopped_and_says_so() {
         let slow = Arc::new(MockProvider::never_finishes("codex"));
-        let mut rig = Rig::builder().agents(registry_of(&[&slow])).configure(|c| c.feedback.task_timeout_secs = 1).build();
+        let mut rig =
+            Rig::builder().agents(registry_of(&[&slow])).configure(|c| c.feedback.task_timeout_secs = 1).build();
         let (_, command) = ask("Adán, refactoriza todo");
         let events = rig.run(command).await;
         let (success, summary) = finished(&events).expect("the timeout must end the task");
@@ -687,11 +712,21 @@ mod tests {
 
         assert_eq!(finished(&events), Some((true, "hecho".to_string())));
         assert_eq!(working.received_tasks().len(), 1, "the second agent must have taken the task");
-        let notice = events.iter().any(|e| matches!(e, WorkerToShell::AgentEvent { event_json, .. }
-            if event_json["text"].as_str().is_some_and(|t| t.contains("pruebo con claude_code"))));
+        let notice = events.iter().any(|e| {
+            matches!(e, WorkerToShell::AgentEvent { event_json, .. }
+            if event_json["text"].as_str().is_some_and(|t| t.contains("pruebo con claude_code")))
+        });
         assert!(notice, "the user must be told why the first agent was skipped");
         assert_eq!(rig.ctx.store.recent_tasks(1).expect("history")[0].provider_id, "claude_code");
-        let providers: Vec<_> = events.iter().filter_map(|e| match e { WorkerToShell::TaskStarted { provider, request_id: id, .. } if *id == request_id => Some(provider.as_str()), _ => None }).collect();
+        let providers: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                WorkerToShell::TaskStarted { provider, request_id: id, .. } if *id == request_id => {
+                    Some(provider.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         assert_eq!(providers, vec!["codex", "claude_code"]);
     }
 
@@ -748,7 +783,9 @@ mod tests {
         let mut rig = Rig::builder().agents(registry_of(&[&codex])).build();
         let (_, command) = ask("Adán");
         let events = rig.run(command).await;
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("qué debo"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("qué debo"))));
         assert!(codex.received_tasks().is_empty());
     }
 
@@ -764,7 +801,9 @@ mod tests {
         let (_, command) = ask("Adán, agrega tests");
         let events = rig.run_answering(command, false).await;
 
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("agrega tests"))));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("agrega tests"))
+        ));
         assert!(codex.received_tasks().is_empty());
     }
 
@@ -796,17 +835,21 @@ mod tests {
         rig.run(command).await;
 
         let calls = rig.desktop.calls();
-        assert!(calls.contains(&Call::Notify("EVA01: tarea lista".to_string(), "Agregué tres tests. Todo pasa.".to_string())), "{calls:?}");
+        assert!(
+            calls.contains(&Call::Notify(
+                "EVA01: tarea lista".to_string(),
+                "Agregué tres tests. Todo pasa.".to_string()
+            )),
+            "{calls:?}"
+        );
         assert!(calls.contains(&Call::Speak("Terminé. Agregué tres tests".to_string())), "{calls:?}");
     }
 
     #[tokio::test]
     async fn a_cancelled_task_is_not_announced() {
         let slow = Arc::new(MockProvider::never_finishes("codex"));
-        let mut rig = Rig::builder()
-            .agents(registry_of(&[&slow]))
-            .configure(|c| c.feedback.speak_task_results = true)
-            .build();
+        let mut rig =
+            Rig::builder().agents(registry_of(&[&slow])).configure(|c| c.feedback.speak_task_results = true).build();
         let (task_id, command) = ask("Adán, refactoriza el módulo");
         crate::handler::handle(&rig.ctx, command, None);
         rig.until(|e| matches!(e, WorkerToShell::TaskStarted { .. })).await;
@@ -836,7 +879,10 @@ mod tests {
         let codex = Arc::new(MockProvider::new(
             "codex",
             ProviderStatus::Active { version: "mock".into() },
-            vec![(vec![AgentEvent::SessionAssigned { id: thread.to_string() }], AgentOutcome::Completed { summary: None })],
+            vec![(
+                vec![AgentEvent::SessionAssigned { id: thread.to_string() }],
+                AgentOutcome::Completed { summary: None },
+            )],
         ));
         let mut rig = Rig::builder().agents(registry_of(&[&codex])).build();
         let (request_id, command) = ask("Adán, arregla el login");
@@ -852,7 +898,9 @@ mod tests {
         let mut rig = Rig::new();
         let (_, command) = ask("Adán, continúa");
         let events = rig.run(command).await;
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("continuar"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("continuar"))));
     }
 
     #[tokio::test]
@@ -861,7 +909,10 @@ mod tests {
             "codex",
             ProviderStatus::Active { version: "mock".into() },
             vec![
-                (vec![AgentEvent::SessionAssigned { id: "01a0c7b4-347f-7dd3-8108-1649df00c5a6".into() }], AgentOutcome::Completed { summary: None }),
+                (
+                    vec![AgentEvent::SessionAssigned { id: "01a0c7b4-347f-7dd3-8108-1649df00c5a6".into() }],
+                    AgentOutcome::Completed { summary: None },
+                ),
                 (Vec::new(), AgentOutcome::Completed { summary: Some("seguí".into()) }),
             ],
         ));
@@ -877,7 +928,10 @@ mod tests {
         let tasks = codex.received_tasks();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].resume_session_id, None);
-        assert_eq!(tasks[1].resume_session_id, Some(Uuid::parse_str("01a0c7b4-347f-7dd3-8108-1649df00c5a6").expect("uuid")));
+        assert_eq!(
+            tasks[1].resume_session_id,
+            Some(Uuid::parse_str("01a0c7b4-347f-7dd3-8108-1649df00c5a6").expect("uuid"))
+        );
         assert_eq!(tasks[1].prompt, "continúa");
         assert!(claude.received_tasks().is_empty(), "resuming on the wrong CLI would not find the session");
     }
@@ -899,7 +953,8 @@ mod tests {
     // ---- worktrees, with a real git repository ----
 
     async fn git(dir: &Path, args: &[&str]) {
-        let status = tokio::process::Command::new("git").arg("-C").arg(dir).args(args).status().await.expect("git runs");
+        let status =
+            tokio::process::Command::new("git").arg("-C").arg(dir).args(args).status().await.expect("git runs");
         assert!(status.success(), "git {args:?} failed");
     }
 
@@ -977,7 +1032,10 @@ mod tests {
         let record = &rig.ctx.store.recent_tasks(1).expect("history")[0];
         let branch = record.branch.clone().expect("the branch is recorded");
         assert!(summary.contains(&branch));
-        assert!(Path::new(record.work_dir.as_deref().expect("work dir")).join("nuevo.rs").exists(), "the work is kept for review");
+        assert!(
+            Path::new(record.work_dir.as_deref().expect("work dir")).join("nuevo.rs").exists(),
+            "the work is kept for review"
+        );
         assert!(!project.path().join("nuevo.rs").exists(), "the user's own tree was never touched");
     }
 
@@ -1042,7 +1100,9 @@ mod tests {
         rig.run(command).await;
 
         let events = rig.run(ShellToWorker::ListTasks { request_id: Uuid::new_v4() }).await;
-        let Some(WorkerToShell::TaskList { tasks, .. }) = events.into_iter().find(|e| matches!(e, WorkerToShell::TaskList { .. })) else {
+        let Some(WorkerToShell::TaskList { tasks, .. }) =
+            events.into_iter().find(|e| matches!(e, WorkerToShell::TaskList { .. }))
+        else {
             panic!("no task list")
         };
         assert_eq!(tasks.len(), 1);

@@ -86,10 +86,7 @@ fn main() {
     };
 
     if samples.is_empty() {
-        println!(
-            "el corpus en {} está vacío (o solo tiene .wav sin su .txt de referencia).",
-            cli.corpus.display()
-        );
+        println!("el corpus en {} está vacío (o solo tiene .wav sin su .txt de referencia).", cli.corpus.display());
         println!("agrega pares <nombre>.wav / <nombre>.txt — ver eval/README.md.");
         return;
     }
@@ -227,7 +224,11 @@ fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool
     let filler_count = results.iter().filter(|r| r.has_surviving_filler).count();
 
     println!("\n--- resumen ---");
-    println!("WER promedio:                  {:.1}%   ({perfect}/{} sin ningún error)", mean_wer * 100.0, results.len());
+    println!(
+        "WER promedio:                  {:.1}%   ({perfect}/{} sin ningún error)",
+        mean_wer * 100.0,
+        results.len()
+    );
     println!(
         "Voz      p50 / p95:            {} / {}",
         fmt(percentile::percentile(&stt, 50.0)),

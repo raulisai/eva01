@@ -83,7 +83,9 @@ mod tests {
 
     #[test]
     fn combinations_parse_in_the_ways_people_write_them() {
-        for spec in ["cmd+shift+space", "Cmd+Shift+Space", "super+shift+space", "alt+space", "option+space", "ctrl+alt+d"] {
+        for spec in
+            ["cmd+shift+space", "Cmd+Shift+Space", "super+shift+space", "alt+space", "option+space", "ctrl+alt+d"]
+        {
             assert!(matches!(parse_dictation(spec), Ok(DictationKey::Combo(_))), "{spec}");
         }
     }

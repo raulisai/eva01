@@ -27,9 +27,8 @@ pub fn set<T: Serialize>(conn: &Connection, key: &str, value: &T) -> Result<(), 
 /// — this can only happen if something else wrote an incompatible value under
 /// the same key, since [`set`] always round-trips cleanly.
 pub fn get<T: DeserializeOwned>(conn: &Connection, key: &str) -> Result<Option<T>, StoreError> {
-    let raw: Option<String> = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0))
-        .optional()?;
+    let raw: Option<String> =
+        conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional()?;
 
     match raw {
         Some(json) => Ok(Some(serde_json::from_str(&json)?)),
@@ -59,14 +58,10 @@ mod tests {
     #[test]
     fn set_then_get_round_trips_a_struct() {
         let conn = open_in_memory().expect("in-memory open must succeed");
-        let prefs = AgentPreferences {
-            default_provider: "codex".into(),
-            worktree_by_default: true,
-        };
+        let prefs = AgentPreferences { default_provider: "codex".into(), worktree_by_default: true };
         set(&conn, "agent_preferences", &prefs).expect("set must succeed");
 
-        let read_back: Option<AgentPreferences> =
-            get(&conn, "agent_preferences").expect("get must succeed");
+        let read_back: Option<AgentPreferences> = get(&conn, "agent_preferences").expect("get must succeed");
         assert_eq!(read_back, Some(prefs));
     }
 

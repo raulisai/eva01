@@ -50,7 +50,12 @@ pub fn menu_spec(view: &TrayView) -> Vec<Item> {
     let mut items = vec![Item::Label(format!("EVA01 — {}", view.status)), Item::Separator];
 
     for task in &view.running {
-        items.push(Item::Label(format!("▶ {} — {} ({})", provider_name(&task.provider), short(&task.prompt, 46), age(task.age_secs))));
+        items.push(Item::Label(format!(
+            "▶ {} — {} ({})",
+            provider_name(&task.provider),
+            short(&task.prompt, 46),
+            age(task.age_secs)
+        )));
     }
     items.push(Item::Action {
         id: id::CANCEL_TASKS,
@@ -262,7 +267,8 @@ mod tests {
     #[test]
     fn the_title_counts_running_tasks_and_is_absent_with_none() {
         assert_eq!(title_for(&view(vec![], vec![])), None);
-        let running = vec![task("codex", "a", TaskState::Running, None, 1), task("codex", "b", TaskState::Running, None, 2)];
+        let running =
+            vec![task("codex", "a", TaskState::Running, None, 1), task("codex", "b", TaskState::Running, None, 2)];
         assert_eq!(title_for(&view(running, vec![])), Some("▶2".to_string()));
     }
 

@@ -88,10 +88,8 @@ pub fn log_decision(
 /// # Errors
 /// Returns [`StoreError::NotFound`] if `id` does not match a logged entry.
 pub fn record_result(conn: &Connection, id: Uuid, summary: &str) -> Result<(), StoreError> {
-    let updated = conn.execute(
-        "UPDATE audit_log SET result_summary = ?1 WHERE id = ?2",
-        params![summary, id.to_string()],
-    )?;
+    let updated =
+        conn.execute("UPDATE audit_log SET result_summary = ?1 WHERE id = ?2", params![summary, id.to_string()])?;
     if updated == 0 {
         return Err(StoreError::NotFound(id.to_string()));
     }
@@ -131,9 +129,8 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditRecord> {
         id: parse_uuid(&id_text, 0)?,
         created_at: parse_datetime(&created_at_text, 1)?,
         transcript_id: transcript_id_text.map(|t| parse_uuid(&t, 2)).transpose()?,
-        intent_json: serde_json::from_str(&intent_text).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?,
+        intent_json: serde_json::from_str(&intent_text)
+            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e)))?,
         decision: Decision::from_str(&decision_text).ok_or_else(|| {
             rusqlite::Error::FromSqlConversionFailure(
                 4,
@@ -146,17 +143,14 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditRecord> {
 }
 
 fn parse_uuid(text: &str, col: usize) -> rusqlite::Result<Uuid> {
-    Uuid::parse_str(text).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-    })
+    Uuid::parse_str(text)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e)))
 }
 
 fn parse_datetime(text: &str, col: usize) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-        })
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e)))
 }
 
 #[cfg(test)]
@@ -212,11 +206,9 @@ mod tests {
     #[test]
     fn links_to_a_transcript_when_one_is_given() {
         let conn = open_in_memory().expect("in-memory open must succeed");
-        let transcript_id =
-            crate::transcripts::save(&conn, "raw", "pre", "Formatted.").expect("save must succeed");
+        let transcript_id = crate::transcripts::save(&conn, "raw", "pre", "Formatted.").expect("save must succeed");
         let intent = serde_json::json!({"kind": "dictation"});
-        let id = log_decision(&conn, Some(transcript_id), &intent, Decision::AutoApproved)
-            .expect("log must succeed");
+        let id = log_decision(&conn, Some(transcript_id), &intent, Decision::AutoApproved).expect("log must succeed");
 
         let found = find(&conn, id).expect("find must succeed").expect("must exist");
         assert_eq!(found.transcript_id, Some(transcript_id));

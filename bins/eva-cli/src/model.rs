@@ -22,12 +22,7 @@ pub fn list() -> i32 {
     println!("Modelos de voz (se instalan en {}/models):\n", support.display());
     for spec in models::MODELS {
         let installed = spec.is_installed(&models::model_dir(&support, spec.id));
-        println!(
-            "  {} {:<18} {}",
-            if installed { "✓" } else { "·" },
-            spec.id,
-            spec.description
-        );
+        println!("  {} {:<18} {}", if installed { "✓" } else { "·" }, spec.id, spec.description);
     }
     println!("\nInstala uno con: eva model install <nombre>");
     0
@@ -36,7 +31,10 @@ pub fn list() -> i32 {
 /// `eva model install <id>`.
 pub fn install(id: &str, force: bool) -> i32 {
     let Some(spec) = models::find(id) else {
-        eprintln!("no conozco el modelo «{id}». Los que hay: {}", models::MODELS.iter().map(|m| m.id).collect::<Vec<_>>().join(", "));
+        eprintln!(
+            "no conozco el modelo «{id}». Los que hay: {}",
+            models::MODELS.iter().map(|m| m.id).collect::<Vec<_>>().join(", ")
+        );
         return 2;
     };
     let dir = models::model_dir(&support_dir(), spec.id);
@@ -141,7 +139,10 @@ fn verify_dir(dir: &Path) -> i32 {
         println!("✓ el modelo funciona ({:.0}% de las palabras coinciden).", overlap * 100.0);
         0
     } else {
-        eprintln!("✗ el modelo cargó pero la transcripción no se parece a lo dicho ({:.0}% de coincidencia).", overlap * 100.0);
+        eprintln!(
+            "✗ el modelo cargó pero la transcripción no se parece a lo dicho ({:.0}% de coincidencia).",
+            overlap * 100.0
+        );
         1
     }
 }

@@ -30,27 +30,100 @@ const FILLERS: &[&str] = &["eh", "ehm", "em", "mm", "mmm", "este", "pues", "buen
 
 /// Question words whose accent the model is asked to add: dictation often
 /// arrives without it ("cuando vas a llegar" → "¿Cuándo vas a llegar?").
-const QUESTION_WORDS: &[&str] = &[
-    "qué", "cómo", "cuándo", "dónde", "quién", "quiénes", "cuál", "cuáles", "cuánto", "cuánta", "cuántos", "cuántas",
-];
+const QUESTION_WORDS: &[&str] =
+    &["qué", "cómo", "cuándo", "dónde", "quién", "quiénes", "cuál", "cuáles", "cuánto", "cuánta", "cuántos", "cuántas"];
 
 /// Words that turn into digits when the model writes numbers as figures
 /// ("diez y media" → "10:30"). Only droppable when the output has a digit.
 const NUMBER_WORDS: &[&str] = &[
-    "cero", "un", "uno", "una", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once",
-    "doce", "trece", "catorce", "quince", "dieciséis", "diecisiete", "dieciocho", "diecinueve", "veinte",
-    "veintiuno", "veintidós", "veintitrés", "veinticuatro", "veinticinco", "veintiséis", "veintisiete",
-    "veintiocho", "veintinueve", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa",
-    "cien", "ciento", "doscientos", "doscientas", "trescientos", "trescientas", "cuatrocientos", "cuatrocientas",
-    "quinientos", "quinientas", "seiscientos", "seiscientas", "setecientos", "setecientas", "ochocientos",
-    "ochocientas", "novecientos", "novecientas", "mil", "millón", "millones", "y", "media", "cuarto", "con",
+    "cero",
+    "un",
+    "uno",
+    "una",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciséis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiuno",
+    "veintidós",
+    "veintitrés",
+    "veinticuatro",
+    "veinticinco",
+    "veintiséis",
+    "veintisiete",
+    "veintiocho",
+    "veintinueve",
+    "treinta",
+    "cuarenta",
+    "cincuenta",
+    "sesenta",
+    "setenta",
+    "ochenta",
+    "noventa",
+    "cien",
+    "ciento",
+    "doscientos",
+    "doscientas",
+    "trescientos",
+    "trescientas",
+    "cuatrocientos",
+    "cuatrocientas",
+    "quinientos",
+    "quinientas",
+    "seiscientos",
+    "seiscientas",
+    "setecientos",
+    "setecientas",
+    "ochocientos",
+    "ochocientas",
+    "novecientos",
+    "novecientas",
+    "mil",
+    "millón",
+    "millones",
+    "y",
+    "media",
+    "cuarto",
+    "con",
 ];
 
 /// Words that turn into symbols ("ana arroba ejemplo punto com" →
 /// "ana@ejemplo.com"). Only droppable when the output has such a symbol.
 const SYMBOL_WORDS: &[&str] = &[
-    "arroba", "punto", "puntos", "coma", "guion", "guión", "barra", "por", "ciento", "porciento", "más", "menos",
-    "igual", "dólar", "dólares", "euro", "euros", "signo", "dos",
+    "arroba",
+    "punto",
+    "puntos",
+    "coma",
+    "guion",
+    "guión",
+    "barra",
+    "por",
+    "ciento",
+    "porciento",
+    "más",
+    "menos",
+    "igual",
+    "dólar",
+    "dólares",
+    "euro",
+    "euros",
+    "signo",
+    "dos",
 ];
 
 /// Characters a spoken symbol word becomes.
@@ -157,10 +230,7 @@ pub(crate) fn is_plausible_rewrite(input: &str, output: &str) -> bool {
 /// Lowercased words: runs of letters and digits, so `pedro@ejemplo.com`
 /// yields `pedro`, `ejemplo`, `com` and `¿Cómo` yields `cómo`.
 fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect()
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
 }
 
 fn has_letter(word: &str) -> bool {

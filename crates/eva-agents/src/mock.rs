@@ -85,11 +85,7 @@ impl AgentProvider for MockProvider {
         self.status.clone()
     }
 
-    async fn execute(
-        &self,
-        task: &AgentTask,
-        events: UnboundedSender<AgentEvent>,
-    ) -> Result<RunningAgent, AgentError> {
+    async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
         self.received_tasks.lock().unwrap().push(task.clone());
@@ -190,7 +186,10 @@ mod tests {
         let mock = MockProvider::new(
             "mock",
             ProviderStatus::Active { version: "mock".to_string() },
-            vec![(vec![AgentEvent::Started, AgentEvent::Message { text: "hola".into() }], AgentOutcome::Completed { summary: None })],
+            vec![(
+                vec![AgentEvent::Started, AgentEvent::Message { text: "hola".into() }],
+                AgentOutcome::Completed { summary: None },
+            )],
         );
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

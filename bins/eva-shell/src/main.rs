@@ -29,8 +29,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use supervisor::{Supervisor, SupervisorEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
-use tray::{id as menu_id, Tray};
 use tracing_subscriber::EnvFilter;
+use tray::{id as menu_id, Tray};
 use tray_icon::menu::MenuEvent;
 use uuid::Uuid;
 
@@ -254,7 +254,10 @@ impl ConfirmationKeys {
         match result {
             Ok(()) => *is_on = wanted,
             Err(e) => {
-                tracing::warn!("no se pudo {} el atajo de confirmación: {e}", if wanted { "registrar" } else { "liberar" });
+                tracing::warn!(
+                    "no se pudo {} el atajo de confirmación: {e}",
+                    if wanted { "registrar" } else { "liberar" }
+                );
                 // Do not retry every tick: pretend it is in the wanted state.
                 *is_on = wanted;
             }

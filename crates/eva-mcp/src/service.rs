@@ -263,14 +263,8 @@ mod tests {
             path: "/code/eva01".into(),
             active: true,
         }]));
-        let service = LocalService::new(
-            origin,
-            gateway,
-            desktop.clone(),
-            confirmer.clone(),
-            projects,
-            Duration::from_secs(5),
-        );
+        let service =
+            LocalService::new(origin, gateway, desktop.clone(), confirmer.clone(), projects, Duration::from_secs(5));
         Rig { service, desktop, confirmer, store }
     }
 
@@ -369,8 +363,11 @@ mod tests {
         let rig = rig(Origin::Voice, MockDesktop::new(), Scripted::denying(), "");
         rig.service.web_search("clima hoy en méxico").await.expect("allowed");
         let calls = rig.desktop.calls();
-        assert!(matches!(&calls[0], Call::OpenUrl(url)
-            if url == "https://www.google.com/search?q=clima%20hoy%20en%20m%C3%A9xico"), "{calls:?}");
+        assert!(
+            matches!(&calls[0], Call::OpenUrl(url)
+            if url == "https://www.google.com/search?q=clima%20hoy%20en%20m%C3%A9xico"),
+            "{calls:?}"
+        );
         assert_eq!(rig.store.recent_audit(1).expect("audit")[0].intent_json["action"], "web_search");
     }
 

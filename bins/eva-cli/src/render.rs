@@ -51,7 +51,9 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
             words.iter().map(|w| format!("- {w}")).collect::<Vec<_>>().join("\n")
         }),
         WorkerToShell::Ack { .. } => Line::out("listo."),
-        WorkerToShell::TaskStarted { provider, prompt, .. } => Line::out(format!("▶ {} empezó: {prompt}", provider_name(provider))),
+        WorkerToShell::TaskStarted { provider, prompt, .. } => {
+            Line::out(format!("▶ {} empezó: {prompt}", provider_name(provider)))
+        }
         WorkerToShell::TaskFinished { success, summary, .. } => Some(Line {
             text: format!("{} {summary}", if *success { "✓ terminó:" } else { "✗ falló:" }),
             is_error: !success,
@@ -145,7 +147,12 @@ pub fn render_audit(records: &[eva_store::AuditRecord]) -> String {
                 eva_store::Decision::UserRejected => "rechazado ",
                 eva_store::Decision::Blocked => "bloqueado ",
             };
-            let action = r.intent_json.get("action").and_then(serde_json::Value::as_str).or_else(|| r.intent_json.get("kind").and_then(serde_json::Value::as_str)).unwrap_or("?");
+            let action = r
+                .intent_json
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| r.intent_json.get("kind").and_then(serde_json::Value::as_str))
+                .unwrap_or("?");
             let origin = match r.intent_json.get("origin").and_then(serde_json::Value::as_str) {
                 Some("agent") => "agente",
                 Some("voice") => "voz   ",
@@ -178,13 +185,17 @@ mod tests {
     fn internal_bookkeeping_prints_nothing() {
         let id = Uuid::new_v4();
         assert_eq!(render(&WorkerToShell::Ready), None);
-        assert_eq!(render(&WorkerToShell::StateChanged { state: eva_ipc::WorkerState::Thinking, request_id: Some(id) }), None);
+        assert_eq!(
+            render(&WorkerToShell::StateChanged { state: eva_ipc::WorkerState::Thinking, request_id: Some(id) }),
+            None
+        );
         assert_eq!(render(&WorkerToShell::ConfirmationClosed { confirmation_id: id }), None);
     }
 
     #[test]
     fn a_transcript_shows_raw_and_cleaned() {
-        let event = WorkerToShell::Transcript { request_id: Uuid::new_v4(), raw: "eh hola".into(), cleaned: "Hola.".into() };
+        let event =
+            WorkerToShell::Transcript { request_id: Uuid::new_v4(), raw: "eh hola".into(), cleaned: "Hola.".into() };
         assert_eq!(text_of(&event), "transcript crudo:     eh hola\ntranscript limpio:    Hola.");
     }
 
@@ -201,9 +212,11 @@ mod tests {
     #[test]
     fn a_failed_task_is_an_error_a_successful_one_is_not() {
         let id = Uuid::new_v4();
-        let ok = render(&WorkerToShell::TaskFinished { request_id: id, success: true, summary: "3 archivos".into() }).unwrap();
+        let ok = render(&WorkerToShell::TaskFinished { request_id: id, success: true, summary: "3 archivos".into() })
+            .unwrap();
         assert_eq!((ok.text.as_str(), ok.is_error), ("✓ terminó: 3 archivos", false));
-        let bad = render(&WorkerToShell::TaskFinished { request_id: id, success: false, summary: "se cayó".into() }).unwrap();
+        let bad =
+            render(&WorkerToShell::TaskFinished { request_id: id, success: false, summary: "se cayó".into() }).unwrap();
         assert!(bad.is_error);
     }
 
@@ -216,7 +229,10 @@ mod tests {
             text_of(&event(serde_json::json!({"kind": "tool_call", "name": "shell", "summary": "npm test"}))),
             "  agente usa shell: npm test"
         );
-        assert_eq!(text_of(&event(serde_json::json!({"kind": "file_changed", "path": "a.rs"}))), "  agente cambió a.rs");
+        assert_eq!(
+            text_of(&event(serde_json::json!({"kind": "file_changed", "path": "a.rs"}))),
+            "  agente cambió a.rs"
+        );
         assert_eq!(render(&event(serde_json::json!({"kind": "started"}))), None, "the task lines already say it");
         assert_eq!(render(&event(serde_json::json!({"nope": 1}))), None);
     }
@@ -234,7 +250,15 @@ mod tests {
             project_count: 4,
         };
         let text = render_health(&report);
-        for expected in ["canary:/x", "apple_intelligence", "ok", "codex: listo (0.142)", "/tmp/g.sock", "aviso de configuración: agents.priority: x", "4"] {
+        for expected in [
+            "canary:/x",
+            "apple_intelligence",
+            "ok",
+            "codex: listo (0.142)",
+            "/tmp/g.sock",
+            "aviso de configuración: agents.priority: x",
+            "4",
+        ] {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }
     }
@@ -249,7 +273,8 @@ mod tests {
             summary: summary.map(str::to_string),
             age_secs,
         };
-        let table = render_tasks(&[task(TaskState::Running, None, 30), task(TaskState::Succeeded, Some("2 archivos"), 4_000)]);
+        let table =
+            render_tasks(&[task(TaskState::Running, None, 30), task(TaskState::Succeeded, Some("2 archivos"), 4_000)]);
         assert!(table.contains("▶ Claude  hace 30 s"), "{table}");
         assert!(table.contains("✓ Claude  hace 1 h"), "{table}");
         assert!(table.contains("    → 2 archivos"), "{table}");

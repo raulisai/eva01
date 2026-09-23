@@ -266,5 +266,7 @@ impl AgentProvider for SharedProvider {
 
 /// A registry over shared mock providers, in the order given.
 pub fn registry_of(providers: &[&Arc<eva_agents::mock::MockProvider>]) -> AgentRegistry {
-    AgentRegistry::new(providers.iter().map(|p| Box::new(SharedProvider(Arc::clone(p))) as Box<dyn AgentProvider>).collect())
+    AgentRegistry::new(
+        providers.iter().map(|p| Box::new(SharedProvider(Arc::clone(p))) as Box<dyn AgentProvider>).collect(),
+    )
 }

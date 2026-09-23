@@ -43,10 +43,7 @@ pub fn save(conn: &Connection, raw: &str, pre_formatted: &str, formatted: &str) 
 /// # Errors
 /// Returns [`StoreError::NotFound`] if `id` does not match any saved transcript.
 pub fn mark_bad(conn: &Connection, id: Uuid) -> Result<(), StoreError> {
-    let updated = conn.execute(
-        "UPDATE transcripts SET marked_bad = 1 WHERE id = ?1",
-        params![id.to_string()],
-    )?;
+    let updated = conn.execute("UPDATE transcripts SET marked_bad = 1 WHERE id = ?1", params![id.to_string()])?;
     if updated == 0 {
         return Err(StoreError::NotFound(id.to_string()));
     }
@@ -88,17 +85,14 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptRecord> 
 }
 
 fn parse_uuid_column(text: &str, col: usize) -> rusqlite::Result<Uuid> {
-    Uuid::parse_str(text).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-    })
+    Uuid::parse_str(text)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e)))
 }
 
 fn parse_datetime_column(text: &str, col: usize) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-        })
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e)))
 }
 
 #[cfg(test)]

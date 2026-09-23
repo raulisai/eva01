@@ -239,7 +239,8 @@ impl ShellModel {
             }
             WorkerToShell::TaskStarted { request_id, provider, prompt } => {
                 self.forget(request_id);
-                let info = TaskInfo { request_id, provider, prompt, state: TaskState::Running, summary: None, age_secs: 0 };
+                let info =
+                    TaskInfo { request_id, provider, prompt, state: TaskState::Running, summary: None, age_secs: 0 };
                 self.tasks.insert(request_id, (info, now));
             }
             WorkerToShell::TaskFinished { request_id, success, summary } => {
@@ -574,7 +575,10 @@ mod tests {
         model.press(t0, id);
         model.release(t0);
 
-        model.worker_event(t0, WorkerToShell::Error { request_id: Some(id), message: "el modelo no respondió".into(), recoverable: true });
+        model.worker_event(
+            t0,
+            WorkerToShell::Error { request_id: Some(id), message: "el modelo no respondió".into(), recoverable: true },
+        );
         model.worker_event(t0, state(id, WorkerState::Done(false)));
 
         let overlay = model.overlay().unwrap();
@@ -601,7 +605,10 @@ mod tests {
         let mut model = ready_model(t0);
         let id = Uuid::new_v4();
         model.press(t0, id);
-        model.worker_event(t0, WorkerToShell::Error { request_id: Some(id), message: "no hay modelo".into(), recoverable: true });
+        model.worker_event(
+            t0,
+            WorkerToShell::Error { request_id: Some(id), message: "no hay modelo".into(), recoverable: true },
+        );
 
         assert_eq!(model.release(t0 + secs(1)), Vec::new(), "there is no recording to stop");
         assert_eq!(text(&model).as_deref(), Some("✗ no hay modelo"));
@@ -671,7 +678,10 @@ mod tests {
         let mut model = ready_model(t0);
         let id = Uuid::new_v4();
         model.worker_event(t0, state(id, WorkerState::Thinking));
-        model.worker_event(t0, WorkerToShell::TaskStarted { request_id: id, provider: "codex".into(), prompt: "x".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: id, provider: "codex".into(), prompt: "x".into() },
+        );
 
         assert_eq!(model.tick(t0 + secs(3_600)), Vec::new(), "an agent may legitimately run for an hour");
     }
@@ -683,7 +693,10 @@ mod tests {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
         let task = Uuid::new_v4();
-        model.worker_event(t0, WorkerToShell::TaskStarted { request_id: task, provider: "codex".into(), prompt: "refactoriza".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: task, provider: "codex".into(), prompt: "refactoriza".into() },
+        );
         assert_eq!(model.overlay(), None, "a background task alone shows nothing on the overlay");
         assert_eq!(model.tray(t0).icon, TrayIcon::Busy);
         assert_eq!(model.tray(t0).status, "1 tarea(s) en curso");
@@ -703,11 +716,20 @@ mod tests {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
         let (old, recent) = (Uuid::new_v4(), Uuid::new_v4());
-        model.worker_event(t0, WorkerToShell::TaskStarted { request_id: old, provider: "codex".into(), prompt: "vieja".into() });
-        model.worker_event(t0 + secs(120), WorkerToShell::TaskStarted { request_id: recent, provider: "codex".into(), prompt: "nueva".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: old, provider: "codex".into(), prompt: "vieja".into() },
+        );
+        model.worker_event(
+            t0 + secs(120),
+            WorkerToShell::TaskStarted { request_id: recent, provider: "codex".into(), prompt: "nueva".into() },
+        );
 
         let running = model.tray(t0 + secs(180)).running;
-        assert_eq!(running.iter().map(|t| (t.prompt.as_str(), t.age_secs)).collect::<Vec<_>>(), vec![("vieja", 180), ("nueva", 60)]);
+        assert_eq!(
+            running.iter().map(|t| (t.prompt.as_str(), t.age_secs)).collect::<Vec<_>>(),
+            vec![("vieja", 180), ("nueva", 60)]
+        );
     }
 
     #[test]
@@ -715,26 +737,42 @@ mod tests {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
         let task = Uuid::new_v4();
-        model.worker_event(t0, WorkerToShell::TaskStarted { request_id: task, provider: "codex".into(), prompt: "x".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: task, provider: "codex".into(), prompt: "x".into() },
+        );
 
-        let commands = model.worker_event(t0, WorkerToShell::TaskFinished { request_id: task, success: true, summary: "3 archivos".into() });
+        let commands = model.worker_event(
+            t0,
+            WorkerToShell::TaskFinished { request_id: task, success: true, summary: "3 archivos".into() },
+        );
         assert!(matches!(commands.as_slice(), [Command::ListTasks(_)]));
         assert_eq!(text(&model).as_deref(), Some("✓ Tarea lista: 3 archivos"));
         assert!(model.tray(t0).running.is_empty());
 
         model.worker_event(t0, state(task, WorkerState::Done(true)));
-        assert_eq!(text(&model).as_deref(), Some("✓ Tarea lista: 3 archivos"), "the trailing Done must not replace the summary");
+        assert_eq!(
+            text(&model).as_deref(),
+            Some("✓ Tarea lista: 3 archivos"),
+            "the trailing Done must not replace the summary"
+        );
     }
 
     #[test]
     fn a_failed_task_says_so_in_red_and_a_cancelled_one_is_neutral() {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
-        model.worker_event(t0, WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "se cayó".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "se cayó".into() },
+        );
         let overlay = model.overlay().unwrap();
         assert_eq!((overlay.text.as_str(), overlay.tone), ("✗ La tarea falló: se cayó", Tone::Error));
 
-        model.worker_event(t0, WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "cancelada".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "cancelada".into() },
+        );
         assert_eq!(model.overlay().unwrap().tone, Tone::Neutral);
     }
 
@@ -742,7 +780,14 @@ mod tests {
     fn the_task_list_keeps_the_recent_finished_ones_for_the_menu() {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
-        let task = |state| TaskInfo { request_id: Uuid::new_v4(), provider: "codex".into(), prompt: "p".into(), state, summary: None, age_secs: 1 };
+        let task = |state| TaskInfo {
+            request_id: Uuid::new_v4(),
+            provider: "codex".into(),
+            prompt: "p".into(),
+            state,
+            summary: None,
+            age_secs: 1,
+        };
         model.worker_event(
             t0,
             WorkerToShell::TaskList {
@@ -855,7 +900,10 @@ mod tests {
         let mut model = ready_model(t0);
         model.press(t0, Uuid::new_v4());
         ask(&mut model, t0);
-        model.worker_event(t0, WorkerToShell::TaskStarted { request_id: Uuid::new_v4(), provider: "codex".into(), prompt: "x".into() });
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: Uuid::new_v4(), provider: "codex".into(), prompt: "x".into() },
+        );
 
         model.worker_restarting();
 

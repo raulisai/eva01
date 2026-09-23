@@ -41,9 +41,13 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
                 tracing::info!(%confirmation_id, "respuesta a una confirmación que ya no esperaba; se ignora");
             }
         }
-        ShellToWorker::HealthCheck { request_id } => housekeeping::health(ctx, request_id, gateway_socket.map(str::to_string)),
+        ShellToWorker::HealthCheck { request_id } => {
+            housekeeping::health(ctx, request_id, gateway_socket.map(str::to_string))
+        }
         ShellToWorker::AddCustomWord { request_id, word } => housekeeping::add_custom_word(ctx, request_id, &word),
-        ShellToWorker::RemoveCustomWord { request_id, word } => housekeeping::remove_custom_word(ctx, request_id, &word),
+        ShellToWorker::RemoveCustomWord { request_id, word } => {
+            housekeeping::remove_custom_word(ctx, request_id, &word)
+        }
         ShellToWorker::ListCustomWords { request_id } => housekeeping::list_custom_words(ctx, request_id),
         ShellToWorker::SetWakeWord { request_id, word } => housekeeping::set_wake_word(ctx, request_id, &word),
         // `main.rs` owns the shutdown sequence (cancel tasks, drain, exit).

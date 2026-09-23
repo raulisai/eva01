@@ -299,8 +299,7 @@ mod tests {
 
     #[test]
     fn returns_to_idle_after_an_utterance_and_can_start_a_new_one() {
-        let mut seg =
-            Segmenter::new(ScriptedProbability::new(vec![0.9, 0.0, 0.0, 0.9, 0.0]), fast_config());
+        let mut seg = Segmenter::new(ScriptedProbability::new(vec![0.9, 0.0, 0.0, 0.9, 0.0]), fast_config());
 
         seg.push_chunk(&silent_chunk()); // start
         seg.push_chunk(&silent_chunk()); // ready (min_silence=1 chunk)

@@ -130,11 +130,7 @@ impl Formatter for RuleOnlyFormatter {
         }
 
         let needs_terminator = !capitalized.ends_with(['.', '?', '!', '…', ':']);
-        let result = if needs_terminator {
-            format!("{capitalized}.")
-        } else {
-            capitalized
-        };
+        let result = if needs_terminator { format!("{capitalized}.") } else { capitalized };
 
         Ok(result)
     }
@@ -143,10 +139,8 @@ impl Formatter for RuleOnlyFormatter {
 /// A command line: words only. Drops opening `¿`/`¡` and trailing
 /// punctuation, and lowercases the first letter (`Git status.` → `git status`).
 fn terminal_form(text: &str) -> String {
-    let without_edges = text
-        .trim_start_matches(['¿', '¡'])
-        .trim_end_matches(['.', ',', ';', ':', '!', '?', '…'])
-        .trim();
+    let without_edges =
+        text.trim_start_matches(['¿', '¡']).trim_end_matches(['.', ',', ';', ':', '!', '?', '…']).trim();
     let mut chars = without_edges.chars();
     match chars.next() {
         Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
@@ -176,9 +170,7 @@ mod tests {
 
     #[test]
     fn does_not_double_up_closing_punctuation() {
-        let out = RuleOnlyFormatter
-            .format("¿cómo estás?")
-            .expect("never fails");
+        let out = RuleOnlyFormatter.format("¿cómo estás?").expect("never fails");
         assert_eq!(out, "¿Cómo estás?");
     }
 
@@ -221,9 +213,7 @@ mod tests {
 
     #[test]
     fn leaves_ambiguous_fillers_alone_because_it_has_no_context() {
-        let out = RuleOnlyFormatter
-            .format("este coche es bueno")
-            .expect("never fails");
+        let out = RuleOnlyFormatter.format("este coche es bueno").expect("never fails");
         assert_eq!(out, "Este coche es bueno.");
     }
 }

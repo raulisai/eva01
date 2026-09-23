@@ -67,10 +67,9 @@ impl WhisperSpeechToText {
 
 impl SpeechToText for WhisperSpeechToText {
     fn transcribe(&self, samples: &[f32]) -> Result<Transcript, TranscribeError> {
-        let mut engine = self
-            .engine
-            .lock()
-            .map_err(|_| TranscribeError::TranscriptionFailed("el modelo está en un estado inconsistente".to_string()))?;
+        let mut engine = self.engine.lock().map_err(|_| {
+            TranscribeError::TranscriptionFailed("el modelo está en un estado inconsistente".to_string())
+        })?;
 
         let result = engine
             .transcribe_with(samples, &transcribe_rs::whisper_cpp::WhisperInferenceParams::default())
@@ -138,15 +137,12 @@ impl CanarySpeechToText {
 
 impl SpeechToText for CanarySpeechToText {
     fn transcribe(&self, samples: &[f32]) -> Result<Transcript, TranscribeError> {
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|_| TranscribeError::TranscriptionFailed("el modelo está en un estado inconsistente".to_string()))?;
+        let mut model = self.model.lock().map_err(|_| {
+            TranscribeError::TranscriptionFailed("el modelo está en un estado inconsistente".to_string())
+        })?;
 
-        let params = transcribe_rs::onnx::canary::CanaryParams {
-            language: Some(self.language.clone()),
-            ..Default::default()
-        };
+        let params =
+            transcribe_rs::onnx::canary::CanaryParams { language: Some(self.language.clone()), ..Default::default() };
         let result = model
             .transcribe_with(&padded_with_silence(samples), &params)
             .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
@@ -157,7 +153,7 @@ impl SpeechToText for CanarySpeechToText {
 
 /// A test double for [`SpeechToText`], per `docs/ENGINEERING.md` #5.
 pub mod mock {
-    use super::{SpeechToText, Transcript, TranscribeError};
+    use super::{SpeechToText, TranscribeError, Transcript};
 
     /// Always returns the same fixed transcript, regardless of input audio.
     pub struct FixedTranscript {

@@ -47,7 +47,8 @@ pub fn start(ctx: &WorkerContext, request_id: Uuid) {
     let started = audio.source.start(
         CAPTURE_CHUNK_SIZE,
         Box::new(move |chunk| {
-            #[allow(clippy::unwrap_used)] // only poisoned if this same callback panicked, forbidden by workspace policy
+            #[allow(clippy::unwrap_used)]
+            // only poisoned if this same callback panicked, forbidden by workspace policy
             buffer_for_callback.lock().unwrap().extend(chunk);
         }),
     );
@@ -120,7 +121,9 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         match transcript {
             Ok(Ok(transcript)) => crate::dictation::process_text(&job_ctx, request_id, &transcript.text).await,
             Ok(Err(e)) => job_ctx.events.fail(request_id, e.to_string()),
-            Err(join_error) => job_ctx.events.fail(request_id, format!("la tarea de transcripción falló: {join_error}")),
+            Err(join_error) => {
+                job_ctx.events.fail(request_id, format!("la tarea de transcripción falló: {join_error}"))
+            }
         }
     });
 }
@@ -191,7 +194,9 @@ mod tests {
 
         let stop = rig.run(ShellToWorker::StopRecording { request_id }).await;
         assert!(stop.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Thinking, .. })));
-        assert!(stop.iter().any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Hola mundo.")));
+        assert!(stop
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Hola mundo.")));
         assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Hola mundo. ".to_string())]);
     }
 
@@ -267,14 +272,19 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
 
         let stop = rig.run(ShellToWorker::StopRecording { request_id: real }).await;
-        assert!(stop.iter().any(|e| matches!(e, WorkerToShell::Transcript { .. })), "the real recording is still there");
+        assert!(
+            stop.iter().any(|e| matches!(e, WorkerToShell::Transcript { .. })),
+            "the real recording is still there"
+        );
     }
 
     #[tokio::test]
     async fn start_recording_without_a_configured_model_is_a_clear_recoverable_error() {
         let mut rig = Rig::new();
         let events = rig.run(ShellToWorker::StartRecording { request_id: Uuid::new_v4() }).await;
-        assert!(matches!(&events[0], WorkerToShell::Error { recoverable: true, message, .. } if message.contains("modelo")));
+        assert!(
+            matches!(&events[0], WorkerToShell::Error { recoverable: true, message, .. } if message.contains("modelo"))
+        );
     }
 
     #[tokio::test]

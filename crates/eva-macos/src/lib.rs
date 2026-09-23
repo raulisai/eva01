@@ -20,11 +20,11 @@ pub mod paste;
 pub mod secure_input;
 pub mod workspace;
 
+pub use ax::{focused_window_title, prompt_for_accessibility, selected_text};
 pub use error::MacosError;
 pub use fnkey::{FnKeyEvent, FnKeyMonitor};
 pub use overlay::{Overlay, OverlayContent, Tone};
 pub use paste::{copy_selection, paste_text, DEFAULT_RESTORE_DELAY};
-pub use ax::{focused_window_title, prompt_for_accessibility, selected_text};
 pub use secure_input::{is_accessibility_trusted, is_secure_input_enabled};
 pub use workspace::{close_app, frontmost_app, open_app, open_url, RunningAppInfo};
 

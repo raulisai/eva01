@@ -94,12 +94,7 @@ impl Dictionary {
     /// widest one that beats `threshold`, or `None` if nothing matches well
     /// enough. Longest-first avoids a short match ("Charge") pre-empting a
     /// better multi-word one ("Charge Bee") that starts at the same token.
-    fn best_match_starting_at(
-        &self,
-        tokens: &[&str],
-        start: usize,
-        threshold: f64,
-    ) -> Option<(usize, String)> {
+    fn best_match_starting_at(&self, tokens: &[&str], start: usize, threshold: f64) -> Option<(usize, String)> {
         // Only 1- and 2-word windows are considered. Two words exist purely
         // to catch a compound dictionary entry the STT engine split in two
         // ("Charge Bee" → "ChargeBee"), which is always a near-exact fold
@@ -114,10 +109,7 @@ impl Dictionary {
 
             // Don't let an n-gram cross a punctuation boundary: only the
             // last token in the span may carry trailing punctuation.
-            if span[..n - 1]
-                .iter()
-                .any(|t| !split_punctuation(t).2.is_empty())
-            {
+            if span[..n - 1].iter().any(|t| !split_punctuation(t).2.is_empty()) {
                 continue;
             }
 

@@ -101,10 +101,7 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
     let trimmed = command_text.trim();
 
     if let Risk::Destructive { matched_stem } = risk::classify(trimmed) {
-        return Intent::Blocked {
-            matched_stem,
-            text: trimmed.to_string(),
-        };
+        return Intent::Blocked { matched_stem, text: trimmed.to_string() };
     }
 
     if trimmed.is_empty() {
@@ -195,9 +192,30 @@ fn build_continue(rest: &str, _app_index: &AppIndex) -> Intent {
 /// "do that to the thing I have selected" — nothing an agent task starts
 /// with. Compared accent-folded, since an STT engine may drop the tilde.
 const EDIT_CLITIC_VERBS: &[&str] = &[
-    "hazlo", "hazla", "acortalo", "acortala", "resumelo", "resumela", "traducelo", "traducela", "corrigelo",
-    "corrigela", "mejoralo", "mejorala", "reescribelo", "reescribela", "simplificalo", "simplificala", "alargalo",
-    "alargala", "formalizalo", "formalizala", "cambialo", "cambiala", "parafrasealo", "parafraseala",
+    "hazlo",
+    "hazla",
+    "acortalo",
+    "acortala",
+    "resumelo",
+    "resumela",
+    "traducelo",
+    "traducela",
+    "corrigelo",
+    "corrigela",
+    "mejoralo",
+    "mejorala",
+    "reescribelo",
+    "reescribela",
+    "simplificalo",
+    "simplificala",
+    "alargalo",
+    "alargala",
+    "formalizalo",
+    "formalizala",
+    "cambialo",
+    "cambiala",
+    "parafrasealo",
+    "parafraseala",
 ];
 
 /// Bare verbs ("traduce", "corrige") are also what you say to an agent about
@@ -206,7 +224,8 @@ const EDIT_CLITIC_VERBS: &[&str] = &[
 const EDIT_BARE_VERBS: &[&str] = &["reescribe", "traduce", "resume", "acorta", "corrige", "mejora", "simplifica"];
 
 /// What "the selection" sounds like after a bare edit verb.
-const SELECTION_REFERENCES: &[&str] = &["esto", "eso", "este texto", "ese texto", "el texto", "lo seleccionado", "la seleccion"];
+const SELECTION_REFERENCES: &[&str] =
+    &["esto", "eso", "este texto", "ese texto", "el texto", "lo seleccionado", "la seleccion"];
 
 fn is_edit_request(text: &str) -> bool {
     let folded = eva_text::fold_diacritics(text);
@@ -254,8 +273,7 @@ fn split_provider_prefix(text: &str) -> Option<(&'static str, &str)> {
             // folding keeps one character per character, so the alias covers
             // the same number of *characters* in `rest` (not necessarily the
             // same number of bytes — an accented letter is two).
-            let consumed_bytes =
-                rest.char_indices().nth(alias.chars().count()).map_or(rest.len(), |(index, _)| index);
+            let consumed_bytes = rest.char_indices().nth(alias.chars().count()).map_or(rest.len(), |(index, _)| index);
             let tail = rest[consumed_bytes..].trim_start_matches(|c: char| c == ',' || c.is_whitespace());
             return Some((provider, strip_connector(tail)));
         }
@@ -300,10 +318,7 @@ mod tests {
     use crate::apps::AppEntry;
 
     fn sample_index() -> AppIndex {
-        AppIndex::new(vec![
-            AppEntry::new("Brave Browser").with_aliases(["brave"]),
-            AppEntry::new("Spotify"),
-        ])
+        AppIndex::new(vec![AppEntry::new("Brave Browser").with_aliases(["brave"]), AppEntry::new("Spotify")])
     }
 
     #[test]
@@ -327,7 +342,11 @@ mod tests {
     #[test]
     fn any_scheme_with_slashes_is_a_link_not_an_app_name() {
         for url in ["file:///etc/hosts", "smb://servidor/x", "ssh://host", "https://github.com"] {
-            assert_eq!(parse(&format!("abre {url}"), &sample_index()), Intent::OpenUrl { url: url.to_string() }, "{url}");
+            assert_eq!(
+                parse(&format!("abre {url}"), &sample_index()),
+                Intent::OpenUrl { url: url.to_string() },
+                "{url}"
+            );
         }
         assert!(matches!(parse("abre mi proyecto de ://", &sample_index()), Intent::AgentTask { .. }));
     }
@@ -367,10 +386,7 @@ mod tests {
     #[test]
     fn falls_back_to_agent_task_when_the_app_is_not_in_the_index() {
         let intent = parse("abre mi proyecto de svelte", &sample_index());
-        assert_eq!(
-            intent,
-            Intent::AgentTask { prompt: "abre mi proyecto de svelte".to_string(), provider: None }
-        );
+        assert_eq!(intent, Intent::AgentTask { prompt: "abre mi proyecto de svelte".to_string(), provider: None });
     }
 
     #[test]
@@ -399,14 +415,22 @@ mod tests {
 
     #[test]
     fn usa_claude_forces_that_agent_and_strips_the_connector() {
-        assert_eq!(parse("usa claude y arregla el login", &sample_index()), agent("arregla el login", Some("claude_code")));
+        assert_eq!(
+            parse("usa claude y arregla el login", &sample_index()),
+            agent("arregla el login", Some("claude_code"))
+        );
         assert_eq!(parse("usa codex para agregar tests", &sample_index()), agent("agregar tests", Some("codex")));
-        assert_eq!(parse("usa a Claude, revisa el build", &sample_index()), agent("revisa el build", Some("claude_code")));
+        assert_eq!(
+            parse("usa a Claude, revisa el build", &sample_index()),
+            agent("revisa el build", Some("claude_code"))
+        );
     }
 
     #[test]
     fn the_ways_an_stt_engine_mishears_claude_still_select_it() {
-        for heard in ["usa cloud y arregla el login", "usa clod y arregla el login", "usa Claude Code y arregla el login"] {
+        for heard in
+            ["usa cloud y arregla el login", "usa clod y arregla el login", "usa Claude Code y arregla el login"]
+        {
             assert_eq!(parse(heard, &sample_index()), agent("arregla el login", Some("claude_code")), "{heard}");
         }
     }
@@ -418,7 +442,10 @@ mod tests {
 
     #[test]
     fn usa_without_a_provider_is_an_ordinary_agent_task() {
-        assert_eq!(parse("usa typescript para el nuevo módulo", &sample_index()), agent("usa typescript para el nuevo módulo", None));
+        assert_eq!(
+            parse("usa typescript para el nuevo módulo", &sample_index()),
+            agent("usa typescript para el nuevo módulo", None)
+        );
     }
 
     #[test]
@@ -428,7 +455,9 @@ mod tests {
 
     #[test]
     fn a_pronoun_verb_is_an_edit_of_the_selection() {
-        for text in ["hazlo más formal", "hazla más corta", "acórtalo", "acortalo un poco", "tradúcelo al inglés", "corrígelo"] {
+        for text in
+            ["hazlo más formal", "hazla más corta", "acórtalo", "acortalo un poco", "tradúcelo al inglés", "corrígelo"]
+        {
             assert_eq!(parse(text, &sample_index()), Intent::EditSelection { instruction: text.to_string() }, "{text}");
         }
     }
@@ -449,8 +478,14 @@ mod tests {
     #[test]
     fn a_bare_verb_about_a_project_is_still_an_agent_task() {
         assert_eq!(parse("corrige el bug del login", &sample_index()), agent("corrige el bug del login", None));
-        assert_eq!(parse("resume los cambios de la rama", &sample_index()), agent("resume los cambios de la rama", None));
-        assert_eq!(parse("traduce la interfaz al inglés", &sample_index()), agent("traduce la interfaz al inglés", None));
+        assert_eq!(
+            parse("resume los cambios de la rama", &sample_index()),
+            agent("resume los cambios de la rama", None)
+        );
+        assert_eq!(
+            parse("traduce la interfaz al inglés", &sample_index()),
+            agent("traduce la interfaz al inglés", None)
+        );
     }
 
     #[test]

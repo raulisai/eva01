@@ -245,8 +245,7 @@ mod tests {
         // The user configured everything to `auto`; a file:// link still
         // gets asked about and quitting Finder still gets refused.
         let confirmer = Arc::new(Scripted::denying());
-        let (gateway, _store) =
-            gateway("[voice]\nopen_url = \"auto\"\nclose_app = \"auto\"", confirmer.clone());
+        let (gateway, _store) = gateway("[voice]\nopen_url = \"auto\"\nclose_app = \"auto\"", confirmer.clone());
 
         let link = Action::new(ActionKind::OpenUrl, Origin::Voice, "file:///etc/hosts");
         let result: Result<(), GatewayError<String>> = gateway.run(&link, || Ok(())).await;

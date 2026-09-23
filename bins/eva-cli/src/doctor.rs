@@ -140,7 +140,12 @@ fn config_file(loaded: &eva_config::Loaded) -> Check {
     if !loaded.warnings.is_empty() {
         return Check::warn(
             "Configuración",
-            format!("{} tiene {} problema(s): {}", loaded.path.display(), loaded.warnings.len(), loaded.warnings.join("; ")),
+            format!(
+                "{} tiene {} problema(s): {}",
+                loaded.path.display(),
+                loaded.warnings.len(),
+                loaded.warnings.join("; ")
+            ),
             "corrígelos con `eva config edit`; mientras tanto se usan los valores por defecto",
         );
     }
@@ -153,7 +158,8 @@ fn config_file(loaded: &eva_config::Loaded) -> Check {
 
 fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
     let recommended = crate::model::recommended();
-    let install_hint = format!("eva model install {}   (~{} MB)", recommended.id, recommended.total_bytes() / 1_000_000);
+    let install_hint =
+        format!("eva model install {}   (~{} MB)", recommended.id, recommended.total_bytes() / 1_000_000);
     match models::discover(config, support, &|key| std::env::var(key).ok()) {
         models::ModelChoice::Canary(dir) => {
             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -175,7 +181,9 @@ fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
             format!("Whisper — {}", path.display()),
             format!("Canary entiende mejor el español: {install_hint}"),
         )],
-        models::ModelChoice::None => vec![Check::fail("Modelo de voz", "no hay ninguno instalado: no se puede dictar", install_hint)],
+        models::ModelChoice::None => {
+            vec![Check::fail("Modelo de voz", "no hay ninguno instalado: no se puede dictar", install_hint)]
+        }
     }
 }
 
@@ -210,7 +218,10 @@ fn git(config: &Config) -> Check {
 fn mcp_binary() -> Check {
     let path = session::sibling_binary("eva-mcp");
     if path.is_file() {
-        Check::ok("Herramientas MCP", format!("{} (los agentes pueden abrir apps, pedirte confirmación…)", path.display()))
+        Check::ok(
+            "Herramientas MCP",
+            format!("{} (los agentes pueden abrir apps, pedirte confirmación…)", path.display()),
+        )
     } else {
         Check::warn(
             "Herramientas MCP",
@@ -235,14 +246,21 @@ async fn agents(config: &Config, smoke: bool) -> Vec<Check> {
     for (id, status) in registry.detect_all().await {
         let name = agent_check_name(id);
         match status {
-            ProviderStatus::NotInstalled => checks.push(Check::warn(name, "no instalado", format!("instala su CLI si quieres usar «{}»", pretty(id)))),
+            ProviderStatus::NotInstalled => checks.push(Check::warn(
+                name,
+                "no instalado",
+                format!("instala su CLI si quieres usar «{}»", pretty(id)),
+            )),
             ProviderStatus::InstalledNoSession { .. } => checks.push(Check::warn(
                 name,
                 "instalado, pero sin sesión iniciada",
                 if id == "codex" { "codex login" } else { "claude auth login" },
             )),
             ProviderStatus::Active { version } if !smoke => {
-                checks.push(Check::ok(name, format!("listo ({version}) — `eva doctor --smoke` prueba que de verdad responda")));
+                checks.push(Check::ok(
+                    name,
+                    format!("listo ({version}) — `eva doctor --smoke` prueba que de verdad responda"),
+                ));
             }
             ProviderStatus::Active { version } => checks.push(smoke_test(&registry, id, &version, name).await),
         }
@@ -292,15 +310,18 @@ async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &st
     let started = std::time::Instant::now();
     let running = match provider.execute(&task, tx).await {
         Ok(running) => running,
-        Err(e) => return finish_smoke(&dir, Check::fail(name, format!("no arrancó: {e}"), "revisa la instalación del CLI")),
+        Err(e) => {
+            return finish_smoke(&dir, Check::fail(name, format!("no arrancó: {e}"), "revisa la instalación del CLI"))
+        }
     };
     let outcome = running.wait_or_cancel(tokio::time::sleep(Duration::from_secs(120))).await;
     let secs = started.elapsed().as_secs_f32();
 
     let check = match outcome {
-        AgentOutcome::Completed { summary } => {
-            Check::ok(name, format!("listo ({version}) — respondió en {secs:.1} s: «{}»", summary.unwrap_or_default().trim()))
-        }
+        AgentOutcome::Completed { summary } => Check::ok(
+            name,
+            format!("listo ({version}) — respondió en {secs:.1} s: «{}»", summary.unwrap_or_default().trim()),
+        ),
         AgentOutcome::Failed { message } => {
             let (problem, fix) = explain_agent_failure(id, &message);
             Check::fail(
@@ -332,12 +353,20 @@ fn explain_agent_failure(id: &str, message: &str) -> (String, String) {
     let lowered = readable.to_lowercase();
     let login = if id == "codex" { "codex login" } else { "claude auth login" };
     let update = if id == "codex" { "codex update" } else { "claude update" };
-    let fix = if ["authenticate", "oauth", "not logged in", "log in", "expired", "unauthorized"].iter().any(|w| lowered.contains(w)) {
+    let fix = if ["authenticate", "oauth", "not logged in", "log in", "expired", "unauthorized"]
+        .iter()
+        .any(|w| lowered.contains(w))
+    {
         format!("su sesión caducó: `{login}`")
     } else if ["newer version", "upgrade", "update", "not supported"].iter().any(|w| lowered.contains(w)) {
-        format!("su CLI o su modelo configurado no van con esa cuenta: `{update}` o revisa el modelo en su configuración")
+        format!(
+            "su CLI o su modelo configurado no van con esa cuenta: `{update}` o revisa el modelo en su configuración"
+        )
     } else {
-        format!("míralo con `{}` a mano para ver el error completo", if id == "codex" { "codex exec hola" } else { "claude -p hola" })
+        format!(
+            "míralo con `{}` a mano para ver el error completo",
+            if id == "codex" { "codex exec hola" } else { "claude -p hola" }
+        )
     };
     (readable, fix)
 }
@@ -357,7 +386,8 @@ fn tempdir() -> std::io::Result<std::path::PathBuf> {
 /// the gateway socket agents will use.
 async fn worker() -> Vec<Check> {
     let request_id = Uuid::new_v4();
-    let outcome = session::collect(ShellToWorker::HealthCheck { request_id }, request_id, Duration::from_secs(90), |_| {}).await;
+    let outcome =
+        session::collect(ShellToWorker::HealthCheck { request_id }, request_id, Duration::from_secs(90), |_| {}).await;
 
     let Some(report) = outcome.events.into_iter().find_map(|e| match e {
         WorkerToShell::Health { report, .. } => Some(report),
@@ -370,7 +400,10 @@ async fn worker() -> Vec<Check> {
         )];
     };
 
-    let mut checks = vec![Check::ok("eva-worker", format!("arranca y responde; base de datos {}", if report.store_ok { "en orden" } else { "CON PROBLEMAS" }))];
+    let mut checks = vec![Check::ok(
+        "eva-worker",
+        format!("arranca y responde; base de datos {}", if report.store_ok { "en orden" } else { "CON PROBLEMAS" }),
+    )];
     checks.push(match &report.stt_model_id {
         Some(id) => Check::ok("Modelo de voz cargado", id.clone()),
         None => Check::fail(
@@ -381,9 +414,16 @@ async fn worker() -> Vec<Check> {
     });
     checks.push(match &report.gateway_socket {
         Some(socket) => Check::ok("Gateway para agentes", socket.clone()),
-        None => Check::warn("Gateway para agentes", "sin socket: los agentes correrán sin las herramientas de EVA", "mira el registro del worker"),
+        None => Check::warn(
+            "Gateway para agentes",
+            "sin socket: los agentes correrán sin las herramientas de EVA",
+            "mira el registro del worker",
+        ),
     });
-    checks.push(Check::ok("Proyectos conocidos", format!("{} repositorio(s) en agents.project_roots", report.project_count)));
+    checks.push(Check::ok(
+        "Proyectos conocidos",
+        format!("{} repositorio(s) en agents.project_roots", report.project_count),
+    ));
     if !report.formatter.starts_with("apple_intelligence") {
         checks.push(Check::warn("Formateador en uso", report.formatter.clone(), "ver «Apple Intelligence» arriba"));
     }
@@ -476,7 +516,10 @@ mod tests {
 
     #[test]
     fn an_expired_session_says_to_log_in_again_with_the_right_command() {
-        let (_, fix) = explain_agent_failure("claude_code", "Failed to authenticate: OAuth session expired and could not be refreshed");
+        let (_, fix) = explain_agent_failure(
+            "claude_code",
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+        );
         assert!(fix.contains("claude auth login"), "{fix}");
         let (_, fix) = explain_agent_failure("codex", "not logged in");
         assert!(fix.contains("codex login"), "{fix}");

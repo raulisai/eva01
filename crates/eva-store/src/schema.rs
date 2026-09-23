@@ -56,8 +56,7 @@ fn check_integrity(path: &Path) -> Result<(), String> {
         Err(e) => return Err(format!("no se pudo abrir el archivo: {e}")),
     };
 
-    let report: Result<String, rusqlite::Error> =
-        conn.query_row("PRAGMA integrity_check", [], |row| row.get(0));
+    let report: Result<String, rusqlite::Error> = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0));
 
     match report {
         Ok(text) if text == "ok" => Ok(()),
@@ -176,9 +175,8 @@ fn migrate_to_v2(conn: &Connection) -> Result<(), StoreError> {
 /// panel's data source for Codex (whose CLI has no `agents --json` of its
 /// own) and the way a task interrupted by a worker crash stays visible.
 fn migrate_to_v3(conn: &Connection) -> Result<(), StoreError> {
-    let has_work_dir: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('agent_sessions') WHERE name = 'work_dir'")?
-        .exists([])?;
+    let has_work_dir: bool =
+        conn.prepare("SELECT 1 FROM pragma_table_info('agent_sessions') WHERE name = 'work_dir'")?.exists([])?;
     if !has_work_dir {
         conn.execute_batch("ALTER TABLE agent_sessions ADD COLUMN work_dir TEXT;")?;
     }
@@ -215,11 +213,7 @@ mod tests {
         let conn = open_checked(&path).expect("opening a fresh path must succeed");
 
         let table_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| row.get(0))
             .expect("querying sqlite_master must succeed");
         assert!(table_count >= 4, "expected at least the 4 tables this crate owns");
     }
@@ -231,11 +225,8 @@ mod tests {
 
         {
             let conn = open_checked(&path).expect("first open must succeed");
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES ('marker', '\"still here\"')",
-                [],
-            )
-            .expect("insert must succeed");
+            conn.execute("INSERT INTO settings (key, value) VALUES ('marker', '\"still here\"')", [])
+                .expect("insert must succeed");
         }
 
         let conn = open_checked(&path).expect("second open must succeed");
@@ -261,11 +252,7 @@ mod tests {
 
         // The original path now holds a fresh, healthy, empty database.
         let table_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| row.get(0))
             .expect("querying the fresh database must succeed");
         assert!(table_count >= 4);
 
@@ -310,11 +297,7 @@ mod tests {
     fn in_memory_store_gets_the_same_schema() {
         let conn = open_in_memory().expect("in-memory open must succeed");
         let table_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| row.get(0))
             .expect("querying sqlite_master must succeed");
         assert!(table_count >= 4);
     }

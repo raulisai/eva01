@@ -69,10 +69,7 @@ mod tests {
                 AgentEvent::SessionAssigned { id: "01a0c7b4".into() },
                 serde_json::json!({"kind": "session_assigned", "id": "01a0c7b4"}),
             ),
-            (
-                AgentEvent::Message { text: "hola".into() },
-                serde_json::json!({"kind": "message", "text": "hola"}),
-            ),
+            (AgentEvent::Message { text: "hola".into() }, serde_json::json!({"kind": "message", "text": "hola"})),
             (
                 AgentEvent::ToolCall { name: "Bash".into(), summary: "npm test".into() },
                 serde_json::json!({"kind": "tool_call", "name": "Bash", "summary": "npm test"}),

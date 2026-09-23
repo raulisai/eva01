@@ -31,8 +31,20 @@ use std::sync::LazyLock;
 /// (`docs/PLAN.md` fase 5, not yet built) will have — this narrow, word-list
 /// layer is deliberately not the place to guess.
 const DESTRUCTIVE_VERB_STEMS: &[&str] = &[
-    "borra", "borrar", "elimina", "eliminar", "mata", "matar", "destruye", "destruir", "formatea",
-    "formatear", "apaga", "apagar", "reinicia", "reiniciar",
+    "borra",
+    "borrar",
+    "elimina",
+    "eliminar",
+    "mata",
+    "matar",
+    "destruye",
+    "destruir",
+    "formatea",
+    "formatear",
+    "apaga",
+    "apagar",
+    "reinicia",
+    "reiniciar",
 ];
 
 static DESTRUCTIVE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -64,9 +76,7 @@ pub enum Risk {
 pub fn classify(text: &str) -> Risk {
     let folded = fold_diacritics(text);
     match DESTRUCTIVE_PATTERN.find(&folded) {
-        Some(m) => Risk::Destructive {
-            matched_stem: m.as_str().to_string(),
-        },
+        Some(m) => Risk::Destructive { matched_stem: m.as_str().to_string() },
         None => Risk::Safe,
     }
 }
@@ -84,12 +94,7 @@ mod tests {
 
     #[test]
     fn flags_common_destructive_verbs() {
-        for phrase in [
-            "elimina la carpeta",
-            "mata el proceso",
-            "destruye la rama",
-            "formatea el disco",
-        ] {
+        for phrase in ["elimina la carpeta", "mata el proceso", "destruye la rama", "formatea el disco"] {
             assert!(matches!(classify(phrase), Risk::Destructive { .. }), "should flag: {phrase}");
         }
     }

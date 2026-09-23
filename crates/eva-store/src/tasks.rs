@@ -246,7 +246,14 @@ mod tests {
         let id = Uuid::new_v4();
         start(
             &conn,
-            NewTask { id, provider_id: "claude_code", prompt: "x", project_dir: "/p", work_dir: Some("/wt/p-1"), branch: Some("eva/1") },
+            NewTask {
+                id,
+                provider_id: "claude_code",
+                prompt: "x",
+                project_dir: "/p",
+                work_dir: Some("/wt/p-1"),
+                branch: Some("eva/1"),
+            },
         )
         .expect("start");
         let task = &recent(&conn, 1).expect("recent")[0];

@@ -21,8 +21,8 @@ mod policy;
 mod projects;
 
 pub use paths::{expand_home, support_dir};
-pub use projects::{Project, ProjectIndex, Resolution};
 pub use policy::{ActionKind, GatewayConfig, Origin, Policy};
+pub use projects::{Project, ProjectIndex, Resolution};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -80,7 +80,11 @@ pub struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        HotkeyConfig { dictation: "fn".to_string(), confirm: "cmd+return".to_string(), cancel: "cmd+escape".to_string() }
+        HotkeyConfig {
+            dictation: "fn".to_string(),
+            confirm: "cmd+return".to_string(),
+            cancel: "cmd+escape".to_string(),
+        }
     }
 }
 
@@ -293,7 +297,8 @@ impl Config {
         let mut problems = Vec::new();
         for id in &self.agents.priority {
             if !["codex", "claude_code"].contains(&id.as_str()) {
-                problems.push(format!("agents.priority: no conozco el agente \"{id}\" (usa \"codex\" o \"claude_code\")"));
+                problems
+                    .push(format!("agents.priority: no conozco el agente \"{id}\" (usa \"codex\" o \"claude_code\")"));
             }
         }
         for rule in &self.styles.apps {
@@ -406,8 +411,13 @@ mod tests {
     #[test]
     fn the_template_mentions_every_top_level_section() {
         let template = Config::template();
-        for section in ["hotkey", "stt", "agents", "gateway.voice", "gateway.agent", "feedback", "dictation", "styles", "remote"] {
-            assert!(template.contains(&format!("[{section}]")) || template.contains(&format!("# [{section}]")), "missing [{section}]");
+        for section in
+            ["hotkey", "stt", "agents", "gateway.voice", "gateway.agent", "feedback", "dictation", "styles", "remote"]
+        {
+            assert!(
+                template.contains(&format!("[{section}]")) || template.contains(&format!("# [{section}]")),
+                "missing [{section}]"
+            );
         }
     }
 
@@ -421,7 +431,11 @@ mod tests {
 
         std::fs::write(&path, "wake_word = \"Eva\"").expect("the user edits it");
         Config::ensure_file(&path).expect("second call");
-        assert_eq!(std::fs::read_to_string(&path).expect("read"), "wake_word = \"Eva\"", "the user's file is never touched");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "wake_word = \"Eva\"",
+            "the user's file is never touched"
+        );
     }
 
     #[test]

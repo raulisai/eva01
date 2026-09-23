@@ -54,11 +54,7 @@ impl AgentProvider for CodexProvider {
         detect_cli(BINARY, &["login", "status"]).await
     }
 
-    async fn execute(
-        &self,
-        task: &AgentTask,
-        events: UnboundedSender<AgentEvent>,
-    ) -> Result<RunningAgent, AgentError> {
+    async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {
         launch("codex", build_command(task), events, parse_line)
     }
 }
@@ -139,14 +135,18 @@ fn parse_line(line: &str) -> Vec<AgentEvent> {
 
 fn parse_item(item: Item) -> Vec<AgentEvent> {
     match item.item_type.as_str() {
-        "error" => vec![AgentEvent::Failed { message: item.message.unwrap_or_else(|| "error sin mensaje".to_string()) }],
+        "error" => {
+            vec![AgentEvent::Failed { message: item.message.unwrap_or_else(|| "error sin mensaje".to_string()) }]
+        }
         "agent_message" => item.text.map(|text| AgentEvent::Message { text }).into_iter().collect(),
         "command_execution" => item
             .command
             .map(|command| AgentEvent::ToolCall { name: "shell".to_string(), summary: command })
             .into_iter()
             .collect(),
-        "file_change" => item.changes.into_iter().filter_map(|c| c.path).map(|path| AgentEvent::FileChanged { path }).collect(),
+        "file_change" => {
+            item.changes.into_iter().filter_map(|c| c.path).map(|path| AgentEvent::FileChanged { path }).collect()
+        }
         "mcp_tool_call" => {
             let name = match (&item.server, &item.tool) {
                 (Some(server), Some(tool)) => format!("{server}/{tool}"),
@@ -351,10 +351,8 @@ mod tests {
 
     #[test]
     fn turn_failed_becomes_failed() {
-        let line = REAL_CAPTURE
-            .lines()
-            .find(|l| l.contains("\"turn.failed\""))
-            .expect("fixture has a turn.failed line");
+        let line =
+            REAL_CAPTURE.lines().find(|l| l.contains("\"turn.failed\"")).expect("fixture has a turn.failed line");
         let events = parse_line(line);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AgentEvent::Failed { .. }));

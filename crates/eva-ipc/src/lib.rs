@@ -366,9 +366,7 @@ mod tests {
 
     #[test]
     fn shell_to_worker_round_trips_through_a_line() {
-        let msg = ShellToWorker::StartRecording {
-            request_id: uuid::Uuid::nil(),
-        };
+        let msg = ShellToWorker::StartRecording { request_id: uuid::Uuid::nil() };
         let line = encode_line(&msg).expect("serializing a plain enum never fails");
         assert!(line.ends_with('\n'));
         let decoded: ShellToWorker = decode_line(&line).expect("valid line must decode");
@@ -380,10 +378,7 @@ mod tests {
         let request_id = uuid::Uuid::nil();
         let messages = vec![
             WorkerToShell::Ready,
-            WorkerToShell::StateChanged {
-                state: WorkerState::Listening,
-                request_id: Some(request_id),
-            },
+            WorkerToShell::StateChanged { state: WorkerState::Listening, request_id: Some(request_id) },
             WorkerToShell::Transcript {
                 request_id,
                 raw: "eh adan abre brave".into(),
@@ -393,10 +388,7 @@ mod tests {
                 request_id,
                 intent_json: serde_json::json!({"kind": "open_app", "target": "Brave"}),
             },
-            WorkerToShell::AgentEvent {
-                request_id,
-                event_json: serde_json::json!({"kind": "started"}),
-            },
+            WorkerToShell::AgentEvent { request_id, event_json: serde_json::json!({"kind": "started"}) },
             WorkerToShell::Error {
                 request_id: Some(request_id),
                 message: "no se encontró el modelo".into(),
@@ -417,11 +409,7 @@ mod tests {
             },
             WorkerToShell::CustomWords { request_id, words: vec!["García".into(), "Núñez".into()] },
             WorkerToShell::Ack { request_id },
-            WorkerToShell::TaskStarted {
-                request_id,
-                provider: "codex".into(),
-                prompt: "agrega tests al login".into(),
-            },
+            WorkerToShell::TaskStarted { request_id, provider: "codex".into(), prompt: "agrega tests al login".into() },
             WorkerToShell::TaskFinished { request_id, success: true, summary: "3 archivos".into() },
             WorkerToShell::TaskList {
                 request_id,

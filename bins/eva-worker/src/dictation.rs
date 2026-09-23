@@ -47,18 +47,17 @@ async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
 
     let formatter = Arc::clone(&ctx.formatter);
     let raw_owned = raw.to_string();
-    let cleaned = tokio::task::spawn_blocking(move || {
-        eva_text::clean_styled(&raw_owned, &dictionary, formatter.as_ref(), style)
-    })
-    .await
-    .unwrap_or_else(|join_error| {
-        // Cannot happen in practice — `eva_text::clean_styled` never panics,
-        // per the workspace's no-panic policy — but a `JoinError` here (the
-        // runtime shutting down mid-call) must still degrade to the same
-        // "never silent" guarantee as every other failure path.
-        tracing::error!("la tarea de formateo terminó de forma inesperada: {join_error}");
-        eva_text::clean_styled(raw, &Dictionary::new(Vec::<String>::new()), &RuleOnlyFormatter, style)
-    });
+    let cleaned =
+        tokio::task::spawn_blocking(move || eva_text::clean_styled(&raw_owned, &dictionary, formatter.as_ref(), style))
+            .await
+            .unwrap_or_else(|join_error| {
+                // Cannot happen in practice — `eva_text::clean_styled` never panics,
+                // per the workspace's no-panic policy — but a `JoinError` here (the
+                // runtime shutting down mid-call) must still degrade to the same
+                // "never silent" guarantee as every other failure path.
+                tracing::error!("la tarea de formateo terminó de forma inesperada: {join_error}");
+                eva_text::clean_styled(raw, &Dictionary::new(Vec::<String>::new()), &RuleOnlyFormatter, style)
+            });
 
     if let Err(e) = ctx.store.save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted) {
         tracing::warn!("no se pudo guardar el transcript para el corpus: {e}");
@@ -129,8 +128,14 @@ fn paste_or_copy(desktop: &dyn Desktop, text: &str) -> Result<Delivery, eva_mcp:
 /// instruction and pastes the result over the selection. Never touches the
 /// text on any failure — no selection, no formatter that can rewrite, a
 /// rewrite that does not look like an edit — it says what went wrong.
-pub async fn edit_selection(ctx: &Arc<WorkerContext>, request_id: Uuid, instruction: String, intent_json: serde_json::Value) {
-    let action = Action::new(ActionKind::EditSelection, Origin::Voice, instruction.as_str()).with_intent(intent_json.clone());
+pub async fn edit_selection(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    instruction: String,
+    intent_json: serde_json::Value,
+) {
+    let action =
+        Action::new(ActionKind::EditSelection, Origin::Voice, instruction.as_str()).with_intent(intent_json.clone());
     let ticket = match ctx.gateway.authorize(&action).await {
         Verdict::Allowed(ticket) => ticket,
         Verdict::Refused { reason } => {
@@ -197,8 +202,8 @@ mod tests {
     use super::*;
     use crate::testkit::Rig;
     use eva_ipc::ShellToWorker;
-    use eva_mcp::desktop::mock::{Call, MockDesktop};
     use eva_macos::RunningAppInfo;
+    use eva_mcp::desktop::mock::{Call, MockDesktop};
 
     fn typed(rig: &Rig, text: &str) -> ShellToWorker {
         let _ = rig;
@@ -219,7 +224,9 @@ mod tests {
         let mut rig = Rig::new();
         let events = rig.run(typed(&rig, "eh hola mundo")).await;
 
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Hola mundo.")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Hola mundo.")));
         assert_eq!(rig.ctx.store.recent_transcripts(10).expect("must succeed").len(), 1);
         // Plain dictation must actually reach the cursor, not just get logged
         // — and a space follows it so the next dictation does not glue on.
@@ -256,7 +263,9 @@ mod tests {
         let mut rig = Rig::builder()
             .desktop(desktop)
             .configure(|c| {
-                c.styles.apps.push(eva_config::AppStyle { bundle_id: "com.apple.mail".into(), style: "terminal".into() })
+                c.styles
+                    .apps
+                    .push(eva_config::AppStyle { bundle_id: "com.apple.mail".into(), style: "terminal".into() })
             })
             .build();
         rig.run(typed(&rig, "hola")).await;
@@ -270,8 +279,12 @@ mod tests {
         let events = rig.run(typed(&rig, "hola mundo")).await;
 
         assert_eq!(rig.desktop.calls(), vec![Call::CopyText("Hola mundo. ".to_string())], "must not try to paste");
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("portapapeles"))));
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("portapapeles"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
     }
 
     #[tokio::test]
@@ -288,7 +301,9 @@ mod tests {
         let mut rig = Rig::builder().desktop(MockDesktop::failing()).build();
         let events = rig.run(typed(&rig, "hola")).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
     }
 
     #[tokio::test]
@@ -307,7 +322,10 @@ mod tests {
     #[tokio::test]
     async fn edit_mode_rewrites_the_selection_and_pastes_it_over_the_original() {
         let desktop = MockDesktop::new().with_selection("oye mándame eso");
-        let mut rig = Rig::builder().desktop(desktop).formatter(crate::testkit::Rewriter::returning("Por favor, envíame eso.")).build();
+        let mut rig = Rig::builder()
+            .desktop(desktop)
+            .formatter(crate::testkit::Rewriter::returning("Por favor, envíame eso."))
+            .build();
 
         let events = rig.run(typed(&rig, "Adán, hazlo más formal")).await;
 
@@ -336,7 +354,9 @@ mod tests {
         let events = rig.run(typed(&rig, "Adán, hazlo más formal")).await;
 
         assert_eq!(rig.desktop.calls(), vec![Call::SelectedText]);
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("seleccionado"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("seleccionado"))));
     }
 
     #[tokio::test]
@@ -346,13 +366,16 @@ mod tests {
         let events = rig.run(typed(&rig, "Adán, hazlo más formal")).await;
 
         assert_eq!(rig.desktop.calls(), vec![Call::SelectedText], "the selection must not be touched");
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("Apple Intelligence"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("Apple Intelligence"))));
     }
 
     #[tokio::test]
     async fn an_unchanged_rewrite_is_reported_not_pasted() {
         let desktop = MockDesktop::new().with_selection("ya está formal");
-        let mut rig = Rig::builder().desktop(desktop).formatter(crate::testkit::Rewriter::returning("ya está formal")).build();
+        let mut rig =
+            Rig::builder().desktop(desktop).formatter(crate::testkit::Rewriter::returning("ya está formal")).build();
         let events = rig.run(typed(&rig, "Adán, hazlo más formal")).await;
         assert_eq!(rig.desktop.calls(), vec![Call::SelectedText]);
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));

@@ -35,11 +35,7 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<Sample>> {
         let txt_path = path.with_extension("txt");
         match std::fs::read_to_string(&txt_path) {
             Ok(reference) => {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("(nombre inválido)")
-                    .to_string();
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("(nombre inválido)").to_string();
                 samples.push(Sample { name, wav_path: path, reference: reference.trim().to_string() });
             }
             Err(_) => {

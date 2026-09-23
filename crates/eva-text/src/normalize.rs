@@ -39,18 +39,10 @@ pub fn fold_diacritics(input: &str) -> String {
 /// such as `¿`, `¡`, or curly quotes is never split in the middle of its
 /// UTF-8 encoding.
 pub fn split_punctuation(token: &str) -> (&str, &str, &str) {
-    let core_start = token
-        .char_indices()
-        .find(|(_, c)| c.is_alphanumeric())
-        .map(|(idx, _)| idx)
-        .unwrap_or(token.len());
+    let core_start = token.char_indices().find(|(_, c)| c.is_alphanumeric()).map(|(idx, _)| idx).unwrap_or(token.len());
 
-    let core_end = token
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_alphanumeric())
-        .map(|(idx, c)| idx + c.len_utf8())
-        .unwrap_or(0);
+    let core_end =
+        token.char_indices().rev().find(|(_, c)| c.is_alphanumeric()).map(|(idx, c)| idx + c.len_utf8()).unwrap_or(0);
 
     if core_start >= core_end {
         // No alphanumeric core at all (e.g. the token is just "...").

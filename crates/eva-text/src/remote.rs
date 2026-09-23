@@ -118,11 +118,14 @@ impl Formatter for OpenAiCompatibleFormatter {
         if !self.use_for_edit {
             return Err(FormatError::Unavailable("el modelo remoto no está activado para editar".to_string()));
         }
-        let result = clean_rewrite(&self.complete(REWRITE_INSTRUCTIONS, &format!("Instrucción: {instruction}\nTexto: {text}"))?);
+        let result =
+            clean_rewrite(&self.complete(REWRITE_INSTRUCTIONS, &format!("Instrucción: {instruction}\nTexto: {text}"))?);
         if is_plausible_rewrite(text, &result) {
             Ok(result)
         } else {
-            Err(FormatError::InvalidOutput(format!("la reescritura no se parece a una edición del texto original: {result:?}")))
+            Err(FormatError::InvalidOutput(format!(
+                "la reescritura no se parece a una edición del texto original: {result:?}"
+            )))
         }
     }
 }
@@ -203,7 +206,11 @@ mod tests {
                     if let Some(split) = text.find("\r\n\r\n") {
                         let length = text[..split]
                             .lines()
-                            .find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
                             .unwrap_or(0);
                         if received.len() >= split + 4 + length {
                             break;
@@ -249,7 +256,11 @@ mod tests {
         let body = body_of(&request);
         assert_eq!(body["model"], "gpt-4o-mini");
         assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][1], json!({"role": "user", "content": "hola mundo"}), "the dictation is the user message");
+        assert_eq!(
+            body["messages"][1],
+            json!({"role": "user", "content": "hola mundo"}),
+            "the dictation is the user message"
+        );
     }
 
     #[test]
@@ -282,7 +293,10 @@ mod tests {
         let out = client(&server.url, &["edit"]).rewrite("oye mándame eso", "hazlo más formal").expect("rewrites");
         assert_eq!(out, "Por favor, envíame eso.");
         let request = server.requests.lock().unwrap()[0].clone();
-        assert_eq!(body_of(&request)["messages"][1]["content"], "Instrucción: hazlo más formal\nTexto: oye mándame eso");
+        assert_eq!(
+            body_of(&request)["messages"][1]["content"],
+            "Instrucción: hazlo más formal\nTexto: oye mándame eso"
+        );
     }
 
     #[test]

@@ -104,7 +104,10 @@ impl Overlay {
         let (r, g, b, a) = content.tone.background();
         self.panel.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a)));
         self.label.setStringValue(&NSString::from_str(&content.text));
-        self.label.setFrame(NSRect::new(NSPoint::new(0.0, PANEL_PADDING / 2.0 - 2.0), NSSize::new(PANEL_WIDTH, height - PANEL_PADDING / 2.0)));
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(0.0, PANEL_PADDING / 2.0 - 2.0),
+            NSSize::new(PANEL_WIDTH, height - PANEL_PADDING / 2.0),
+        ));
         self.panel.setContentSize(size);
         self.position_bottom_center(size);
 

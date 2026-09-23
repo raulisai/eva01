@@ -122,7 +122,9 @@ mod tests {
         let mut rig = Rig::builder().desktop(MockDesktop::failing()).build();
         let events = rig.run(typed("Adán, abre brave")).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
     }
 
     #[tokio::test]
@@ -140,7 +142,9 @@ mod tests {
         let events = rig.run_answering(typed("Adán, abre file:///etc/hosts"), false).await;
 
         assert!(rig.desktop.calls().is_empty());
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("no confirmaste"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("no confirmaste"))));
         assert_eq!(rig.ctx.store.recent_audit(1).expect("audit")[0].decision, Decision::UserRejected);
     }
 
@@ -154,9 +158,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_configured_policy_can_make_a_voice_action_ask_first() {
-        let mut rig = Rig::builder().configure(|c| {
-            c.gateway.voice.insert(eva_config::ActionKind::OpenApp, eva_config::Policy::Confirm);
-        }).build();
+        let mut rig = Rig::builder()
+            .configure(|c| {
+                c.gateway.voice.insert(eva_config::ActionKind::OpenApp, eva_config::Policy::Confirm);
+            })
+            .build();
         let events = rig.run_answering(typed("Adán, abre brave"), true).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })));
         assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);

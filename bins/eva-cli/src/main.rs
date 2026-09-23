@@ -148,18 +148,24 @@ async fn main() {
         Command::Tasks => talk(|request_id| ShellToWorker::ListTasks { request_id }, timeout).await,
         Command::WakeWord { word } => talk(|request_id| ShellToWorker::SetWakeWord { request_id, word }, timeout).await,
         Command::Dictionary { action } => match action {
-            DictionaryAction::Add { word } => talk(|request_id| ShellToWorker::AddCustomWord { request_id, word }, timeout).await,
-            DictionaryAction::Remove { word } => talk(|request_id| ShellToWorker::RemoveCustomWord { request_id, word }, timeout).await,
+            DictionaryAction::Add { word } => {
+                talk(|request_id| ShellToWorker::AddCustomWord { request_id, word }, timeout).await
+            }
+            DictionaryAction::Remove { word } => {
+                talk(|request_id| ShellToWorker::RemoveCustomWord { request_id, word }, timeout).await
+            }
             DictionaryAction::List => talk(|request_id| ShellToWorker::ListCustomWords { request_id }, timeout).await,
         },
         Command::Doctor { smoke } => doctor::run(smoke).await,
         Command::Audit { limit } => audit(limit),
-        Command::Model { action } => run_blocking(move || match action {
-            ModelAction::List => model::list(),
-            ModelAction::Install { id, force } => model::install(&id, force),
-            ModelAction::Verify { id } => model::verify(id.as_deref()),
-        })
-        .await,
+        Command::Model { action } => {
+            run_blocking(move || match action {
+                ModelAction::List => model::list(),
+                ModelAction::Install { id, force } => model::install(&id, force),
+                ModelAction::Verify { id } => model::verify(id.as_deref()),
+            })
+            .await
+        }
         Command::Config { action } => config(&action),
         Command::Startup { action } => match action {
             StartupAction::Enable => startup::enable(),

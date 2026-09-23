@@ -50,7 +50,10 @@ fn remove_stale_sockets(run_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(run_dir) else { return };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let pid = name.strip_prefix("gateway-").and_then(|rest| rest.strip_suffix(".sock")).and_then(|p| p.parse::<i32>().ok());
+        let pid = name
+            .strip_prefix("gateway-")
+            .and_then(|rest| rest.strip_suffix(".sock"))
+            .and_then(|p| p.parse::<i32>().ok());
         if let Some(pid) = pid {
             if !process_alive(pid) {
                 let _ = std::fs::remove_file(entry.path());
@@ -88,8 +91,8 @@ impl Endpoint {
 mod tests {
     use super::*;
     use crate::testkit::Rig;
-    use eva_mcp::{DesktopService, RemoteService, ServiceError};
     use eva_mcp::desktop::mock::{Call, MockDesktop};
+    use eva_mcp::{DesktopService, RemoteService, ServiceError};
     use std::os::unix::fs::PermissionsExt;
 
     #[tokio::test]

@@ -64,15 +64,10 @@ pub fn get_last_session(conn: &Connection, project_dir: &str) -> Result<Option<A
     .optional()?
     .map(|(provider_id, session_id_text, updated_at_text, work_dir)| {
         let session_id = Uuid::parse_str(&session_id_text).map_err(|e| {
-            StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            ))
+            StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))
         })?;
-        let updated_at = DateTime::parse_from_rfc3339(&updated_at_text)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
+        let updated_at =
+            DateTime::parse_from_rfc3339(&updated_at_text).map(|dt| dt.with_timezone(&Utc)).map_err(|e| {
                 StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
                     2,
                     rusqlite::types::Type::Text,
@@ -131,14 +126,8 @@ mod tests {
         save_last_session(&conn, "/repos/a", "codex", session_a, None).expect("save must succeed");
         save_last_session(&conn, "/repos/b", "claude_code", session_b, None).expect("save must succeed");
 
-        assert_eq!(
-            get_last_session(&conn, "/repos/a").expect("must succeed").map(|r| r.session_id),
-            Some(session_a)
-        );
-        assert_eq!(
-            get_last_session(&conn, "/repos/b").expect("must succeed").map(|r| r.session_id),
-            Some(session_b)
-        );
+        assert_eq!(get_last_session(&conn, "/repos/a").expect("must succeed").map(|r| r.session_id), Some(session_a));
+        assert_eq!(get_last_session(&conn, "/repos/b").expect("must succeed").map(|r| r.session_id), Some(session_b));
     }
 
     #[test]

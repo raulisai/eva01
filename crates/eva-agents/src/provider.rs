@@ -249,11 +249,7 @@ pub trait AgentProvider: Send + Sync {
     /// once it starts, failures during the run are reported as an
     /// [`AgentEvent::Failed`] on `events` and an [`AgentOutcome::Failed`]
     /// from [`RunningAgent::wait`], not as an `Err` here.
-    async fn execute(
-        &self,
-        task: &AgentTask,
-        events: UnboundedSender<AgentEvent>,
-    ) -> Result<RunningAgent, AgentError>;
+    async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError>;
 }
 
 #[cfg(test)]
@@ -400,12 +396,16 @@ mod tests {
     #[tokio::test]
     async fn wait_reports_a_failed_outcome_if_the_reader_task_itself_panics() {
         let child = tokio::process::Command::new("true").spawn().expect("spawning `true` must succeed");
-        #[allow(clippy::panic)] // deliberately simulating a reader-task crash, to prove `wait()` degrades instead of propagating it
+        #[allow(clippy::panic)]
+        // deliberately simulating a reader-task crash, to prove `wait()` degrades instead of propagating it
         let output_task = tokio::spawn(async { panic!("simulated reader-task crash") });
         let running = RunningAgent::new(child, output_task);
 
         let outcome = running.wait().await;
-        assert!(matches!(outcome, AgentOutcome::Failed { .. }), "a panicked reader task must degrade to Failed, not propagate the panic");
+        assert!(
+            matches!(outcome, AgentOutcome::Failed { .. }),
+            "a panicked reader task must degrade to Failed, not propagate the panic"
+        );
     }
 
     #[test]

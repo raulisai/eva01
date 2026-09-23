@@ -128,7 +128,9 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(31)).await;
         assert!(!asking.await.expect("no panic"));
-        assert!(matches!(rx.recv().await, Some(WorkerToShell::ConfirmationClosed { confirmation_id }) if confirmation_id == id));
+        assert!(
+            matches!(rx.recv().await, Some(WorkerToShell::ConfirmationClosed { confirmation_id }) if confirmation_id == id)
+        );
         assert_eq!(broker.pending_count(), 0);
     }
 

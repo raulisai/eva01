@@ -128,7 +128,10 @@ mod tests {
 
     fn index(names: &[&str]) -> ProjectIndex {
         ProjectIndex::new(
-            names.iter().map(|n| Project { name: (*n).to_string(), path: PathBuf::from(format!("/code/{n}")) }).collect(),
+            names
+                .iter()
+                .map(|n| Project { name: (*n).to_string(), path: PathBuf::from(format!("/code/{n}")) })
+                .collect(),
         )
     }
 
@@ -220,8 +223,7 @@ mod tests {
 
     #[test]
     fn a_configured_project_that_no_longer_exists_is_skipped() {
-        let (path, why) =
-            index(&[]).resolve_active(None, Some(Path::new("/ya/no/existe")), None, Path::new("/tmp"));
+        let (path, why) = index(&[]).resolve_active(None, Some(Path::new("/ya/no/existe")), None, Path::new("/tmp"));
         assert_eq!((path, why), (PathBuf::from("/tmp"), Resolution::WorkingDirectory));
     }
 

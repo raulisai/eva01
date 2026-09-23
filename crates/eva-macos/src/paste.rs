@@ -241,10 +241,7 @@ pub mod mock {
     impl MockPasteboard {
         /// Builds a mock clipboard, optionally pre-seeded with `initial` content.
         pub fn new(initial: Option<&str>) -> Self {
-            MockPasteboard {
-                contents: Mutex::new(initial.map(str::to_string)),
-                change_count: AtomicIsize::new(0),
-            }
+            MockPasteboard { contents: Mutex::new(initial.map(str::to_string)), change_count: AtomicIsize::new(0) }
         }
     }
 
@@ -420,8 +417,8 @@ mod tests {
         let pasteboard = Arc::new(MockPasteboard::new(Some("lo que el usuario había copiado")));
         let keystroke = MockKeystrokeSynthesizer::with_selection(pasteboard.clone(), "texto seleccionado");
 
-        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200))
-            .expect("must succeed");
+        let selected =
+            copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200)).expect("must succeed");
 
         assert_eq!(selected, Some("texto seleccionado".to_string()));
         assert!(keystroke.copy_was_called());
@@ -437,8 +434,8 @@ mod tests {
         let pasteboard = Arc::new(MockPasteboard::new(Some("original")));
         let keystroke = MockKeystrokeSynthesizer::succeeding(); // the "app" copies nothing
 
-        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(60))
-            .expect("must succeed");
+        let selected =
+            copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(60)).expect("must succeed");
 
         assert_eq!(selected, None);
         assert_eq!(pasteboard.read_string(), Some("original".to_string()));
@@ -449,8 +446,8 @@ mod tests {
         let pasteboard = Arc::new(MockPasteboard::new(None));
         let keystroke = MockKeystrokeSynthesizer::with_selection(pasteboard.clone(), "seleccionado");
 
-        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200))
-            .expect("must succeed");
+        let selected =
+            copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200)).expect("must succeed");
 
         assert_eq!(selected, Some("seleccionado".to_string()));
         assert_eq!(pasteboard.read_string(), None, "the selection must not linger on an initially empty clipboard");

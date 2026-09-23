@@ -95,7 +95,9 @@ pub fn disable() -> i32 {
     }
     match std::fs::remove_file(&path) {
         Ok(()) => println!("EVA01 ya no se abre al iniciar sesión."),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("EVA01 no estaba configurado para abrirse al iniciar sesión."),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("EVA01 no estaba configurado para abrirse al iniciar sesión.")
+        }
         Err(e) => {
             eprintln!("no se pudo borrar {}: {e}", path.display());
             return 1;
@@ -106,7 +108,14 @@ pub fn disable() -> i32 {
 
 /// `eva startup status`.
 pub fn status() -> i32 {
-    println!("{}", if is_enabled() { "EVA01 se abre al iniciar sesión." } else { "EVA01 no se abre al iniciar sesión (`eva startup enable`)." });
+    println!(
+        "{}",
+        if is_enabled() {
+            "EVA01 se abre al iniciar sesión."
+        } else {
+            "EVA01 no se abre al iniciar sesión (`eva startup enable`)."
+        }
+    );
     0
 }
 
@@ -146,7 +155,8 @@ mod tests {
     fn the_generated_plist_is_valid_for_plutil() {
         let path = std::env::temp_dir().join(format!("eva-plist-test-{}.plist", std::process::id()));
         std::fs::write(&path, plist(Path::new("/Applications/EVA01.app"))).unwrap();
-        let status = std::process::Command::new("plutil").arg("-lint").arg(&path).output().expect("plutil ships with macOS");
+        let status =
+            std::process::Command::new("plutil").arg("-lint").arg(&path).output().expect("plutil ships with macOS");
         let _ = std::fs::remove_file(&path);
         assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stdout));
     }

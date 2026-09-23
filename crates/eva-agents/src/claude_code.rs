@@ -50,11 +50,7 @@ impl AgentProvider for ClaudeCodeProvider {
         detect_cli(BINARY, &["doctor"]).await
     }
 
-    async fn execute(
-        &self,
-        task: &AgentTask,
-        events: UnboundedSender<AgentEvent>,
-    ) -> Result<RunningAgent, AgentError> {
+    async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {
         launch("claude_code", build_command(task), events, parse_line)
     }
 }
@@ -140,7 +136,9 @@ fn parse_line(line: &str) -> Vec<AgentEvent> {
             .collect(),
         RawEvent::Result { is_error, result } => {
             if is_error {
-                vec![AgentEvent::Failed { message: result.unwrap_or_else(|| "el agente reportó un error".to_string()) }]
+                vec![AgentEvent::Failed {
+                    message: result.unwrap_or_else(|| "el agente reportó un error".to_string())
+                }]
             } else {
                 vec![AgentEvent::Completed { summary: result }]
             }
@@ -170,7 +168,9 @@ enum RawEvent {
         #[serde(default)]
         session_id: Option<String>,
     },
-    Assistant { message: AssistantMessage },
+    Assistant {
+        message: AssistantMessage,
+    },
     Result {
         is_error: bool,
         result: Option<String>,
@@ -188,8 +188,14 @@ struct AssistantMessage {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: String },
-    ToolUse { name: String, #[serde(default)] input: serde_json::Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
     #[serde(other)]
     Other,
 }
@@ -289,10 +295,8 @@ mod tests {
 
     #[test]
     fn the_assistant_message_line_yields_its_text_content() {
-        let assistant_line = REAL_CAPTURE
-            .lines()
-            .find(|l| l.contains("\"type\":\"assistant\""))
-            .expect("fixture has an assistant line");
+        let assistant_line =
+            REAL_CAPTURE.lines().find(|l| l.contains("\"type\":\"assistant\"")).expect("fixture has an assistant line");
         let events = parse_line(assistant_line);
         assert_eq!(
             events,
@@ -304,10 +308,8 @@ mod tests {
 
     #[test]
     fn the_terminal_result_line_becomes_failed_because_is_error_was_true() {
-        let result_line = REAL_CAPTURE
-            .lines()
-            .find(|l| l.contains("\"type\":\"result\""))
-            .expect("fixture has a result line");
+        let result_line =
+            REAL_CAPTURE.lines().find(|l| l.contains("\"type\":\"result\"")).expect("fixture has a result line");
         let events = parse_line(result_line);
         assert_eq!(
             events,
@@ -320,10 +322,7 @@ mod tests {
     #[test]
     fn a_successful_result_line_becomes_completed() {
         let line = r#"{"type":"result","is_error":false,"result":"3 archivos cambiados"}"#;
-        assert_eq!(
-            parse_line(line),
-            vec![AgentEvent::Completed { summary: Some("3 archivos cambiados".to_string()) }]
-        );
+        assert_eq!(parse_line(line), vec![AgentEvent::Completed { summary: Some("3 archivos cambiados".to_string()) }]);
     }
 
     #[test]

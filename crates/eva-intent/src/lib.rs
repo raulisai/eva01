@@ -56,10 +56,7 @@ mod tests {
     #[test]
     fn text_with_the_wake_word_becomes_a_command() {
         let result = interpret("Adán, abre Brave", "Adán", &sample_index());
-        assert_eq!(
-            result,
-            InterpretResult::Command(Intent::OpenApp { app: "Brave Browser".to_string() })
-        );
+        assert_eq!(result, InterpretResult::Command(Intent::OpenApp { app: "Brave Browser".to_string() }));
     }
 
     #[test]
@@ -68,10 +65,7 @@ mod tests {
         // engine renders the wake word without its tilde. It must still
         // gate as a command, not get pasted as dictation.
         let result = interpret("adan abre brave", "Adán", &sample_index());
-        assert_eq!(
-            result,
-            InterpretResult::Command(Intent::OpenApp { app: "Brave Browser".to_string() })
-        );
+        assert_eq!(result, InterpretResult::Command(Intent::OpenApp { app: "Brave Browser".to_string() }));
     }
 
     #[test]

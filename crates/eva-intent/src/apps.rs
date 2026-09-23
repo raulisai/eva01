@@ -21,10 +21,7 @@ pub struct AppEntry {
 impl AppEntry {
     /// Builds an entry with no extra aliases beyond its canonical name.
     pub fn new(canonical_name: impl Into<String>) -> Self {
-        AppEntry {
-            canonical_name: canonical_name.into(),
-            aliases: Vec::new(),
-        }
+        AppEntry { canonical_name: canonical_name.into(), aliases: Vec::new() }
     }
 
     /// Adds spoken aliases, builder-style.
@@ -109,23 +106,14 @@ mod tests {
     #[test]
     fn matches_by_alias() {
         let index = sample_index();
-        assert_eq!(
-            index.find("code").map(|a| a.canonical_name.as_str()),
-            Some("Visual Studio Code")
-        );
-        assert_eq!(
-            index.find("brave").map(|a| a.canonical_name.as_str()),
-            Some("Brave Browser")
-        );
+        assert_eq!(index.find("code").map(|a| a.canonical_name.as_str()), Some("Visual Studio Code"));
+        assert_eq!(index.find("brave").map(|a| a.canonical_name.as_str()), Some("Brave Browser"));
     }
 
     #[test]
     fn matches_are_accent_and_case_insensitive() {
         let index = sample_index();
-        assert_eq!(
-            index.find("BRAVE").map(|a| a.canonical_name.as_str()),
-            Some("Brave Browser")
-        );
+        assert_eq!(index.find("BRAVE").map(|a| a.canonical_name.as_str()), Some("Brave Browser"));
     }
 
     #[test]

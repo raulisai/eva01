@@ -8,10 +8,7 @@ use rusqlite::{params, Connection};
 /// Adds a word to the persisted dictionary. Idempotent: adding the same word
 /// twice is a no-op, not an error.
 pub fn add(conn: &Connection, word: &str) -> Result<(), StoreError> {
-    conn.execute(
-        "INSERT INTO custom_words (word) VALUES (?1) ON CONFLICT(word) DO NOTHING",
-        params![word],
-    )?;
+    conn.execute("INSERT INTO custom_words (word) VALUES (?1) ON CONFLICT(word) DO NOTHING", params![word])?;
     Ok(())
 }
 

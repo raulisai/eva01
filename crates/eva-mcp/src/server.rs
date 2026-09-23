@@ -79,17 +79,23 @@ impl EvaMcpServer {
         Ok(reply(self.service.close_app(&args.app_name).await.map(|()| format!("Cerrado: {}", args.app_name))))
     }
 
-    #[tool(description = "Abre una URL en el manejador por defecto del sistema. Los enlaces que no son web piden confirmación.")]
+    #[tool(
+        description = "Abre una URL en el manejador por defecto del sistema. Los enlaces que no son web piden confirmación."
+    )]
     async fn open_url(&self, Parameters(args): Parameters<UrlArgs>) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.open_url(&args.url).await.map(|()| format!("Abierto: {}", args.url))))
     }
 
-    #[tool(description = "Pega texto en la posición actual del cursor, en la aplicación que tenga el foco. Pide confirmación al usuario.")]
+    #[tool(
+        description = "Pega texto en la posición actual del cursor, en la aplicación que tenga el foco. Pide confirmación al usuario."
+    )]
     async fn insert_text(&self, Parameters(args): Parameters<TextArgs>) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.insert_text(&args.text).await.map(|()| "Texto insertado.".to_string())))
     }
 
-    #[tool(description = "Devuelve la aplicación en primer plano: nombre, identificador de paquete y título de su ventana.")]
+    #[tool(
+        description = "Devuelve la aplicación en primer plano: nombre, identificador de paquete y título de su ventana."
+    )]
     async fn get_active_window(&self) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.active_window().await.map(|window| match window {
             Some(w) => format!(
@@ -102,7 +108,9 @@ impl EvaMcpServer {
         })))
     }
 
-    #[tool(description = "Devuelve el texto que el usuario tiene seleccionado en la aplicación en primer plano. Pide confirmación al usuario.")]
+    #[tool(
+        description = "Devuelve el texto que el usuario tiene seleccionado en la aplicación en primer plano. Pide confirmación al usuario."
+    )]
     async fn get_selection(&self) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.selected_text().await.map(|text| match text {
             Some(text) => text,
@@ -120,17 +128,25 @@ impl EvaMcpServer {
         Ok(reply(self.service.speak(&args.text).await.map(|()| "Reproduciendo.".to_string())))
     }
 
-    #[tool(description = "Hace una pregunta de sí o no al usuario en la pantalla y espera su respuesta (con un clic o una tecla, nunca por voz). Úsala antes de cualquier acción destructiva o irreversible.")]
+    #[tool(
+        description = "Hace una pregunta de sí o no al usuario en la pantalla y espera su respuesta (con un clic o una tecla, nunca por voz). Úsala antes de cualquier acción destructiva o irreversible."
+    )]
     async fn ask_user_confirmation(
         &self,
         Parameters(args): Parameters<ConfirmationArgs>,
     ) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.ask_confirmation(&args.question, &args.detail).await.map(|approved| {
-            if approved { "El usuario dijo que sí.".to_string() } else { "El usuario dijo que no (o no respondió).".to_string() }
+            if approved {
+                "El usuario dijo que sí.".to_string()
+            } else {
+                "El usuario dijo que no (o no respondió).".to_string()
+            }
         })))
     }
 
-    #[tool(description = "Lista los proyectos que EVA conoce (repositorios git), marcando el activo: el que el usuario tiene a la vista.")]
+    #[tool(
+        description = "Lista los proyectos que EVA conoce (repositorios git), marcando el activo: el que el usuario tiene a la vista."
+    )]
     async fn list_projects(&self) -> Result<CallToolResult, McpError> {
         Ok(reply(self.service.list_projects().await.map(|projects| {
             if projects.is_empty() {
@@ -151,7 +167,9 @@ impl EvaMcpServer {
 fn reply(outcome: Outcome<String>) -> CallToolResult {
     match outcome {
         Ok(message) => CallToolResult::success(vec![ContentBlock::text(message)]),
-        Err(ServiceError::Refused(reason)) => CallToolResult::error(vec![ContentBlock::text(format!("Rechazado: {reason}"))]),
+        Err(ServiceError::Refused(reason)) => {
+            CallToolResult::error(vec![ContentBlock::text(format!("Rechazado: {reason}"))])
+        }
         Err(ServiceError::Failed(message)) => CallToolResult::error(vec![ContentBlock::text(message)]),
     }
 }
@@ -200,14 +218,8 @@ mod tests {
             Store::open_in_memory().expect("store"),
             confirmer.clone(),
         ));
-        let service = LocalService::new(
-            Origin::Agent,
-            gateway,
-            desktop,
-            confirmer,
-            Arc::new(OneProject),
-            Duration::from_secs(5),
-        );
+        let service =
+            LocalService::new(Origin::Agent, gateway, desktop, confirmer, Arc::new(OneProject), Duration::from_secs(5));
         EvaMcpServer::new(Arc::new(service))
     }
 
@@ -308,7 +320,10 @@ mod tests {
     #[tokio::test]
     async fn notify_and_speak_forward_their_arguments() {
         let (server, desktop, _) = plain();
-        server.notify(Parameters(NotifyArgs { title: "EVA01".to_string(), body: "listo".to_string() })).await.expect("ok");
+        server
+            .notify(Parameters(NotifyArgs { title: "EVA01".to_string(), body: "listo".to_string() }))
+            .await
+            .expect("ok");
         server.speak(Parameters(TextArgs { text: "Codex terminó.".to_string() })).await.expect("ok");
         assert_eq!(
             desktop.calls(),

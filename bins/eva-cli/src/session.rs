@@ -93,9 +93,12 @@ pub async fn collect(
                         continue;
                     };
 
-                    if let WorkerToShell::ConfirmationRequested { confirmation_id, title, detail, timeout_secs } = &event {
+                    if let WorkerToShell::ConfirmationRequested { confirmation_id, title, detail, timeout_secs } =
+                        &event
+                    {
                         let approved = ask_yes_no(title, detail, *timeout_secs).await;
-                        let answer = ShellToWorker::ConfirmationResponse { confirmation_id: *confirmation_id, approved };
+                        let answer =
+                            ShellToWorker::ConfirmationResponse { confirmation_id: *confirmation_id, approved };
                         if send(&mut stdin, &answer).await.is_err() {
                             exit_code = 2;
                             break;
@@ -159,7 +162,11 @@ async fn ask_yes_no(title: &str, detail: &str, timeout_secs: u64) -> bool {
     eprint!("¿Lo hago? [s/N] ({timeout_secs} s): ");
 
     let mut answer = String::new();
-    let read = tokio::time::timeout(Duration::from_secs(timeout_secs), BufReader::new(tokio::io::stdin()).read_line(&mut answer)).await;
+    let read = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        BufReader::new(tokio::io::stdin()).read_line(&mut answer),
+    )
+    .await;
     matches!(read, Ok(Ok(n)) if n > 0) && render::is_yes(&answer)
 }
 
@@ -250,9 +257,21 @@ mod tests {
     fn ready_transcript_intent_agent_and_task_events_are_never_terminal_on_their_own() {
         let request_id = Uuid::new_v4();
         assert!(!is_terminal(&WorkerToShell::Ready, request_id));
-        assert!(!is_terminal(&WorkerToShell::Transcript { request_id, raw: "a".into(), cleaned: "A.".into() }, request_id));
-        assert!(!is_terminal(&WorkerToShell::IntentRecognized { request_id, intent_json: serde_json::json!({}) }, request_id));
+        assert!(!is_terminal(
+            &WorkerToShell::Transcript { request_id, raw: "a".into(), cleaned: "A.".into() },
+            request_id
+        ));
+        assert!(!is_terminal(
+            &WorkerToShell::IntentRecognized { request_id, intent_json: serde_json::json!({}) },
+            request_id
+        ));
         assert!(!is_terminal(&WorkerToShell::AgentEvent { request_id, event_json: serde_json::json!({}) }, request_id));
-        assert!(!is_terminal(&WorkerToShell::TaskFinished { request_id, success: true, summary: String::new() }, request_id), "the Done state follows it");
+        assert!(
+            !is_terminal(
+                &WorkerToShell::TaskFinished { request_id, success: true, summary: String::new() },
+                request_id
+            ),
+            "the Done state follows it"
+        );
     }
 }

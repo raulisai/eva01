@@ -60,17 +60,11 @@ pub fn clean_styled(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatte
             // non-empty input (an InvalidOutput case worth degrading from
             // too) — fall back rather than paste nothing.
             #[allow(clippy::expect_used)] // RuleOnlyFormatter::format_styled never returns Err
-            RuleOnlyFormatter
-                .format_styled(&pre_formatted, style)
-                .expect("RuleOnlyFormatter never fails")
+            RuleOnlyFormatter.format_styled(&pre_formatted, style).expect("RuleOnlyFormatter never fails")
         }
     };
 
-    CleanedTranscript {
-        raw: raw.to_string(),
-        pre_formatted,
-        formatted,
-    }
+    CleanedTranscript { raw: raw.to_string(), pre_formatted, formatted }
 }
 
 #[cfg(test)]

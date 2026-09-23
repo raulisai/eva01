@@ -252,8 +252,18 @@ impl WorkerContext {
     /// last task ran in, else the working directory.
     pub async fn resolve_project(&self) -> (PathBuf, Resolution) {
         let title = self.active_window_title().await;
-        let most_recent = self.store.recent_tasks(1).ok().and_then(|tasks| tasks.into_iter().next()).map(|t| PathBuf::from(t.project_dir));
-        self.projects.index().resolve_active(title.as_deref(), self.projects.default_project(), most_recent.as_deref(), &self.base_dir)
+        let most_recent = self
+            .store
+            .recent_tasks(1)
+            .ok()
+            .and_then(|tasks| tasks.into_iter().next())
+            .map(|t| PathBuf::from(t.project_dir));
+        self.projects.index().resolve_active(
+            title.as_deref(),
+            self.projects.default_project(),
+            most_recent.as_deref(),
+            &self.base_dir,
+        )
     }
 
     pub(crate) fn recording(&self) -> std::sync::MutexGuard<'_, Option<RecordingSession>> {
@@ -332,7 +342,9 @@ mod tests {
             }
         });
         let _ = handle.await;
-        tokio::time::timeout(Duration::from_millis(500), tracker.wait_idle()).await.expect("panic must release the guard");
+        tokio::time::timeout(Duration::from_millis(500), tracker.wait_idle())
+            .await
+            .expect("panic must release the guard");
     }
 
     #[test]
@@ -340,7 +352,9 @@ mod tests {
         let (events, mut rx) = Events::channel();
         let id = Uuid::new_v4();
         events.fail(id, "roto");
-        assert!(matches!(rx.try_recv(), Ok(WorkerToShell::Error { message, recoverable: true, .. }) if message == "roto"));
+        assert!(
+            matches!(rx.try_recv(), Ok(WorkerToShell::Error { message, recoverable: true, .. }) if message == "roto")
+        );
         assert!(matches!(rx.try_recv(), Ok(WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
     }
 

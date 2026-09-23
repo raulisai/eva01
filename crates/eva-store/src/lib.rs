@@ -56,18 +56,14 @@ impl Store {
     /// and quarantine-and-recreate fallback described in the crate docs.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = schema::open_checked(path)?;
-        Ok(Store {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(Store { conn: Arc::new(Mutex::new(conn)) })
     }
 
     /// Opens a private, in-memory store. Used by tests and one-off CLI runs
     /// that should not touch disk.
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = schema::open_in_memory()?;
-        Ok(Store {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(Store { conn: Arc::new(Mutex::new(conn)) })
     }
 
     /// Runs `f` with exclusive access to the underlying connection. Every
@@ -218,9 +214,7 @@ mod tests {
     fn store_wraps_every_submodule_correctly() {
         let store = Store::open_in_memory().expect("open_in_memory must succeed");
 
-        let transcript_id = store
-            .save_transcript("eh hola", "hola", "Hola.")
-            .expect("save_transcript must succeed");
+        let transcript_id = store.save_transcript("eh hola", "hola", "Hola.").expect("save_transcript must succeed");
         assert_eq!(store.recent_transcripts(10).expect("recent must succeed").len(), 1);
 
         store.mark_transcript_bad(transcript_id).expect("mark_transcript_bad must succeed");
@@ -237,9 +231,7 @@ mod tests {
         let audit_id = store
             .log_decision(Some(transcript_id), &intent, Decision::AutoApproved)
             .expect("log_decision must succeed");
-        store
-            .record_audit_result(audit_id, "opened Brave")
-            .expect("record_audit_result must succeed");
+        store.record_audit_result(audit_id, "opened Brave").expect("record_audit_result must succeed");
         let found = store.find_audit(audit_id).expect("find_audit must succeed").expect("must exist");
         assert_eq!(found.result_summary, Some("opened Brave".to_string()));
     }

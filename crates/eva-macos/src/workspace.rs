@@ -80,10 +80,9 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
     let workspace = NSWorkspace::sharedWorkspace();
     let running = workspace.runningApplications();
 
-    let target = running.iter().find(|app| {
-        app.localizedName()
-            .is_some_and(|name| name.to_string().eq_ignore_ascii_case(app_name))
-    });
+    let target = running
+        .iter()
+        .find(|app| app.localizedName().is_some_and(|name| name.to_string().eq_ignore_ascii_case(app_name)));
 
     match target {
         Some(app) => {
@@ -104,11 +103,7 @@ pub fn open_url(url: &str) -> Result<(), MacosError> {
     // A bare domain typed by a user ("github.com/foo") is not a valid
     // absolute URL without a scheme — add one rather than fail on the
     // common case `eva-intent::intent::looks_like_url` is designed to catch.
-    let with_scheme = if url.contains("://") {
-        url.to_string()
-    } else {
-        format!("https://{url}")
-    };
+    let with_scheme = if url.contains("://") { url.to_string() } else { format!("https://{url}") };
 
     let ns_string = NSString::from_str(&with_scheme);
     let ns_url = NSURL::URLWithString(&ns_string).ok_or_else(|| MacosError::InvalidUrl(url.to_string()))?;

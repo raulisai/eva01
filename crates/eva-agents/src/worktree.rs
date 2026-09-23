@@ -63,9 +63,8 @@ async fn try_prepare(project_dir: &Path, task_id: Uuid, worktrees_dir: &Path) ->
             .await
             .map_err(|_| "no es un repositorio git".to_string())?,
     );
-    let base_commit = git(&repo_root, &["rev-parse", "HEAD"])
-        .await
-        .map_err(|_| "el repositorio aún no tiene commits".to_string())?;
+    let base_commit =
+        git(&repo_root, &["rev-parse", "HEAD"]).await.map_err(|_| "el repositorio aún no tiene commits".to_string())?;
 
     let short = &task_id.simple().to_string()[..8];
     let branch = format!("eva/{short}");
@@ -94,9 +93,8 @@ impl Worktree {
     /// uncommitted changes and anything the agent committed.
     pub async fn changed_files(&self) -> usize {
         let uncommitted = git(&self.root, &["status", "--porcelain"]).await.map(|out| out.lines().count());
-        let committed = git(&self.root, &["diff", "--name-only", &self.base_commit, "HEAD"])
-            .await
-            .map(|out| out.lines().count());
+        let committed =
+            git(&self.root, &["diff", "--name-only", &self.base_commit, "HEAD"]).await.map(|out| out.lines().count());
         uncommitted.unwrap_or(0).max(committed.unwrap_or(0))
     }
 
@@ -187,7 +185,8 @@ mod tests {
         let repo = Repo::new().await;
         let worktrees = tempfile::tempdir().expect("tempdir");
 
-        let Workspace::Worktree(wt) = prepare(&repo.path().join("packages/app"), Uuid::new_v4(), worktrees.path()).await
+        let Workspace::Worktree(wt) =
+            prepare(&repo.path().join("packages/app"), Uuid::new_v4(), worktrees.path()).await
         else {
             panic!("must get a worktree");
         };

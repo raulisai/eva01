@@ -8,7 +8,8 @@ use eva_config::{ActionKind, Policy};
 
 /// Apps that must never be quit by a voice command or an agent: closing them
 /// takes the desktop, the session, or EVA itself down.
-const PROTECTED_APPS: &[&str] = &["finder", "dock", "loginwindow", "systemuiserver", "windowserver", "eva01", "eva-shell"];
+const PROTECTED_APPS: &[&str] =
+    &["finder", "dock", "loginwindow", "systemuiserver", "windowserver", "eva01", "eva-shell"];
 
 /// URL schemes safe to open without asking.
 const SAFE_SCHEMES: &[&str] = &["http", "https", "mailto"];
@@ -24,10 +25,9 @@ pub fn safety_floor(action: &Action) -> (Policy, Option<&'static str>) {
             (Policy::Block, Some("cerrar esa aplicación tumbaría el escritorio o a EVA misma"))
         }
         ActionKind::OpenUrl => url_floor(&action.subject),
-        ActionKind::InsertText if action.subject.contains(['\n', '\r']) => (
-            Policy::Confirm,
-            Some("un texto de varias líneas pegado en una terminal ejecutaría cada línea"),
-        ),
+        ActionKind::InsertText if action.subject.contains(['\n', '\r']) => {
+            (Policy::Confirm, Some("un texto de varias líneas pegado en una terminal ejecutaría cada línea"))
+        }
         _ => (Policy::Auto, None),
     }
 }
@@ -61,8 +61,9 @@ fn scheme_of(url: &str) -> Option<String> {
     let valid_shape = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
         && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
     let port = rest.split('/').next().unwrap_or_default();
-    let is_host_with_port =
-        (scheme.eq_ignore_ascii_case("localhost") || scheme.contains('.')) && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit());
+    let is_host_with_port = (scheme.eq_ignore_ascii_case("localhost") || scheme.contains('.'))
+        && !port.is_empty()
+        && port.chars().all(|c| c.is_ascii_digit());
     (valid_shape && !is_host_with_port).then(|| scheme.to_lowercase())
 }
 
@@ -78,7 +79,8 @@ mod tests {
 
     #[test]
     fn web_links_and_bare_domains_need_no_confirmation() {
-        for url in ["https://github.com/x", "http://localhost:3000", "github.com/foo", "www.apple.com", "mailto:a@b.co"] {
+        for url in ["https://github.com/x", "http://localhost:3000", "github.com/foo", "www.apple.com", "mailto:a@b.co"]
+        {
             assert_eq!(floor(ActionKind::OpenUrl, url), Policy::Auto, "{url}");
         }
     }

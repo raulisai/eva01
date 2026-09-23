@@ -12,8 +12,7 @@ use std::path::PathBuf;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let model_dir =
-        PathBuf::from(args.next().expect("usage: transcribe_canary <model_dir> <audio.wav> [lang]"));
+    let model_dir = PathBuf::from(args.next().expect("usage: transcribe_canary <model_dir> <audio.wav> [lang]"));
     let wav_path = PathBuf::from(args.next().expect("usage: transcribe_canary <model_dir> <audio.wav> [lang]"));
     let lang = args.next().unwrap_or_else(|| "es".to_string());
 

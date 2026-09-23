@@ -39,7 +39,9 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     let store = eva_store::Store::open(&support.join("eva.sqlite3"))?;
     match store.mark_unfinished_tasks_as_interrupted("interrumpida: el worker se reinició") {
         Ok(0) => {}
-        Ok(count) => tracing::warn!(count, "tareas que estaban en curso cuando el worker murió; marcadas como interrumpidas"),
+        Ok(count) => {
+            tracing::warn!(count, "tareas que estaban en curso cuando el worker murió; marcadas como interrumpidas")
+        }
         Err(e) => tracing::warn!("no se pudo revisar las tareas interrumpidas: {e}"),
     }
 
@@ -53,12 +55,16 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         Ok(endpoint) => {
             let mcp = eva_mcp_binary().map(|binary| endpoint.injection(binary));
             if mcp.is_none() {
-                tracing::warn!("no se encontró eva-mcp junto a eva-worker; los agentes correrán sin las herramientas de EVA");
+                tracing::warn!(
+                    "no se encontró eva-mcp junto a eva-worker; los agentes correrán sin las herramientas de EVA"
+                );
             }
             (Some(endpoint), mcp)
         }
         Err(e) => {
-            tracing::warn!("no se pudo crear el socket del gateway: {e}; los agentes correrán sin las herramientas de EVA");
+            tracing::warn!(
+                "no se pudo crear el socket del gateway: {e}; los agentes correrán sin las herramientas de EVA"
+            );
             (None, None)
         }
     };
@@ -186,7 +192,10 @@ fn load_audio(config: &Config, support: &Path) -> Option<AudioContext> {
             }
         },
         ModelChoice::None => {
-            tracing::warn!("no hay ningún modelo de voz configurado ni en {}/models; `eva doctor` dice cómo instalarlo", support.display());
+            tracing::warn!(
+                "no hay ningún modelo de voz configurado ni en {}/models; `eva doctor` dice cómo instalarlo",
+                support.display()
+            );
             None
         }
     }
