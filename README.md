@@ -132,6 +132,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 eval/generate-synthetic.sh && cargo run --release -p eva-eval -- --corpus eval/audio
+cargo run -p eva-macos --example overlay_gallery -- /tmp/overlay   # el overlay en cada estado, a PNG
 ```
 
 - `docs/PLAN.md` — el plan, el estado real y lo que se descubrió implementándolo.

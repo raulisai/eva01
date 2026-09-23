@@ -11,7 +11,7 @@
 //! types that are not thread-safe.
 
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBackingStoreType, NSColor, NSPanel, NSTextField, NSWindowStyleMask};
+use objc2_app_kit::{NSBackingStoreType, NSColor, NSPanel, NSTextField, NSView, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 /// How the panel looks: a tint that says at a glance whether things are
@@ -63,15 +63,18 @@ pub struct Overlay {
 const FLOATING_WINDOW_LEVEL: isize = 3;
 
 const PANEL_WIDTH: f64 = 340.0;
-const LINE_HEIGHT: f64 = 20.0;
-const PANEL_PADDING: f64 = 20.0;
+/// Space between the text and the panel's edge.
+const H_PADDING: f64 = 18.0;
+const V_PADDING: f64 = 12.0;
+/// Even a one-word status is a comfortable target, not a sliver.
+const MIN_HEIGHT: f64 = 44.0;
 const BOTTOM_MARGIN: f64 = 80.0;
 
 impl Overlay {
     /// Builds the overlay panel, initially hidden.
     pub fn new(mtm: MainThreadMarker) -> Self {
         let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
-        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PANEL_WIDTH, LINE_HEIGHT + PANEL_PADDING));
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PANEL_WIDTH, MIN_HEIGHT));
 
         let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
             NSPanel::alloc(mtm),
@@ -88,25 +91,33 @@ impl Overlay {
         label.setTextColor(Some(&NSColor::whiteColor()));
         label.setBackgroundColor(None);
         label.setAlignment(objc2_app_kit::NSTextAlignment::Center);
-        panel.setContentView(Some(&label));
+        label.setPreferredMaxLayoutWidth(PANEL_WIDTH - 2.0 * H_PADDING);
+
+        // The label sits inside a plain container: it is positioned and sized
+        // by hand (measured, then centred), which the window would override
+        // if the label were the content view itself.
+        let container = NSView::initWithFrame(NSView::alloc(mtm), content_rect);
+        container.addSubview(&label);
+        panel.setContentView(Some(&container));
 
         Overlay { panel, label, mtm }
     }
 
-    /// Shows `content`, resizing the panel to fit its lines and keeping it
-    /// at the bottom center of the main screen, where Wispr Flow's overlay
-    /// (and Handy's) conventionally sit.
+    /// Shows `content`, resizing the panel to the height its text needs
+    /// (wrapped at the panel's width) and keeping it at the bottom center of
+    /// the main screen, where Wispr Flow's overlay (and Handy's) conventionally
+    /// sit.
     pub fn show(&self, content: &OverlayContent) {
-        let lines = content.text.lines().count().max(1);
-        let height = LINE_HEIGHT * lines as f64 + PANEL_PADDING;
-        let size = NSSize::new(PANEL_WIDTH, height);
-
         let (r, g, b, a) = content.tone.background();
         self.panel.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a)));
         self.label.setStringValue(&NSString::from_str(&content.text));
+
+        let text_height = self.label.fittingSize().height.ceil();
+        let height = (text_height + 2.0 * V_PADDING).max(MIN_HEIGHT);
+        let size = NSSize::new(PANEL_WIDTH, height);
         self.label.setFrame(NSRect::new(
-            NSPoint::new(0.0, PANEL_PADDING / 2.0 - 2.0),
-            NSSize::new(PANEL_WIDTH, height - PANEL_PADDING / 2.0),
+            NSPoint::new(H_PADDING, (height - text_height) / 2.0),
+            NSSize::new(PANEL_WIDTH - 2.0 * H_PADDING, text_height),
         ));
         self.panel.setContentSize(size);
         self.position_bottom_center(size);
@@ -120,6 +131,31 @@ impl Overlay {
     /// Hides the panel.
     pub fn hide(&self) {
         self.panel.orderOut(None);
+    }
+
+    /// The panel as it is drawn right now, as PNG bytes — for looking at every
+    /// state without a screen-recording permission (`examples/overlay_gallery`).
+    pub fn snapshot_png(&self) -> Option<Vec<u8>> {
+        use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+        use objc2_foundation::NSDictionary;
+
+        // The content view is only the text: the window's tint is drawn by its
+        // frame view, one level up.
+        let content = self.panel.contentView()?;
+        let view = unsafe { content.superview() }.unwrap_or(content);
+        let bounds = view.bounds();
+        let representation = view.bitmapImageRepForCachingDisplayInRect(bounds)?;
+        view.cacheDisplayInRect_toBitmapImageRep(bounds, &representation);
+        // SAFETY: the properties dictionary is empty, so none of its
+        // key/value types can be wrong; `representation` is a live bitmap rep.
+        let data = unsafe {
+            NSBitmapImageRep::representationUsingType_properties(
+                &representation,
+                NSBitmapImageFileType::PNG,
+                &NSDictionary::new(),
+            )
+        }?;
+        Some(data.to_vec())
     }
 
     fn position_bottom_center(&self, size: NSSize) {

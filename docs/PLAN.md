@@ -91,6 +91,12 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     `eva doctor` ahora muestra el micrófono y su frecuencia (sin abrirlo: no pide permiso ni enciende el
     indicador).
 
+11. **El overlay cortaba el texto y nadie lo había visto dibujado.** La altura del panel se calculaba como «líneas
+    × 20 px» sobre las líneas *con salto explícito*, así que un aviso largo (que envuelve a 3) quedaba cortado
+    a una línea y la pregunta de confirmación de 3 líneas perdía la primera. Se vio al renderizar cada estado
+    con `cargo run -p eva-macos --example overlay_gallery -- <carpeta>` (dibuja el panel a PNG en el propio
+    proceso, sin permiso de grabación de pantalla). Ahora la altura sale de medir el texto ya envuelto.
+
 ### Lo que falta y por qué
 
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado

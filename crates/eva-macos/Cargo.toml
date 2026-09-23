@@ -6,7 +6,7 @@ license.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray", "NSGeometry", "NSRunLoop", "NSDate"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray", "NSGeometry", "NSRunLoop", "NSDate", "NSData", "NSDictionary"] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
     "NSPanel",
@@ -26,6 +26,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSControl",
     "NSText",
     "NSParagraphStyle",
+    "NSBitmapImageRep",
+    "NSImageRep",
     "block2",
 ] }
 block2 = "0.6"
