@@ -33,6 +33,21 @@ impl WerResult {
     }
 }
 
+/// Lowercases and strips punctuation, keeping letters (accents and `ñ`
+/// included), digits and the spaces between words — the normalization WER is
+/// conventionally computed on, so "Hola, mundo." and "hola mundo" are the
+/// same words. The formatter's job (capitalization, punctuation) is judged
+/// separately; mixing it into WER would blame the speech model for a comma.
+pub fn normalize_for_wer(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Computes the word-level edit distance between `reference` and
 /// `hypothesis`, tokenizing both on whitespace. Case-sensitive and
 /// punctuation-sensitive by design — normalize both strings the same way
@@ -177,6 +192,14 @@ mod tests {
     fn is_case_and_punctuation_sensitive_by_design() {
         let result = word_error_rate("Hola.", "hola");
         assert_eq!(result.substitutions, 1, "callers must normalize first if that is not desired");
+    }
+
+    #[test]
+    fn normalizing_makes_punctuation_and_case_irrelevant_but_keeps_accents_and_enye() {
+        assert_eq!(normalize_for_wer("¡Hola, Mañana!  ¿Cómo estás?"), "hola mañana cómo estás");
+        assert_eq!(word_error_rate(&normalize_for_wer("Hola, mundo."), &normalize_for_wer("hola mundo")).rate(), 0.0);
+        assert_eq!(normalize_for_wer("ma ana"), "ma ana", "a lost ñ is still a real difference");
+        assert_eq!(normalize_for_wer("..."), "");
     }
 
     #[test]

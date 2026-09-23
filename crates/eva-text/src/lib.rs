@@ -14,12 +14,14 @@ mod faithfulness;
 pub mod filler;
 pub mod formatter;
 mod normalize;
+pub mod remote;
 pub mod style;
 
 pub use apple_intelligence::AppleIntelligenceFormatter;
 pub use dictionary::Dictionary;
-pub use formatter::{FormatError, Formatter, RuleOnlyFormatter};
+pub use formatter::{warm_up, FormatError, Formatter, RuleOnlyFormatter};
 pub use normalize::fold_diacritics;
+pub use remote::{OpenAiCompatibleFormatter, RemoteAssisted};
 pub use style::Style;
 
 /// The result of running [`clean`]: both the intermediate and final text are

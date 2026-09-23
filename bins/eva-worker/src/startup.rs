@@ -45,7 +45,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
 
     let wake_word: String = store.get_setting("wake_word")?.unwrap_or_else(|| config.wake_word.0.clone());
     let (events, rx) = Events::channel();
-    let (formatter, formatter_name) = load_formatter();
+    let (formatter, formatter_name) = load_formatter(&config);
 
     // The gateway socket. Failing to create it degrades the agents (they run
     // without EVA's tools), never the dictation.
@@ -84,7 +84,19 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     if let Some(endpoint) = endpoint {
         endpoint.serve(&ctx);
     }
+    warm_up_formatter(&ctx.formatter);
     Ok(Started { ctx, events: rx, gateway_socket })
+}
+
+/// Loads the formatter's model in the background, so the first dictation does
+/// not pay for it (see [`eva_text::warm_up`]). A plain thread: the call blocks
+/// on the model and the worker's runtime has better things to do meanwhile.
+fn warm_up_formatter(formatter: &Arc<dyn Formatter>) {
+    let formatter = Arc::clone(formatter);
+    std::thread::spawn(move || {
+        let took = eva_text::warm_up(formatter.as_ref());
+        tracing::info!(ms = took.as_millis() as u64, "formateador calentado");
+    });
 }
 
 /// The `eva-mcp` binary next to this one — the same layout `eva-shell` uses
@@ -99,9 +111,12 @@ fn eva_mcp_binary() -> Option<PathBuf> {
 /// Picks the context-aware formatter (`docs/PLAN.md` §3 fase 3 point 4):
 /// Apple Intelligence when this device reports it available right now,
 /// [`eva_text::RuleOnlyFormatter`] otherwise — the graceful-degradation
-/// default from §3.3 point 5, never "no formatter at all".
-fn load_formatter() -> (Arc<dyn Formatter>, String) {
-    match eva_text::AppleIntelligenceFormatter::new() {
+/// default from §3.3 point 5, never "no formatter at all". If the config
+/// explicitly enables a remote model, it is layered on top for exactly the
+/// jobs it names (`docs/PLAN.md` fase 9); the key comes from the environment
+/// variable the config names, and without it the remote model stays off.
+fn load_formatter(config: &Config) -> (Arc<dyn Formatter>, String) {
+    let (local, mut name): (Arc<dyn Formatter>, String) = match eva_text::AppleIntelligenceFormatter::new() {
         Some(formatter) => {
             tracing::info!("formateador: Apple Intelligence (Foundation Models on-device)");
             (Arc::new(formatter), "apple_intelligence".to_string())
@@ -113,7 +128,30 @@ fn load_formatter() -> (Arc<dyn Formatter>, String) {
             );
             (Arc::new(eva_text::RuleOnlyFormatter), "reglas".to_string())
         }
+    };
+
+    let remote = &config.remote;
+    if !remote.enabled {
+        return (local, name);
     }
+    let api_key = std::env::var(&remote.api_key_env).unwrap_or_default();
+    if api_key.trim().is_empty() {
+        tracing::warn!(
+            "remote.enabled está activo pero la variable {} no tiene la clave; el modelo remoto queda apagado",
+            remote.api_key_env
+        );
+        return (local, name);
+    }
+
+    let client = eva_text::OpenAiCompatibleFormatter::new(&remote.base_url, &api_key, &remote.model, &remote.use_for);
+    tracing::warn!(
+        model = %remote.model,
+        use_for = ?remote.use_for,
+        "modelo remoto activado: los textos de esos trabajos SALEN de este equipo hacia {}",
+        remote.base_url
+    );
+    name = format!("{name} + remoto ({})", remote.use_for.join(", "));
+    (Arc::new(eva_text::RemoteAssisted::new(local, client)), name)
 }
 
 fn load_audio(config: &Config, support: &Path) -> Option<AudioContext> {

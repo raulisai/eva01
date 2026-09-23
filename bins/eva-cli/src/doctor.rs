@@ -163,7 +163,10 @@ fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
                 vec![Check::warn(
                     "Modelo de voz",
                     format!("Canary — {}", dir.display()),
-                    format!("funciona, pero el recomendado es más preciso: {install_hint}"),
+                    format!(
+                        "el modelo pequeño pierde la ñ («mañana» sale «ma ana») y falla más con el español real; \
+                         instala el recomendado: {install_hint}"
+                    ),
                 )]
             }
         }
@@ -298,14 +301,45 @@ async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &st
         AgentOutcome::Completed { summary } => {
             Check::ok(name, format!("listo ({version}) — respondió en {secs:.1} s: «{}»", summary.unwrap_or_default().trim()))
         }
-        AgentOutcome::Failed { message } => Check::fail(
-            name,
-            format!("instalado y con sesión, pero falla al usarlo: {}", message.lines().next().unwrap_or_default()),
-            format!("EVA01 lo salta solo si falla antes de hacer algo, pero arréglalo: actualiza el CLI (`{} update`) o revisa su modelo configurado", if id == "codex" { "codex" } else { "claude" }),
-        ),
+        AgentOutcome::Failed { message } => {
+            let (problem, fix) = explain_agent_failure(id, &message);
+            Check::fail(
+                name,
+                format!("instalado y con sesión, pero falla al usarlo: {problem}"),
+                format!("{fix} (mientras tanto EVA01 lo salta solo si falla antes de hacer algo)"),
+            )
+        }
         AgentOutcome::Cancelled => Check::warn(name, "no respondió en dos minutos", "revisa tu conexión"),
     };
     finish_smoke(&dir, check)
+}
+
+/// What went wrong with an agent, in one line, and what to do about it.
+/// The CLIs report their failures as anything from a plain sentence to a raw
+/// JSON error body, and the useful part is the message inside it.
+fn explain_agent_failure(id: &str, message: &str) -> (String, String) {
+    let first_line = message.lines().next().unwrap_or_default();
+    let readable = serde_json::from_str::<serde_json::Value>(first_line)
+        .ok()
+        .and_then(|json| {
+            json.pointer("/error/message")
+                .or_else(|| json.pointer("/message"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| first_line.to_string());
+
+    let lowered = readable.to_lowercase();
+    let login = if id == "codex" { "codex login" } else { "claude auth login" };
+    let update = if id == "codex" { "codex update" } else { "claude update" };
+    let fix = if ["authenticate", "oauth", "not logged in", "log in", "expired", "unauthorized"].iter().any(|w| lowered.contains(w)) {
+        format!("su sesión caducó: `{login}`")
+    } else if ["newer version", "upgrade", "update", "not supported"].iter().any(|w| lowered.contains(w)) {
+        format!("su CLI o su modelo configurado no van con esa cuenta: `{update}` o revisa el modelo en su configuración")
+    } else {
+        format!("míralo con `{}` a mano para ver el error completo", if id == "codex" { "codex exec hola" } else { "claude -p hola" })
+    };
+    (readable, fix)
 }
 
 fn finish_smoke(dir: &std::path::Path, check: Check) -> Check {
@@ -350,7 +384,7 @@ async fn worker() -> Vec<Check> {
         None => Check::warn("Gateway para agentes", "sin socket: los agentes correrán sin las herramientas de EVA", "mira el registro del worker"),
     });
     checks.push(Check::ok("Proyectos conocidos", format!("{} repositorio(s) en agents.project_roots", report.project_count)));
-    if report.formatter != "apple_intelligence" {
+    if !report.formatter.starts_with("apple_intelligence") {
         checks.push(Check::warn("Formateador en uso", report.formatter.clone(), "ver «Apple Intelligence» arriba"));
     }
     checks
@@ -430,6 +464,29 @@ mod tests {
         let mut config = Config::default();
         config.hotkey.dictation = "cmd+shift+space".to_string();
         assert_eq!(fn_key(&config).verdict, Verdict::Ok);
+    }
+
+    #[test]
+    fn a_raw_json_error_body_is_reduced_to_its_message_and_an_outdated_cli_says_to_update() {
+        let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.6-terra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}"#;
+        let (problem, fix) = explain_agent_failure("codex", raw);
+        assert!(problem.starts_with("The 'gpt-5.6-terra' model requires a newer version"), "{problem}");
+        assert!(fix.contains("codex update"), "{fix}");
+    }
+
+    #[test]
+    fn an_expired_session_says_to_log_in_again_with_the_right_command() {
+        let (_, fix) = explain_agent_failure("claude_code", "Failed to authenticate: OAuth session expired and could not be refreshed");
+        assert!(fix.contains("claude auth login"), "{fix}");
+        let (_, fix) = explain_agent_failure("codex", "not logged in");
+        assert!(fix.contains("codex login"), "{fix}");
+    }
+
+    #[test]
+    fn an_unknown_failure_points_at_running_the_agent_by_hand() {
+        let (problem, fix) = explain_agent_failure("claude_code", "algo raro");
+        assert_eq!(problem, "algo raro");
+        assert!(fix.contains("claude -p hola"), "{fix}");
     }
 
     #[test]

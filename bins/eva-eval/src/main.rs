@@ -18,7 +18,7 @@ mod wer;
 
 use clap::Parser;
 use eva_audio::SpeechToText;
-use eva_text::{Dictionary, RuleOnlyFormatter};
+use eva_text::{Dictionary, Formatter, RuleOnlyFormatter};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -44,12 +44,23 @@ struct Cli {
     /// propio diccionario, no una versión desnuda del pipeline.
     #[arg(long = "word")]
     custom_words: Vec<String>,
+
+    /// Calcula el WER con puntuación y mayúsculas también (por defecto se
+    /// ignoran: eso lo juzga el formateador, no el modelo de voz).
+    #[arg(long)]
+    strict: bool,
+
+    /// Formatea con Apple Intelligence en vez de solo reglas, para medir el
+    /// camino real de un dictado (y su latencia) en este equipo.
+    #[arg(long)]
+    apple_intelligence: bool,
 }
 
 struct SampleResult {
     name: String,
     wer: wer::WerResult,
-    latency: Duration,
+    stt_latency: Duration,
+    format_latency: Duration,
     reference: String,
     hypothesis: String,
     has_surviving_filler: bool,
@@ -83,13 +94,32 @@ fn main() {
         return;
     }
 
+    let formatter: Box<dyn Formatter> = if cli.apple_intelligence {
+        match eva_text::AppleIntelligenceFormatter::new() {
+            Some(formatter) => Box::new(formatter),
+            None => {
+                eprintln!("Apple Intelligence no está disponible en este equipo; usa el eval sin --apple-intelligence");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        Box::new(RuleOnlyFormatter)
+    };
+
+    // The worker warms the formatter at startup, so the numbers exclude the
+    // model's one-time load — that is what a dictation actually pays.
+    let warm = eva_text::warm_up(formatter.as_ref());
+    if warm.as_millis() > 50 {
+        println!("(calentamiento del formateador: {}ms, no cuenta en los tiempos)\n", warm.as_millis());
+    }
+
     let dictionary = Dictionary::new(cli.custom_words);
     let results: Vec<SampleResult> = samples
         .iter()
-        .filter_map(|sample| run_one_sample(sample, stt.as_ref(), &dictionary))
+        .filter_map(|sample| run_one_sample(sample, stt.as_ref(), &dictionary, formatter.as_ref(), cli.strict))
         .collect();
 
-    print_report(&results);
+    print_report(&results, cli.strict, cli.apple_intelligence);
 }
 
 fn load_stt() -> Result<Box<dyn SpeechToText>, String> {
@@ -107,7 +137,13 @@ fn load_stt() -> Result<Box<dyn SpeechToText>, String> {
     Err("configura EVA_CANARY_MODEL_DIR o EVA_STT_MODEL_PATH antes de correr eva-eval".to_string())
 }
 
-fn run_one_sample(sample: &corpus::Sample, stt: &dyn SpeechToText, dictionary: &Dictionary) -> Option<SampleResult> {
+fn run_one_sample(
+    sample: &corpus::Sample,
+    stt: &dyn SpeechToText,
+    dictionary: &Dictionary,
+    formatter: &dyn Formatter,
+    strict: bool,
+) -> Option<SampleResult> {
     let samples = match transcribe_rs::audio::read_wav_samples(&sample.wav_path) {
         Ok(samples) => samples,
         Err(e) => {
@@ -124,17 +160,25 @@ fn run_one_sample(sample: &corpus::Sample, stt: &dyn SpeechToText, dictionary: &
             return None;
         }
     };
-    let latency = start.elapsed();
+    let stt_latency = start.elapsed();
 
-    let cleaned = eva_text::clean(&transcript.text, dictionary, &RuleOnlyFormatter);
+    let start = Instant::now();
+    let cleaned = eva_text::clean(&transcript.text, dictionary, formatter);
+    let format_latency = start.elapsed();
     let hypothesis = cleaned.formatted;
-    let wer_result = wer::word_error_rate(&sample.reference, &hypothesis);
+
+    let wer_result = if strict {
+        wer::word_error_rate(&sample.reference, &hypothesis)
+    } else {
+        wer::word_error_rate(&wer::normalize_for_wer(&sample.reference), &wer::normalize_for_wer(&hypothesis))
+    };
     let has_surviving_filler = contains_filler(&hypothesis);
 
     Some(SampleResult {
         name: sample.name.clone(),
         wer: wer_result,
-        latency,
+        stt_latency,
+        format_latency,
         reference: sample.reference.clone(),
         hypothesis,
         has_surviving_filler,
@@ -148,41 +192,54 @@ fn contains_filler(text: &str) -> bool {
     })
 }
 
-fn print_report(results: &[SampleResult]) {
-    println!("=== EVA01 — resultados del corpus ({} muestras) ===\n", results.len());
+fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool) {
+    println!(
+        "=== EVA01 — resultados del corpus ({} muestras · formateo: {} · WER {}) ===\n",
+        results.len(),
+        if apple_intelligence { "Apple Intelligence" } else { "solo reglas" },
+        if strict { "estricto" } else { "normalizado" },
+    );
 
     for r in results {
         let flag = if r.has_surviving_filler { " [muletilla]" } else { "" };
         println!(
-            "{:<20} WER={:>6.1}%  {:>6}ms{flag}",
+            "{:<24} WER={:>6.1}%  voz {:>5}ms  formato {:>5}ms{flag}",
             r.name,
             r.wer.rate() * 100.0,
-            r.latency.as_millis()
+            r.stt_latency.as_millis(),
+            r.format_latency.as_millis(),
         );
         println!("  ref: {}", r.reference);
         println!("  hyp: {}", r.hypothesis);
     }
 
+    if results.is_empty() {
+        println!("(ninguna muestra se pudo procesar)");
+        return;
+    }
     let rates: Vec<f64> = results.iter().map(|r| r.wer.rate()).collect();
     let mean_wer = rates.iter().sum::<f64>() / rates.len() as f64;
+    let perfect = rates.iter().filter(|r| **r == 0.0).count();
 
-    let latencies: Vec<Duration> = results.iter().map(|r| r.latency).collect();
-    let p50 = percentile::percentile(&latencies, 50.0);
-    let p95 = percentile::percentile(&latencies, 95.0);
-
+    let stt: Vec<Duration> = results.iter().map(|r| r.stt_latency).collect();
+    let total: Vec<Duration> = results.iter().map(|r| r.stt_latency + r.format_latency).collect();
+    let fmt = |d: Option<Duration>| d.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".to_string());
     let filler_count = results.iter().filter(|r| r.has_surviving_filler).count();
 
     println!("\n--- resumen ---");
-    println!("WER promedio:                  {:.1}%", mean_wer * 100.0);
+    println!("WER promedio:                  {:.1}%   ({perfect}/{} sin ningún error)", mean_wer * 100.0, results.len());
     println!(
-        "Latencia p50 / p95:            {} / {}",
-        p50.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".to_string()),
-        p95.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".to_string()),
+        "Voz      p50 / p95:            {} / {}",
+        fmt(percentile::percentile(&stt, 50.0)),
+        fmt(percentile::percentile(&stt, 95.0))
+    );
+    println!(
+        "Voz+formato p50 / p95:         {} / {}   (la meta es p95 < 1200ms, sin contar el pegado)",
+        fmt(percentile::percentile(&total, 50.0)),
+        fmt(percentile::percentile(&total, 95.0))
     );
     println!("Muletillas que sobrevivieron:  {filler_count}/{}", results.len());
-    println!(
-        "\n(WER es diagnóstico, no bloquea release — docs/PLAN.md §7. La meta de p95 es < 1200ms.)"
-    );
+    println!("\n(WER es diagnóstico, no bloquea release — docs/PLAN.md §7. Audio sintético, si viene de `say`: mide el modelo, no tu voz.)");
 }
 
 #[cfg(test)]

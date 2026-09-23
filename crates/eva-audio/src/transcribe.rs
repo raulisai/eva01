@@ -95,6 +95,32 @@ pub struct CanarySpeechToText {
     language: String,
 }
 
+/// Silence added before the audio Canary sees. Measured, not guessed: on
+/// clips that start speaking at sample zero (a recording begun by a key that
+/// is already being held) the 1B model dropped the first word — "Hay que
+/// actualizar…" came back as "Que actualizar…" — and 0.3–0.4 s of lead-in
+/// fixed it. A real push-to-talk clip usually has some silence already, so
+/// this is a floor, not a delay: it costs the encoder a few frames, not time
+/// the user waits on.
+const LEAD_IN: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Silence added after the audio, so a last word cut off by the key release
+/// is not also the end of the encoder's context.
+const TAIL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// `samples` with [`LEAD_IN`] of silence before and [`TAIL`] after, at the
+/// 16 kHz every [`SpeechToText`] input uses.
+fn padded_with_silence(samples: &[f32]) -> Vec<f32> {
+    let rate = crate::capture::TARGET_SAMPLE_RATE as f64;
+    let lead = (LEAD_IN.as_secs_f64() * rate) as usize;
+    let tail = (TAIL.as_secs_f64() * rate) as usize;
+    let mut padded = Vec::with_capacity(lead + samples.len() + tail);
+    padded.resize(lead, 0.0);
+    padded.extend_from_slice(samples);
+    padded.resize(lead + samples.len() + tail, 0.0);
+    padded
+}
+
 impl CanarySpeechToText {
     /// Loads a Canary model from `model_dir` (the directory layout
     /// `transcribe-rs`'s own README documents: `encoder-model*.onnx`,
@@ -122,7 +148,7 @@ impl SpeechToText for CanarySpeechToText {
             ..Default::default()
         };
         let result = model
-            .transcribe_with(samples, &params)
+            .transcribe_with(&padded_with_silence(samples), &params)
             .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
 
         Ok(Transcript { text: result.text })
@@ -184,6 +210,17 @@ mod tests {
     fn loading_a_model_from_a_path_that_does_not_exist_is_a_typed_error_not_a_panic() {
         let result = WhisperSpeechToText::load(Path::new("/no/existe/modelo.bin"));
         assert!(matches!(result, Err(TranscribeError::ModelLoadFailed(_))));
+    }
+
+    #[test]
+    fn padding_adds_silence_on_both_sides_and_keeps_the_speech_intact() {
+        let speech = vec![0.5_f32; 100];
+        let padded = padded_with_silence(&speech);
+        let lead = 4_800; // 300 ms at 16 kHz
+        assert_eq!(padded.len(), lead + 100 + 3_200); // + 200 ms tail
+        assert!(padded[..lead].iter().all(|s| *s == 0.0));
+        assert_eq!(&padded[lead..lead + 100], speech.as_slice());
+        assert!(padded[lead + 100..].iter().all(|s| *s == 0.0));
     }
 
     #[test]

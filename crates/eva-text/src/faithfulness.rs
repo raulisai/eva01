@@ -123,6 +123,37 @@ fn check_artifacts(input: &str, output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Strips what the model wraps around a rewrite even when told not to: a
+/// leading `Resultado:` echo (the format its examples use) and surrounding
+/// quotes or a code fence.
+pub(crate) fn clean_rewrite(text: &str) -> String {
+    let mut out = text.trim();
+    for prefix in ["Resultado:", "resultado:"] {
+        if let Some(rest) = out.strip_prefix(prefix) {
+            out = rest.trim_start();
+        }
+    }
+    let out = out.trim_matches('`').trim();
+    let out = out
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| out.strip_prefix('«').and_then(|rest| rest.strip_suffix('»')))
+        .unwrap_or(out);
+    out.trim().to_string()
+}
+
+/// A rewrite is *supposed* to change the words, so the word-count ceiling
+/// above does not apply — but a legitimate edit of a selection is still
+/// bounded: it does not turn a sentence into pages (the failure mode of a
+/// model that "fulfils" the text instead of rewriting it) and never echoes
+/// the prompt's own scaffolding back.
+pub(crate) fn is_plausible_rewrite(input: &str, output: &str) -> bool {
+    let input_words = input.split_whitespace().count();
+    let output_words = output.split_whitespace().count();
+    let echoes_scaffolding = output.contains("Instrucción:") || output.contains("Texto:");
+    !output.is_empty() && output_words <= input_words * 3 + 30 && !echoes_scaffolding
+}
+
 /// Lowercased words: runs of letters and digits, so `pedro@ejemplo.com`
 /// yields `pedro`, `ejemplo`, `com` and `¿Cómo` yields `cómo`.
 fn words(text: &str) -> Vec<String> {
@@ -242,6 +273,29 @@ mod tests {
     #[test]
     fn empty_output_for_empty_input_is_faithful() {
         ok("", "");
+    }
+
+    #[test]
+    fn a_rewrite_may_change_and_even_lengthen_the_words_within_reason() {
+        assert!(is_plausible_rewrite("oye mándame eso", "Por favor, envíame eso cuando te sea posible."));
+        assert!(is_plausible_rewrite("hola", "Good morning, everyone, and welcome to the meeting today."));
+    }
+
+    #[test]
+    fn a_rewrite_that_balloons_into_pages_or_echoes_the_prompt_is_rejected() {
+        let long = "palabra ".repeat(200);
+        assert!(!is_plausible_rewrite("buenos días", &long));
+        assert!(!is_plausible_rewrite("buenos días", "Instrucción: hazlo formal Texto: buenos días"));
+        assert!(!is_plausible_rewrite("buenos días", ""));
+    }
+
+    #[test]
+    fn rewrite_output_is_cleaned_of_the_wrapping_models_add() {
+        assert_eq!(clean_rewrite("Resultado: Hola a todos."), "Hola a todos.");
+        assert_eq!(clean_rewrite("\"Hola a todos.\""), "Hola a todos.");
+        assert_eq!(clean_rewrite("«Hola a todos.»"), "Hola a todos.");
+        assert_eq!(clean_rewrite("```\nHola a todos.\n```"), "Hola a todos.");
+        assert_eq!(clean_rewrite("  Hola a todos.  "), "Hola a todos.");
     }
 
     proptest::proptest! {

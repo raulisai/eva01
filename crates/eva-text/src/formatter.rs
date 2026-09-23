@@ -50,6 +50,17 @@ pub trait Formatter: Send + Sync {
     }
 }
 
+/// Runs one throwaway format so the model behind `formatter` is loaded before
+/// the first real dictation. Measured on Apple Intelligence: the first call
+/// took ~2.2 s and every one after ~0.7 s, so without this the user's first
+/// dictation of the day is the slow one. Returns how long it took; a failure
+/// is not an error here (the real call will report it).
+pub fn warm_up(formatter: &dyn Formatter) -> std::time::Duration {
+    let start = std::time::Instant::now();
+    let _ = formatter.format("hola buenos días");
+    start.elapsed()
+}
+
 /// Why a [`Formatter`] failed to produce output.
 #[derive(Debug, Error)]
 pub enum FormatError {
