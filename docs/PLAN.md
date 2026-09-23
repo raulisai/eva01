@@ -80,6 +80,17 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
    número/símbolo); sin markdown, sin saltos de línea, sin MAYÚSCULAS. Si falla, se cae al texto por
    reglas. Es lo que evita que un modelo "servicial" reescriba lo que dijiste.
 
+10. **El remuestreo del micrófono estaba mal, y solo se vio midiéndolo con una señal conocida.** La primera
+    versión interpolaba linealmente *cada buffer de cpal por separado* y sin filtro: con los buffers de 512
+    cuadros a 48 kHz que entrega el micrófono de esta misma Mac, cada callback redondeaba 170,67 muestras a
+    171 (audio estirado y una muestra repetida cada ~10 ms: un tono de 440 Hz conservaba el 2 % de su
+    energía) y un tono de 12 kHz, que 16 kHz no puede llevar, pasaba entero como uno de 4 kHz. `rubato` ya
+    era dependencia y el plan lo nombraba; ahora `StreamResampler` (FFT síncrono con estado entre llamadas)
+    da pureza > 0,999 con cualquier tamaño de buffer, atenúa lo que excede Nyquist > 34 dB y conserva los
+    niveles de la banda de voz (±3 %). Lo cubre una prueba con un flujo estéreo de 48 kHz en buffers de 512.
+    `eva doctor` ahora muestra el micrófono y su frecuencia (sin abrirlo: no pide permiso ni enciende el
+    indicador).
+
 ### Lo que falta y por qué
 
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado

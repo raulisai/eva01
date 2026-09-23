@@ -5,7 +5,7 @@
 //! [`Rechunker`] — the actual logic worth testing carefully — is tested
 //! without a real microphone or `cpal` device at all.
 
-use crate::resample::{downmix_to_mono, resample_linear};
+use crate::resample::{downmix_to_mono, StreamResampler};
 use std::collections::VecDeque;
 use thiserror::Error;
 
@@ -74,6 +74,34 @@ pub trait AudioSource: Send + Sync {
     ) -> Result<Box<dyn CaptureHandle>, AudioError>;
 }
 
+/// What every microphone callback goes through: mix down to mono, bring to
+/// 16 kHz, cut into fixed-size chunks. Kept apart from `cpal` so the whole
+/// path is tested with synthetic buffers, sized like the ones macOS delivers.
+pub struct CapturePipeline {
+    channels: u16,
+    resampler: StreamResampler,
+    rechunker: Rechunker,
+}
+
+impl CapturePipeline {
+    /// A pipeline for a device delivering `channels` interleaved channels at
+    /// `input_rate` Hz, producing chunks of `chunk_size` 16 kHz samples.
+    ///
+    /// # Errors
+    /// [`AudioError::ConfigFailed`] if the device's rate cannot be converted.
+    pub fn new(input_rate: u32, channels: u16, chunk_size: usize) -> Result<CapturePipeline, AudioError> {
+        let resampler = StreamResampler::new(input_rate, TARGET_SAMPLE_RATE)
+            .map_err(|e| AudioError::ConfigFailed(e.to_string()))?;
+        Ok(CapturePipeline { channels, resampler, rechunker: Rechunker::new(chunk_size) })
+    }
+
+    /// Feeds one device buffer; returns the chunks it completed.
+    pub fn push(&mut self, interleaved: &[f32]) -> Vec<Vec<f32>> {
+        let mono = downmix_to_mono(interleaved, self.channels);
+        self.rechunker.push(&self.resampler.process(&mono))
+    }
+}
+
 /// The real `cpal`-backed [`AudioSource`]: the default input device,
 /// downmixed to mono and resampled to 16 kHz.
 pub struct MicrophoneSource;
@@ -94,6 +122,38 @@ impl CaptureHandle for CpalHandle {
     }
 }
 
+/// What the default microphone is, for `eva doctor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputInfo {
+    /// The device's name, as macOS shows it.
+    pub name: String,
+    /// The rate it delivers, before EVA01 brings it to 16 kHz.
+    pub sample_rate: u32,
+    /// How many channels it has (mixed down to one).
+    pub channels: u16,
+}
+
+impl MicrophoneSource {
+    /// Describes the default input device without opening a stream (so it
+    /// neither asks for the microphone permission nor makes the indicator
+    /// light up).
+    ///
+    /// # Errors
+    /// [`AudioError::NoInputDevice`] if there is none, [`AudioError::ConfigFailed`]
+    /// if it cannot say how it delivers audio.
+    pub fn default_input() -> Result<InputInfo, AudioError> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+
+        let device = cpal::default_host().default_input_device().ok_or(AudioError::NoInputDevice)?;
+        let config = device.default_input_config().map_err(|e| AudioError::ConfigFailed(e.to_string()))?;
+        Ok(InputInfo {
+            name: device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "micrófono".to_string()),
+            sample_rate: config.sample_rate(),
+            channels: config.channels(),
+        })
+    }
+}
+
 impl AudioSource for MicrophoneSource {
     fn start(
         &self,
@@ -106,14 +166,9 @@ impl AudioSource for MicrophoneSource {
         let device = host.default_input_device().ok_or(AudioError::NoInputDevice)?;
         let config = device.default_input_config().map_err(|e| AudioError::ConfigFailed(e.to_string()))?;
 
-        let input_rate = config.sample_rate();
-        let channels = config.channels();
-        let mut rechunker = Rechunker::new(chunk_size);
-
+        let mut pipeline = CapturePipeline::new(config.sample_rate(), config.channels(), chunk_size)?;
         let data_callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let mono = downmix_to_mono(data, channels);
-            let resampled = resample_linear(&mono, input_rate, TARGET_SAMPLE_RATE);
-            for chunk in rechunker.push(&resampled) {
+            for chunk in pipeline.push(data) {
                 on_chunk(chunk);
             }
         };
@@ -176,6 +231,39 @@ mod tests {
     use super::mock::ScriptedSource;
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_stereo_48k_stream_in_512_frame_buffers_arrives_as_clean_16k_chunks() {
+        // The shape of this Mac's own microphone path: 48 kHz, buffers of 512
+        // frames (not a multiple of the 3:1 ratio), two channels carrying one
+        // 440 Hz tone.
+        let mut pipeline = CapturePipeline::new(48_000, 2, 1_600).unwrap();
+        let mut chunks = Vec::new();
+        for start in (0..48_000 * 2).step_by(512) {
+            let frames = 512.min(48_000 * 2 - start);
+            let buffer: Vec<f32> = (start..start + frames)
+                .flat_map(|i| {
+                    let s = (0.5 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 48_000.0).sin()) as f32;
+                    [s, s]
+                })
+                .collect();
+            chunks.extend(pipeline.push(&buffer));
+        }
+
+        assert!(chunks.iter().all(|c| c.len() == 1_600), "every chunk is exactly the size asked for");
+        // 2 s at 16 kHz is 32 000 samples = 20 chunks, less what the filter holds back.
+        assert!((18..=20).contains(&chunks.len()), "{} chunks", chunks.len());
+        let samples: Vec<f32> = chunks.concat();
+        let x = &samples[480..];
+        let w = 2.0 * std::f64::consts::PI * 440.0 / 16_000.0;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, s) in x.iter().enumerate() {
+            re += f64::from(*s) * (w * i as f64).cos();
+            im += f64::from(*s) * (w * i as f64).sin();
+        }
+        let purity = 2.0 * (re * re + im * im) / x.len() as f64 / x.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+        assert!(purity > 0.999, "the tone must survive intact: purity {purity}");
+    }
 
     #[test]
     fn rechunker_buffers_partial_pushes_until_a_full_chunk_is_available() {

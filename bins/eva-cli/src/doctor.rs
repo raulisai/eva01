@@ -76,6 +76,7 @@ pub async fn run(smoke: bool) -> i32 {
     checks.push(apple_intelligence());
     checks.push(config_file(&loaded));
     checks.extend(stt_model(&loaded.config, &support));
+    checks.push(microphone(eva_audio::MicrophoneSource::default_input()));
     checks.push(fn_key(&loaded.config));
     checks.push(git(&loaded.config));
     checks.push(mcp_binary());
@@ -184,6 +185,26 @@ fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
         models::ModelChoice::None => {
             vec![Check::fail("Modelo de voz", "no hay ninguno instalado: no se puede dictar", install_hint)]
         }
+    }
+}
+
+/// The default input device. It is only described, never opened: the check
+/// must not ask for the microphone permission on its own.
+fn microphone(input: Result<eva_audio::InputInfo, eva_audio::AudioError>) -> Check {
+    match input {
+        Ok(info) => Check::ok(
+            "Micrófono",
+            format!(
+                "{} ({} Hz, {} canal(es)); el permiso lo pide macOS al primer dictado",
+                info.name, info.sample_rate, info.channels
+            ),
+        ),
+        Err(eva_audio::AudioError::NoInputDevice) => Check::fail(
+            "Micrófono",
+            "macOS no ve ningún micrófono",
+            "conecta uno o elige la entrada en Ajustes del Sistema → Sonido → Entrada",
+        ),
+        Err(e) => Check::warn("Micrófono", e.to_string(), "revisa Ajustes del Sistema → Sonido → Entrada"),
     }
 }
 
@@ -434,6 +455,24 @@ async fn worker() -> Vec<Check> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_microphone_check_names_the_device_or_says_there_is_none() {
+        let fine = microphone(Ok(eva_audio::InputInfo {
+            name: "MacBook Pro Microphone".into(),
+            sample_rate: 48_000,
+            channels: 1,
+        }));
+        assert_eq!(fine.verdict, Verdict::Ok);
+        assert!(fine.detail.contains("MacBook Pro Microphone") && fine.detail.contains("48000 Hz"));
+
+        let missing = microphone(Err(eva_audio::AudioError::NoInputDevice));
+        assert_eq!(missing.verdict, Verdict::Fail);
+        assert!(missing.hint.is_some_and(|h| h.contains("Sonido")));
+
+        let odd = microphone(Err(eva_audio::AudioError::ConfigFailed("x".into())));
+        assert_eq!(odd.verdict, Verdict::Warn);
+    }
 
     #[test]
     fn a_fine_check_is_one_line_and_a_problem_adds_what_to_do() {
