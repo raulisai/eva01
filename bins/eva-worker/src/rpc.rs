@@ -25,9 +25,19 @@ pub struct Endpoint {
 ///
 /// # Errors
 /// The directory could not be created or the socket could not be bound.
-pub fn bind(run_dir: &Path) -> std::io::Result<Endpoint> {
+pub fn bind(preferred_run_dir: &Path) -> std::io::Result<Endpoint> {
     use std::os::unix::fs::PermissionsExt;
 
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let run_dir = &socket_dir(preferred_run_dir, uid, &std::env::temp_dir());
+    if run_dir != preferred_run_dir {
+        tracing::warn!(
+            preferred = %preferred_run_dir.display(),
+            using = %run_dir.display(),
+            "la ruta habitual es demasiado larga para un socket Unix; uso una más corta"
+        );
+    }
     std::fs::create_dir_all(run_dir)?;
     std::fs::set_permissions(run_dir, std::fs::Permissions::from_mode(0o700))?;
     remove_stale_sockets(run_dir);
@@ -38,6 +48,24 @@ pub fn bind(run_dir: &Path) -> std::io::Result<Endpoint> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
 
     Ok(Endpoint { listener, socket, token: new_token() })
+}
+
+/// The longest path a Unix socket can have on macOS, counting the final NUL
+/// (`sizeof(sockaddr_un.sun_path)`); `bind` fails beyond it.
+const SOCKET_PATH_MAX: usize = 104;
+
+/// `preferred` if a socket file inside it fits in [`SOCKET_PATH_MAX`], else a
+/// short private directory under `tmp`. A home folder with a long name pushes
+/// `~/Library/Application Support/EVA01/run/…` past the limit, and without
+/// this the agents would silently lose EVA's tools.
+fn socket_dir(preferred: &Path, uid: u32, tmp: &Path) -> PathBuf {
+    // The longest name `bind` gives a socket: a pid is at most 7 digits.
+    let longest = preferred.join("gateway-9999999.sock");
+    if longest.as_os_str().len() < SOCKET_PATH_MAX {
+        preferred.to_path_buf()
+    } else {
+        tmp.join(format!("eva01-{uid}"))
+    }
 }
 
 /// 256 bits from the OS random source (two v4 UUIDs' worth), hex.
@@ -94,6 +122,31 @@ mod tests {
     use eva_mcp::desktop::mock::{Call, MockDesktop};
     use eva_mcp::{DesktopService, RemoteService, ServiceError};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_normal_path_is_used_as_is_and_a_too_long_one_moves_to_a_short_private_directory() {
+        let tmp = Path::new("/var/folders/ab/cdef/T");
+        let normal = Path::new("/Users/djoker/Library/Application Support/EVA01/run");
+        assert_eq!(socket_dir(normal, 501, tmp), normal);
+
+        let long =
+            Path::new("/Users/una-persona-con-un-nombre-de-usuario-muy-largo/Library/Application Support/EVA01/run");
+        assert_eq!(socket_dir(long, 501, tmp), Path::new("/var/folders/ab/cdef/T/eva01-501"));
+        let moved = socket_dir(long, 501, tmp).join("gateway-9999999.sock");
+        assert!(moved.as_os_str().len() < SOCKET_PATH_MAX);
+    }
+
+    #[tokio::test]
+    async fn a_socket_really_binds_from_a_home_whose_path_is_too_long() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let too_long = dir.path().join("x".repeat(90)).join("Library/Application Support/EVA01/run");
+        assert!(too_long.join("gateway-1.sock").as_os_str().len() >= SOCKET_PATH_MAX);
+
+        let endpoint = bind(&too_long).expect("falls back instead of failing");
+        assert!(endpoint.socket.exists());
+        assert!(endpoint.socket.as_os_str().len() < SOCKET_PATH_MAX);
+        let _ = std::fs::remove_file(&endpoint.socket);
+    }
 
     #[tokio::test]
     async fn the_socket_and_its_directory_are_private_to_the_user() {

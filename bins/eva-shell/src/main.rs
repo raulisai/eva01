@@ -295,6 +295,7 @@ fn to_wire(command: Command) -> ShellToWorker {
         Command::CancelAllTasks => ShellToWorker::CancelAllTasks,
         Command::ListTasks(request_id) => ShellToWorker::ListTasks { request_id },
         Command::FlagLastDictation(request_id) => ShellToWorker::FlagLastDictation { request_id },
+        Command::CheckHealth(request_id) => ShellToWorker::HealthCheck { request_id },
     }
 }
 

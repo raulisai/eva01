@@ -49,6 +49,8 @@ pub enum Command {
     ListTasks(Uuid),
     /// Flag the last dictation as wrong, keeping it for the eval corpus.
     FlagLastDictation(Uuid),
+    /// Ask the worker how it is doing, to tell the user what is missing.
+    CheckHealth(Uuid),
 }
 
 /// A system notification the shell should show.
@@ -132,6 +134,7 @@ pub struct ShellModel {
     confirmation: Option<Confirmation>,
     notice: Option<Notice>,
     notifications: Vec<Notification>,
+    health_asked: bool,
 }
 
 impl ShellModel {
@@ -148,6 +151,7 @@ impl ShellModel {
             confirmation: None,
             notice: None,
             notifications: Vec::new(),
+            health_asked: false,
         }
     }
 
@@ -230,7 +234,19 @@ impl ShellModel {
             WorkerToShell::Ready => {
                 self.ready = true;
                 self.restarting = false;
-                return vec![Command::ListTasks(Uuid::new_v4())];
+                let mut commands = vec![Command::ListTasks(Uuid::new_v4())];
+                // Once per run: what is missing (no voice model, a typo in
+                // the config) is said now, not discovered at the first dictation.
+                if !std::mem::replace(&mut self.health_asked, true) {
+                    commands.push(Command::CheckHealth(Uuid::new_v4()));
+                }
+                return commands;
+            }
+            WorkerToShell::Health { report, .. } => {
+                let problems = startup_problems(&report);
+                if !problems.is_empty() {
+                    self.notifications.push(Notification { title: "EVA01".to_string(), body: problems.join("\n") });
+                }
             }
             WorkerToShell::StateChanged { state, request_id: Some(id) } => self.state_changed(now, id, state),
             WorkerToShell::Error { request_id, message, .. } => {
@@ -277,7 +293,6 @@ impl ShellModel {
             | WorkerToShell::Transcript { .. }
             | WorkerToShell::IntentRecognized { .. }
             | WorkerToShell::AgentEvent { .. }
-            | WorkerToShell::Health { .. }
             | WorkerToShell::CustomWords { .. }
             | WorkerToShell::Ack { .. } => {}
         }
@@ -456,6 +471,24 @@ fn limit_of(phase: Phase) -> Duration {
 }
 
 /// The overlay line for a finished task.
+/// What is wrong with the worker's setup, in words for the user — empty when
+/// all is well.
+fn startup_problems(report: &eva_ipc::HealthReport) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !report.stt_model_loaded {
+        problems.push(
+            "Falta el modelo de voz, así que no puedo dictar. Instálalo con «eva model install» \
+             (el comando está en EVA01.app/Contents/MacOS)."
+                .to_string(),
+        );
+    }
+    if !report.store_ok {
+        problems.push("La base de datos de EVA01 no abrió: no se guardará el historial.".to_string());
+    }
+    problems.extend(report.config_warnings.iter().map(|w| format!("Configuración: {w}")));
+    problems
+}
+
 fn task_notice(success: bool, summary: &str) -> (String, Tone) {
     if summary == "cancelada" {
         ("Tarea cancelada".to_string(), Tone::Neutral)
@@ -779,6 +812,54 @@ mod tests {
             WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "cancelada".into() },
         );
         assert_eq!(model.overlay().unwrap().tone, Tone::Neutral);
+    }
+
+    fn health(model_loaded: bool, warnings: &[&str]) -> WorkerToShell {
+        WorkerToShell::Health {
+            request_id: Uuid::new_v4(),
+            report: eva_ipc::HealthReport {
+                stt_model_loaded: model_loaded,
+                stt_model_id: model_loaded.then(|| "canary".to_string()),
+                store_ok: true,
+                agents: Vec::new(),
+                formatter: "reglas".into(),
+                config_warnings: warnings.iter().map(|w| w.to_string()).collect(),
+                gateway_socket: None,
+                project_count: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn the_health_of_the_worker_is_asked_once_not_after_every_restart() {
+        let t0 = Instant::now();
+        let mut model = ShellModel::new(keys());
+        let first = model.worker_event(t0, WorkerToShell::Ready);
+        assert!(first.iter().any(|c| matches!(c, Command::CheckHealth(_))));
+
+        model.worker_restarting();
+        let after_restart = model.worker_event(t0, WorkerToShell::Ready);
+        assert!(!after_restart.iter().any(|c| matches!(c, Command::CheckHealth(_))));
+    }
+
+    #[test]
+    fn a_missing_voice_model_and_config_typos_are_announced_at_startup() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(t0, health(false, &["hotkey.dictaton: clave desconocida"]));
+
+        let notifications = model.take_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert!(notifications[0].body.contains("eva model install"), "{}", notifications[0].body);
+        assert!(notifications[0].body.contains("hotkey.dictaton"), "{}", notifications[0].body);
+    }
+
+    #[test]
+    fn a_healthy_worker_says_nothing() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(t0, health(true, &[]));
+        assert!(model.take_notifications().is_empty());
     }
 
     #[test]
