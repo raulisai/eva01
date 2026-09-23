@@ -1,7 +1,7 @@
 #!/bin/sh
-# Assembles EVA01.app: builds eva-shell and eva-worker in release mode,
-# lays them out as a real macOS app bundle with the Info.plist next to
-# them, and signs it — the missing piece identified when reviewing what
+# Assembles EVA01.app: builds eva-shell, eva-worker, eva-mcp and eva (the CLI)
+# in release mode, lays them out as a real macOS app bundle with the
+# Info.plist next to them, and signs it — the missing piece identified when reviewing what
 # blocks testing the MVP end to end (docs/PLAN.md §3.3/§10 decision 7):
 # an unbundled binary has no Info.plist to attribute a microphone-usage
 # prompt to, and a signature that changes every rebuild cannot keep a
@@ -26,16 +26,26 @@ APP_NAME="EVA01.app"
 APP_PATH="$REPO_ROOT/target/$APP_NAME"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}" # "-" is codesign's ad-hoc identity
 
-echo "==> Compilando eva-shell y eva-worker en modo release"
-(cd "$REPO_ROOT" && cargo build --release -p eva-shell -p eva-worker)
+# The version is the workspace's, so the bundle, `eva --version` and the
+# release tag cannot drift apart.
+VERSION="$(awk -F'"' '/^version *=/ {print $2; exit}' "$REPO_ROOT/Cargo.toml")"
+
+echo "==> Compilando eva-shell, eva-worker, eva-mcp y eva ($VERSION) en modo release"
+(cd "$REPO_ROOT" && cargo build --release -p eva-shell -p eva-worker -p eva-mcp -p eva-cli)
 
 echo "==> Armando $APP_NAME"
 rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS"
 mkdir -p "$APP_PATH/Contents/Frameworks"
-cp "$REPO_ROOT/target/release/eva-shell" "$APP_PATH/Contents/MacOS/eva-shell"
-cp "$REPO_ROOT/target/release/eva-worker" "$APP_PATH/Contents/MacOS/eva-worker"
+# All four live side by side: the shell finds the worker, the worker finds
+# eva-mcp (to hand to the agents), and `eva startup enable` finds the bundle,
+# each by looking next to its own executable.
+for binary in eva-shell eva-worker eva-mcp eva; do
+    cp "$REPO_ROOT/target/release/$binary" "$APP_PATH/Contents/MacOS/$binary"
+done
 cp "$REPO_ROOT/packaging/Info.plist" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_PATH/Contents/Info.plist"
 
 # `eva-worker` links `libeva_formatter.dylib` (the Apple Intelligence bridge
 # built by `crates/eva-text/build.rs`) with an absolute `-install_name`
@@ -101,6 +111,8 @@ codesign -dv "$APP_PATH"
 echo
 echo "Listo: $APP_PATH"
 echo "Ejecutar con: open \"$APP_PATH\""
-echo "(la primera vez, macOS pedirá permiso de Micrófono y, para Cmd+V simulado,"
-echo " hay que habilitar EVA01 a mano en Ajustes → Privacidad y seguridad → Accesibilidad —"
-echo " CGEventPost no dispara ese diálogo por sí solo; ver el TODO en eva-macos::paste)"
+echo "La CLI queda en $APP_PATH/Contents/MacOS/eva (prueba: eva doctor)."
+echo "La primera vez macOS pedirá Micrófono; EVA01 abrirá por sí sola el aviso de"
+echo "Accesibilidad (Ajustes → Privacidad y seguridad → Accesibilidad), que necesita"
+echo "para la tecla fn, pegar con Cmd+V y leer el texto seleccionado; sin él EVA01 no puede"
+echo "hacer ninguna de las tres."

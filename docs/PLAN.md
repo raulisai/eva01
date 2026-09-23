@@ -14,6 +14,84 @@
 
 ---
 
+## Estado de la implementación (v0.2 · 23 sep 2026)
+
+Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prometía. Las fases de abajo
+(§4) se dejan como se escribieron: son el razonamiento; esta sección es el registro.
+
+**Workspace:** 4 binarios (`eva-shell`, `eva-worker`, `eva-cli` → `eva`, `eva-eval`) y 10 crates
+(`eva-audio`, `eva-text`, `eva-intent`, `eva-agents`, `eva-mcp`, `eva-macos`, `eva-store`, `eva-gateway`,
+`eva-config`, `eva-ipc`). ~630 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
+`#[ignore]` que solo corren con recursos reales (modelo STT, Apple Intelligence, CLIs de agente).
+
+| Fase | Estado | Notas |
+|---|---|---|
+| 1 Spike | hecha | Canary vía `transcribe-rs`; ver hallazgo 5 (1B, no 180M) |
+| 2 Esqueleto y supervisión | hecha | shell ↔ worker por JSON-lines, reinicio con backoff, watchdog por fase |
+| 3 Dictado en español | hecha | Apple Intelligence + guarda de fidelidad; corpus de frases 40/40; `eva-eval` con línea base (`eval/README.md`) |
+| 4 Intención | hecha | wake word con accent-folding; `AgentTask`/`EditSelection`; prefijo de proveedor ("usa Claude…") |
+| 5 Acciones y gateway | hecha | política `auto/confirm/block` por acción y origen, pisos de seguridad no aflojables, auditoría |
+| 6 Agentes | hecha | Codex y Claude Code, worktree por tarea, reanudar, cancelar por grupo de procesos, caída al siguiente proveedor |
+| 7 Feedback y sesiones | hecha | overlay, tray con estados, tareas en segundo plano, avisos, `eva-store` v3 |
+| 8 Servidor MCP | hecha | 10 herramientas, todas por el gateway, alcanzan al worker por un socket privado |
+| 9 Estilo, contexto, edición | hecha | estilos por app, modo edición sobre la selección, remoto OpenAI-compatible **apagado por defecto** |
+| 10 Manos libres | **diferida a propósito** | su disparador ("te sorprendes buscando la tecla") es del uso, no del calendario |
+
+**Fuera del plan original, añadido porque el uso lo pidió:** CLI `eva` (`doctor`, `model install/verify`,
+`startup enable`, `say`, `intent`, `tasks`), gestión de modelos con verificación de tamaño y prueba de
+voz real, configuración en `~/Library/Application Support/EVA01/config.toml` (claves desconocidas
+avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones con hotkey.
+
+### Lo que la implementación real cambió respecto del plan
+
+1. **El worker no es de petición-respuesta.** Emite eventos en flujo y corre el trabajo largo como
+   tareas rastreadas: puedes dictar mientras un agente trabaja, cancelar, o confirmar algo, sin que el
+   bucle de comandos se bloquee. (Fase 2 lo describía síncrono.)
+2. **El MCP no actúa por su cuenta.** El `eva-mcp` que lanza el agente es un proceso hijo del agente,
+   así que no tiene overlay ni gateway propio: habla con el worker por un socket Unix privado (directorio
+   0700, socket 0600, token de 256 bits por ejecución) y el worker decide. Sin el worker, `eva-mcp` en
+   modo independiente niega toda acción sensible (`DenyAll`). Se inyecta por invocación
+   (`--mcp-config`, `-c mcp_servers.eva…`), sin tocar la configuración global del usuario.
+3. **Las banderas de los CLIs no eran las del plan** (verificadas contra los binarios reales):
+   - `claude --resume X` no se puede combinar con `--session-id`; hay que usar solo `--resume`.
+   - Codex reanuda con `codex exec resume <ID> <PROMPT>`; ese subcomando no acepta `-C` ni `-s`, así que
+     se corre en el directorio de trabajo guardado y `-c sandbox_mode="workspace-write"`.
+   - Codex asigna su propio identificador de sesión (`thread.started`); el de EVA no aplica.
+   - Cancelar exige matar el **grupo** de procesos (`-pid`, luego `pid`; SIGTERM → SIGKILL a los 3 s):
+     los CLIs lanzan hijos que sobreviven si solo se mata al padre.
+4. **El prompt de Apple Intelligence tiene que ser una plantilla, no una instrucción.** Con
+   "Transcripción: … / Corregida:" y ejemplos, la aceptación pasó de 23/40 a 40/40; cualquier pista de
+   estilo dentro del prompt hacía que el modelo *contestara* el dictado. Los estilos (casual, formal,
+   terminal) se aplican con reglas deterministas **después**.
+5. **Un modelo de voz más pequeño no es "casi igual".** `canary-180m-flash` pierde la ñ ("ma ana");
+   `canary-1b-flash` no. `eva doctor` avisa si el 180M está activo y `eva model install` instala el 1B.
+6. **Canary se come la primera palabra** si el audio arranca sin silencio ("Hay que…" → "Que…"). Se
+   añaden 300 ms de silencio antes y 200 después dentro de `CanarySpeechToText` (WER 6,6 % → 4,2 % en el
+   corpus sintético). Audios de ~0,5 s siguen fallando: es límite del modelo.
+7. **La primera llamada a Apple Intelligence cuesta ~2 s** (carga del modelo) y las demás ~0,7 s: el worker
+   la calienta al arrancar. Con eso, voz+formato mide p50 ≈ 1,0 s y p95 ≈ 1,24 s (12 muestras
+   sintéticas): la meta de 1,2 s de §7 queda **al borde, no cumplida con holgura**.
+8. **La confirmación nunca es por voz**, y el gateway impone pisos que ninguna configuración afloja:
+   apps protegidas (gestores de contraseñas…), solo esquemas web en `open_url`, y nada de pegar
+   multilínea en una terminal. Si el foco está en un campo seguro (`IsSecureEventInputEnabled`), el texto
+   va al portapapeles en vez de pegarse.
+9. **Guarda de fidelidad del formateador** (no estaba en el plan): la salida solo puede usar palabras de
+   la entrada (se restauran tildes de palabras interrogativas y se pueden borrar muletillas y palabras de
+   número/símbolo); sin markdown, sin saltos de línea, sin MAYÚSCULAS. Si falla, se cae al texto por
+   reglas. Es lo que evita que un modelo "servicial" reescriba lo que dijiste.
+
+### Lo que falta y por qué
+
+- **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script y el
+  workflow de release están listos; solo faltan los secretos (`packaging/README.md`).
+- **Verificación de extremo a extremo de la GUI con un agente real:** en esta máquina ambos CLIs de agente
+  están rotos (lo que `eva doctor` reporta y explica), así que el circuito MCP se probó hasta el socket y
+  el arranque del agente, no hasta una llamada de herramienta hecha por el modelo.
+- **Corpus real:** el sintético (`say`) es piso de humo. La cosecha con tu voz es lo que fija la línea base.
+- **Fase 10 y GUI de ajustes:** diferidas (§8, decisión #9).
+
+---
+
 ## 0. La pregunta que reabro: ¿fork o nativo?
 
 Cada iteración anterior preguntó "¿qué le quitamos a Handy?" y nunca "¿hace falta Handy?". Vale la pena hacerse la segunda, porque el costo de un fork no es el código que tomas — es el que te comprometes a reconciliar **para siempre**.
@@ -408,9 +486,9 @@ la ad-hoc por defecto.
 ### Fase 8 — EVA como servidor MCP: la arquitectura abierta · semana 5
 
 **Reutiliza:** `rmcp` 3.4.0 (SDK oficial). `--mcp-config`/`--strict-mcp-config` de Claude, `codex mcp add` de Codex.
-**Escribe:** `eva-mcp`, un binario stdio con ~9 herramientas.
+**Escribe:** `eva-mcp`, un binario stdio con 10 herramientas.
 
-- Herramientas: `open_app`, `open_url`, `insert_text`, `get_active_window`, `get_selection`, `notify`, `speak`, `ask_user_confirmation`, `list_projects`.
+- Herramientas: `open_app`, `close_app`, `open_url`, `insert_text`, `get_active_window`, `get_selection`, `notify`, `speak`, `ask_user_confirmation`, `list_projects`.
 - **Cableado sin tocar la configuración global del usuario**: EVA inyecta su servidor por invocación con `--mcp-config '{"eva":{…}}'`. Reversible, aislado.
 - Aquí muere el nivel 1 para siempre: las órdenes compuestas las descompone el agente usando estas herramientas.
 - **Seguridad:** el servidor MCP es una superficie de privilegio local. **Todas** las herramientas pasan por el gateway de la fase 5, y `ask_user_confirmation` es el único camino a lo sensible. Nada de `run_shell` entre las herramientas: para eso ya está el sandbox del propio agente (`codex sandbox`).
