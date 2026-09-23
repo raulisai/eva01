@@ -72,6 +72,7 @@ fn main() {
 
     let (dictation, fn_events, _fn_monitor) = install_dictation_key(&config, &hotkey_manager, &mut startup_notes);
     let mut confirmation_keys = ConfirmationKeys::new(&config, &mut startup_notes);
+    let flag_key = install_flag_key(&config, &hotkey_manager, &mut startup_notes);
 
     if !eva_macos::is_accessibility_trusted() {
         tracing::warn!("EVA01 no tiene permiso de Accesibilidad; el pegado y la tecla fn no funcionarán");
@@ -110,7 +111,9 @@ fn main() {
                     HotKeyState::Released => model.release(now),
                 });
             } else if event.state == HotKeyState::Pressed {
-                if event.id == confirmation_keys.confirm.id() {
+                if flag_key.is_some_and(|key| key.id() == event.id) {
+                    commands.push(Command::FlagLastDictation(Uuid::new_v4()));
+                } else if event.id == confirmation_keys.confirm.id() {
                     commands.extend(model.confirm_key());
                 } else if event.id == confirmation_keys.cancel.id() {
                     commands.extend(model.cancel_key());
@@ -126,6 +129,7 @@ fn main() {
                     *control_flow = ControlFlow::Exit;
                 }
                 menu_id::CANCEL_TASKS => commands.push(Command::CancelAllTasks),
+                menu_id::FLAG_BAD => commands.push(Command::FlagLastDictation(Uuid::new_v4())),
                 menu_id::OPEN_CONFIG => open_config(),
                 menu_id::OPEN_LOGS => open_path(&logs_dir()),
                 _ => {}
@@ -195,21 +199,38 @@ fn install_dictation_key(
             }
             None => {
                 notes.push("macOS no dejó escuchar la tecla fn; uso ⌘⇧Space.".to_string());
-                (register_or_note(manager, fallback, notes), fn_rx, None)
+                (register_or_note(manager, fallback, "de dictado", notes), fn_rx, None)
             }
         },
         DictationKey::Combo(hotkey) => {
             tracing::info!(key = %config.hotkey.dictation, "tecla de dictado");
-            (register_or_note(manager, hotkey, notes), fn_rx, None)
+            (register_or_note(manager, hotkey, "de dictado", notes), fn_rx, None)
         }
     }
 }
 
-fn register_or_note(manager: &GlobalHotKeyManager, hotkey: HotKey, notes: &mut Vec<String>) -> Option<HotKey> {
+/// The "this came out wrong" key. Optional: a bad combination or a taken one
+/// costs the shortcut only, since the tray item does the same thing.
+fn install_flag_key(config: &Config, manager: &GlobalHotKeyManager, notes: &mut Vec<String>) -> Option<HotKey> {
+    match hotkeys::parse_combo(&config.hotkey.flag_bad) {
+        Ok(hotkey) => register_or_note(manager, hotkey, "para marcar un dictado", notes),
+        Err(e) => {
+            notes.push(format!("hotkey.flag_bad: {e}"));
+            None
+        }
+    }
+}
+
+fn register_or_note(
+    manager: &GlobalHotKeyManager,
+    hotkey: HotKey,
+    purpose: &str,
+    notes: &mut Vec<String>,
+) -> Option<HotKey> {
     match manager.register(hotkey) {
         Ok(()) => Some(hotkey),
         Err(e) => {
-            notes.push(format!("no se pudo registrar la tecla de dictado: {e}"));
+            notes.push(format!("no se pudo registrar la tecla {purpose}: {e}"));
             None
         }
     }
@@ -273,6 +294,7 @@ fn to_wire(command: Command) -> ShellToWorker {
         Command::Confirm { id, approved } => ShellToWorker::ConfirmationResponse { confirmation_id: id, approved },
         Command::CancelAllTasks => ShellToWorker::CancelAllTasks,
         Command::ListTasks(request_id) => ShellToWorker::ListTasks { request_id },
+        Command::FlagLastDictation(request_id) => ShellToWorker::FlagLastDictation { request_id },
     }
 }
 

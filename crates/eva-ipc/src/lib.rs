@@ -99,6 +99,13 @@ pub enum ShellToWorker {
         /// `true` to allow the action, `false` to refuse it.
         approved: bool,
     },
+    /// The user says the last dictation came out wrong (the flag hotkey or
+    /// the tray item). The worker keeps its audio and text as a case for the
+    /// eval corpus and answers with [`WorkerToShell::DictationFlagged`].
+    FlagLastDictation {
+        /// Correlates this request with its response.
+        request_id: uuid::Uuid,
+    },
     /// Ask the worker to shut down cleanly before the shell terminates it.
     Shutdown,
 }
@@ -222,6 +229,13 @@ pub enum WorkerToShell {
     ConfirmationClosed {
         /// The confirmation that ended.
         confirmation_id: uuid::Uuid,
+    },
+    /// Response to [`ShellToWorker::FlagLastDictation`] when it worked.
+    DictationFlagged {
+        /// Correlates with the request.
+        request_id: uuid::Uuid,
+        /// What was kept and where, for the user.
+        message: String,
     },
 }
 
@@ -354,6 +368,7 @@ mod tests {
             ShellToWorker::CancelAllTasks,
             ShellToWorker::ListTasks { request_id },
             ShellToWorker::ConfirmationResponse { confirmation_id: request_id, approved: true },
+            ShellToWorker::FlagLastDictation { request_id },
             ShellToWorker::Shutdown,
         ];
 
@@ -429,6 +444,7 @@ mod tests {
                 timeout_secs: 30,
             },
             WorkerToShell::ConfirmationClosed { confirmation_id: request_id },
+            WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
         ];
 
         for msg in messages {

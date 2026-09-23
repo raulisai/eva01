@@ -204,6 +204,7 @@ impl RigBuilder {
             worktrees_dir: dir.path().join("worktrees"),
             formatter_name: "reglas".to_string(),
             config_warnings: self.config_warnings,
+            harvest_dir: dir.path().join("harvest"),
         });
         Rig { ctx: Arc::new(ctx), desktop, rx, _dir: dir }
     }

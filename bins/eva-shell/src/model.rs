@@ -47,6 +47,8 @@ pub enum Command {
     CancelAllTasks,
     /// Ask for the task list.
     ListTasks(Uuid),
+    /// Flag the last dictation as wrong, keeping it for the eval corpus.
+    FlagLastDictation(Uuid),
 }
 
 /// A system notification the shell should show.
@@ -265,6 +267,9 @@ impl ShellModel {
                 if self.confirmation.as_ref().is_some_and(|c| c.id == confirmation_id) {
                     self.confirmation = None;
                 }
+            }
+            WorkerToShell::DictationFlagged { message, .. } => {
+                self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
             // Informational for the overlay: the worker pastes text itself,
             // and these are for logs and the CLI.
@@ -774,6 +779,18 @@ mod tests {
             WorkerToShell::TaskFinished { request_id: Uuid::new_v4(), success: false, summary: "cancelada".into() },
         );
         assert_eq!(model.overlay().unwrap().tone, Tone::Neutral);
+    }
+
+    #[test]
+    fn flagging_a_dictation_confirms_in_green_and_says_where_it_went() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(
+            t0,
+            WorkerToShell::DictationFlagged { request_id: Uuid::new_v4(), message: "Guardado para el corpus".into() },
+        );
+        let overlay = model.overlay().unwrap();
+        assert_eq!((overlay.text.as_str(), overlay.tone), ("✓ Guardado para el corpus", Tone::Ok));
     }
 
     #[test]

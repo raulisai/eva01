@@ -98,6 +98,22 @@ impl Store {
         self.with_conn(transcripts::all_marked_bad)
     }
 
+    /// Deletes the transcripts older than `keep_days` days that were not
+    /// flagged as wrong; returns how many. `0` keeps everything.
+    pub fn prune_transcripts(&self, keep_days: u32) -> Result<usize, StoreError> {
+        if keep_days == 0 {
+            return Ok(0);
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(keep_days));
+        self.with_conn(|c| transcripts::prune_unflagged_before(c, cutoff))
+    }
+
+    /// How many transcripts from the last `hours` hours were flagged as wrong.
+    pub fn transcripts_marked_bad_in_last(&self, hours: u32) -> Result<u32, StoreError> {
+        let since = chrono::Utc::now() - chrono::Duration::hours(i64::from(hours));
+        self.with_conn(|c| transcripts::count_marked_bad_since(c, since))
+    }
+
     // -- personal dictionary --------------------------------------------
 
     /// See [`dictionary::add`].

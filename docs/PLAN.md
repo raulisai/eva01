@@ -28,7 +28,7 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 |---|---|---|
 | 1 Spike | hecha | Canary vía `transcribe-rs`; ver hallazgo 5 (1B, no 180M) |
 | 2 Esqueleto y supervisión | hecha | shell ↔ worker por JSON-lines, reinicio con backoff, watchdog por fase |
-| 3 Dictado en español | hecha | Apple Intelligence + guarda de fidelidad; corpus de frases 40/40; `eva-eval` con línea base (`eval/README.md`) |
+| 3 Dictado en español | hecha | Apple Intelligence + guarda de fidelidad; corpus de frases 40/40; `eva-eval` con línea base; cosecha: historial local, hotkey «esto salió mal» que guarda audio+texto, `eva history` con el conteo de retrabajos (`eval/README.md`) |
 | 4 Intención | hecha | wake word con accent-folding; `AgentTask`/`EditSelection`; prefijo de proveedor ("usa Claude…") |
 | 5 Acciones y gateway | hecha | política `auto/confirm/block` por acción y origen, pisos de seguridad no aflojables, auditoría |
 | 6 Agentes | hecha | Codex y Claude Code, worktree por tarea, reanudar, cancelar por grupo de procesos, caída al siguiente proveedor |

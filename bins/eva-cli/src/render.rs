@@ -35,6 +35,7 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
         | WorkerToShell::StateChanged { .. }
         | WorkerToShell::ConfirmationRequested { .. }
         | WorkerToShell::ConfirmationClosed { .. } => None,
+        WorkerToShell::DictationFlagged { message, .. } => Line::out(message.clone()),
         WorkerToShell::Transcript { raw, cleaned, .. } => {
             Line::out(format!("transcript crudo:     {raw}\ntranscript limpio:    {cleaned}"))
         }
@@ -130,6 +131,35 @@ fn age(secs: u64) -> String {
         3_600..=86_399 => format!("{} h", secs / 3_600),
         _ => format!("{} d", secs / 86_400),
     }
+}
+
+/// The `eva history` list: when, whether it was flagged as wrong, and the
+/// text — plus what the speech model heard when the two differ for a flagged
+/// one — and how many were flagged in the last day, against the target of
+/// `docs/PLAN.md` §7 (fewer than five).
+pub fn render_history(
+    records: &[eva_store::TranscriptRecord],
+    flagged_last_day: u32,
+    harvest_dir: &std::path::Path,
+) -> String {
+    if records.is_empty() {
+        return "(todavía no hay dictados en el historial)".to_string();
+    }
+    let mut lines: Vec<String> = records
+        .iter()
+        .map(|r| {
+            let when = r.created_at.with_timezone(&chrono::Local).format("%d/%m %H:%M");
+            let mark = if r.marked_bad { "✗" } else { "✓" };
+            let heard =
+                if r.marked_bad && r.raw != r.formatted { format!("\n      oído: {}", r.raw) } else { String::new() };
+            format!("{when}  {mark}  {}{heard}", r.formatted)
+        })
+        .collect();
+    lines.push(String::new());
+    lines
+        .push(format!("Marcados como mal transcritos en las últimas 24 h: {flagged_last_day} (la meta es menos de 5)"));
+    lines.push(format!("Audio y propuestas de los marcados: {}", harvest_dir.display()));
+    lines.join("\n")
 }
 
 /// The `eva audit` table: when, what was decided, about what, and how it went.
@@ -296,6 +326,28 @@ mod tests {
         assert!(text.contains("agente  close_app Spotify"), "{text}");
         assert!(text.contains("    → no confirmaste"), "{text}");
         assert_eq!(render_audit(&[]), "(el gateway todavía no ha decidido nada)");
+    }
+
+    #[test]
+    fn history_marks_flagged_dictations_and_shows_what_was_heard() {
+        let record = |raw: &str, formatted: &str, marked_bad| eva_store::TranscriptRecord {
+            id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            raw: raw.into(),
+            pre_formatted: raw.into(),
+            formatted: formatted.into(),
+            marked_bad,
+        };
+        let text = render_history(
+            &[record("hola", "Hola.", false), record("que actualizar", "Que actualizar.", true)],
+            1,
+            std::path::Path::new("/x/harvest"),
+        );
+        assert!(text.contains("✓  Hola."), "{text}");
+        assert!(text.contains("✗  Que actualizar.\n      oído: que actualizar"), "{text}");
+        assert!(text.contains("últimas 24 h: 1"), "{text}");
+        assert!(text.contains("/x/harvest"), "{text}");
+        assert_eq!(render_history(&[], 0, std::path::Path::new("/x")), "(todavía no hay dictados en el historial)");
     }
 
     #[test]

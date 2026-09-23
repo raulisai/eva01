@@ -16,6 +16,9 @@
 # Mientras EVA01 te hace una pregunta en pantalla: sí / no (nunca por voz).
 # confirm = "cmd+return"
 # cancel = "cmd+escape"
+# Marca el último dictado como mal transcrito: guarda su audio y su texto para
+# el corpus de pruebas (eval/README.md). Siempre disponible en el menú también.
+# flag_bad = "ctrl+alt+cmd+m"
 
 [stt]
 # Modelo de voz. Sin esto EVA01 busca en ~/Library/Application Support/EVA01/models:
@@ -65,6 +68,13 @@
 [dictation]
 # Un espacio después de cada dictado, para que el siguiente no se pegue.
 # trailing_space = true
+
+[history]
+# Guardar el texto de cada dictado en este equipo (crudo y formateado). Es lo que
+# permite marcar uno como mal transcrito después. En false no se escribe nada.
+# save_transcripts = true
+# Días que se conservan; los marcados como mal transcritos no se borran. 0 = todo.
+# keep_days = 30
 
 [styles]
 # Estilo de puntuación por app (además de los que ya trae EVA01: chat, correo,

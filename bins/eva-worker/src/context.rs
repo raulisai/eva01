@@ -5,6 +5,7 @@
 //! [`crate::testkit`].
 
 use crate::confirm::ConfirmationBroker;
+use crate::harvest::Harvest;
 use crate::tasks::TaskRegistry;
 use eva_agents::{AgentRegistry, McpInjection};
 use eva_audio::{AudioSource, CaptureHandle, SpeechToText};
@@ -112,6 +113,8 @@ pub struct WorkerDeps {
     pub formatter_name: String,
     /// Problems found loading `config.toml`, for the health report.
     pub config_warnings: Vec<String>,
+    /// Where dictations the user flags as wrong are kept.
+    pub harvest_dir: PathBuf,
 }
 
 /// The worker's shared state.
@@ -160,6 +163,8 @@ pub struct WorkerContext {
     pub config_warnings: Vec<String>,
     /// The agent tasks running in the background.
     pub tasks: TaskRegistry,
+    /// The last dictation, held so the user can flag it as wrong.
+    pub harvest: Harvest,
     recording: Mutex<Option<RecordingSession>>,
     jobs: JobTracker,
 }
@@ -207,6 +212,7 @@ impl WorkerContext {
             formatter_name: deps.formatter_name,
             config_warnings: deps.config_warnings,
             tasks: TaskRegistry::default(),
+            harvest: Harvest::new(deps.harvest_dir),
             recording: Mutex::new(None),
             jobs: JobTracker::new(),
         }

@@ -95,10 +95,29 @@ Lo que enseñó (y quedó corregido o anotado):
 ## Cómo cosechar muestras nuevas
 
 1. Usa EVA01 normalmente.
-2. Cuando algo salga mal, marca esa transcripción con la hotkey "esto
-   salió mal" (o revisa `eva-store::transcripts_marked_bad()` / la tabla
-   `transcripts` directamente).
-3. Exporta el audio y el texto correcto a un par `.wav`/`.txt` aquí.
+2. Cuando un dictado (o una orden) salga mal, márcalo: **⌃⌥⌘M** o «Esto
+   salió mal (último dictado)» en el menú de la barra. EVA01 guarda el
+   audio y el texto de *ese* momento; antes de marcar, no se escribe nada
+   de lo que dices (el audio del último enunciado solo vive en memoria, y
+   uno dictado en un campo de contraseña ni eso).
+3. Mira lo marcado con `eva history --flagged`. Los archivos están en
+   `~/Library/Application Support/EVA01/harvest/`:
+
+   ```
+   <id>.wav            el audio, 16 kHz mono
+   <id>.propuesta.txt  lo que oyó el modelo y lo que se pegó
+   ```
+
+4. La referencia es **lo que de verdad dijiste**, y solo tú la sabes: crea
+   `<id>.txt` con esa frase, tal como debería haber salido, y mueve el par
+   `.wav`/`.txt` a `eval/corpus/`. (Un `.wav` sin `.txt` se omite, así que
+   lo que aún no corriges no falsea el WER.)
+
+El número que sale gratis de esto es el de **retrabajos**: `eva history`
+cuenta los marcados de las últimas 24 h (la meta de `docs/PLAN.md` §7 es
+menos de 5 al día).
 
 No hay una meta de tamaño fija — el corpus crece con lo que realmente te
-falló, que es la parte que importa medir.
+falló, que es la parte que importa medir. El historial de texto se guarda en
+este equipo 30 días (`[history]` en la configuración; los marcados no se
+borran) y se puede apagar del todo con `save_transcripts = false`.

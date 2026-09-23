@@ -12,6 +12,8 @@ use tray_icon::TrayIconBuilder;
 pub mod id {
     /// Cancel every running task.
     pub const CANCEL_TASKS: &str = "cancel_tasks";
+    /// Flag the last dictation as wrong.
+    pub const FLAG_BAD: &str = "flag_bad";
     /// Open `config.toml` in the default editor.
     pub const OPEN_CONFIG: &str = "open_config";
     /// Open the logs folder.
@@ -71,6 +73,7 @@ pub fn menu_spec(view: &TrayView) -> Vec<Item> {
 
     items.extend([
         Item::Separator,
+        Item::Action { id: id::FLAG_BAD, text: "Esto salió mal (último dictado)".to_string(), enabled: true },
         Item::Action { id: id::OPEN_CONFIG, text: "Abrir configuración…".to_string(), enabled: true },
         Item::Action { id: id::OPEN_LOGS, text: "Abrir carpeta de registros".to_string(), enabled: true },
         Item::Separator,
@@ -203,6 +206,12 @@ mod tests {
                 _ => None,
             })
             .expect("the cancel item is always in the menu")
+    }
+
+    #[test]
+    fn the_menu_always_offers_to_flag_the_last_dictation() {
+        let items = menu_spec(&view(vec![], vec![]));
+        assert!(items.iter().any(|i| matches!(i, Item::Action { id: id::FLAG_BAD, enabled: true, .. })));
     }
 
     #[test]

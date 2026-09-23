@@ -46,6 +46,8 @@ pub struct Config {
     pub feedback: FeedbackConfig,
     /// How dictated text is pasted.
     pub dictation: DictationConfig,
+    /// What is remembered about past dictations.
+    pub history: HistoryConfig,
     /// Per-app formatting styles.
     pub styles: StylesConfig,
     /// The optional remote (OpenAI-compatible) text model.
@@ -76,6 +78,11 @@ pub struct HotkeyConfig {
     pub confirm: String,
     /// The key that answers it with "no" (also cancels a recording).
     pub cancel: String,
+    /// The key that flags the last dictation as wrong: it keeps that audio
+    /// and text as a case for the eval corpus (`eval/README.md`). Four
+    /// modifiers by default, since it is global and must not shadow an app's
+    /// own shortcut.
+    pub flag_bad: String,
 }
 
 impl Default for HotkeyConfig {
@@ -84,6 +91,7 @@ impl Default for HotkeyConfig {
             dictation: "fn".to_string(),
             confirm: "cmd+return".to_string(),
             cancel: "cmd+escape".to_string(),
+            flag_bad: "ctrl+alt+cmd+m".to_string(),
         }
     }
 }
@@ -174,6 +182,25 @@ pub struct DictationConfig {
 impl Default for DictationConfig {
     fn default() -> Self {
         DictationConfig { trailing_space: true }
+    }
+}
+
+/// What EVA01 remembers about past dictations, all of it on this Mac.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryConfig {
+    /// Keep the text of each dictation (raw and formatted) in the local
+    /// database. It is what lets you flag a bad one afterwards; turn it off
+    /// and nothing about what you say is written down.
+    pub save_transcripts: bool,
+    /// Days to keep them. Older ones are deleted at startup — except those
+    /// you flagged as wrong, which are the eval corpus. `0` keeps everything.
+    pub keep_days: u32,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        HistoryConfig { save_transcripts: true, keep_days: 30 }
     }
 }
 
@@ -369,6 +396,16 @@ mod tests {
     }
 
     #[test]
+    fn history_is_local_and_bounded_by_default_and_can_be_turned_off() {
+        let history = Config::default().history;
+        assert!(history.save_transcripts);
+        assert_eq!(history.keep_days, 30);
+        let config = Config::parse("[history]\nsave_transcripts = false\nkeep_days = 0").expect("valid");
+        assert!(!config.history.save_transcripts);
+        assert_eq!(config.history.keep_days, 0);
+    }
+
+    #[test]
     fn a_typo_in_a_key_is_an_error_not_silently_ignored() {
         let error = Config::parse("[hotkey]\ndictaton = \"fn\"").expect_err("unknown key must fail");
         assert!(error.contains("dictaton"), "the message must name the bad key: {error}");
@@ -411,9 +448,18 @@ mod tests {
     #[test]
     fn the_template_mentions_every_top_level_section() {
         let template = Config::template();
-        for section in
-            ["hotkey", "stt", "agents", "gateway.voice", "gateway.agent", "feedback", "dictation", "styles", "remote"]
-        {
+        for section in [
+            "hotkey",
+            "stt",
+            "agents",
+            "gateway.voice",
+            "gateway.agent",
+            "feedback",
+            "dictation",
+            "history",
+            "styles",
+            "remote",
+        ] {
             assert!(
                 template.contains(&format!("[{section}]")) || template.contains(&format!("# [{section}]")),
                 "missing [{section}]"

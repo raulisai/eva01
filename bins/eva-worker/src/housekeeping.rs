@@ -51,6 +51,29 @@ pub fn set_wake_word(ctx: &WorkerContext, request_id: Uuid, word: &str) {
     }
 }
 
+/// Flags the last utterance as wrong, keeping its audio and text for the eval
+/// corpus (`crate::harvest`). The writes run off the command loop.
+pub fn flag_last_dictation(ctx: &Arc<WorkerContext>, request_id: Uuid) {
+    let job_ctx = Arc::clone(ctx);
+    ctx.spawn_job(async move {
+        let worker = Arc::clone(&job_ctx);
+        let flagged = tokio::task::spawn_blocking(move || worker.harvest.flag_last(&worker.store)).await;
+        match flagged {
+            Ok(Ok(flagged)) => {
+                tracing::info!(stem = %flagged.stem, audio = flagged.audio_saved, dir = %job_ctx.harvest.dir().display(), "dictado marcado como mal transcrito");
+                let message = if flagged.audio_saved {
+                    "Marcado como mal transcrito; guardé el audio para el corpus"
+                } else {
+                    "Marcado como mal transcrito; guardé el texto (no había audio)"
+                };
+                job_ctx.events.emit(WorkerToShell::DictationFlagged { request_id, message: message.to_string() });
+            }
+            Ok(Err(e)) => job_ctx.events.error(request_id, e.to_string()),
+            Err(join_error) => job_ctx.events.error(request_id, format!("el marcado se interrumpió: {join_error}")),
+        }
+    });
+}
+
 /// Replies with what is cheap to know instantly, plus each agent's status —
 /// detection spawns real processes (`codex login status`, `claude doctor`)
 /// and takes real time, so it runs as a background job rather than holding
@@ -99,8 +122,106 @@ pub fn list_tasks(ctx: &WorkerContext, request_id: Uuid) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
     use super::*;
+    use crate::context::AudioContext;
     use crate::testkit::Rig;
     use eva_ipc::ShellToWorker;
+    use eva_mcp::desktop::mock::MockDesktop;
+
+    /// A microphone that "hears" a second of speech, and an STT that returns `text`.
+    fn hearing(text: &str) -> AudioContext {
+        AudioContext {
+            source: Arc::new(eva_audio::capture::mock::ScriptedSource::new(vec![0.2; 16_000])),
+            stt: Arc::new(eva_audio::transcribe::mock::FixedTranscript::new(text)),
+            model_id: "mock-model".to_string(),
+        }
+    }
+
+    /// Records and processes one utterance.
+    async fn say(rig: &mut Rig) {
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartRecording { request_id }).await;
+        rig.run(ShellToWorker::StopRecording { request_id }).await;
+    }
+
+    async fn flag(rig: &mut Rig) -> Vec<WorkerToShell> {
+        rig.run(ShellToWorker::FlagLastDictation { request_id: Uuid::new_v4() }).await
+    }
+
+    #[tokio::test]
+    async fn flagging_the_last_dictation_keeps_its_audio_and_marks_it_in_the_history() {
+        let mut rig = Rig::builder().audio(hearing("hay que actualizar")).build();
+        say(&mut rig).await;
+
+        let events = flag(&mut rig).await;
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::DictationFlagged { message, .. } if message.contains("audio"))));
+        let flagged = rig.ctx.store.transcripts_marked_bad().unwrap();
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].raw, "hay que actualizar");
+        let dir = rig.ctx.harvest.dir();
+        assert!(dir.join(format!("{}.wav", flagged[0].id)).is_file());
+        assert!(dir.join(format!("{}.propuesta.txt", flagged[0].id)).is_file());
+    }
+
+    #[tokio::test]
+    async fn flagging_with_nothing_dictated_says_so_and_writes_nothing() {
+        let mut rig = Rig::new();
+
+        let events = flag(&mut rig).await;
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("ningún dictado"))));
+        assert!(!rig.ctx.harvest.dir().exists());
+    }
+
+    #[tokio::test]
+    async fn a_misheard_command_can_be_flagged_too() {
+        let mut rig = Rig::builder().audio(hearing("adán abre brave")).build();
+        say(&mut rig).await;
+
+        let events = flag(&mut rig).await;
+
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::DictationFlagged { .. })));
+        assert!(rig.ctx.store.transcripts_marked_bad().unwrap().is_empty(), "commands are not in the history");
+        let proposals: Vec<_> = std::fs::read_dir(rig.ctx.harvest.dir())
+            .unwrap()
+            .filter_map(|f| f.ok())
+            .filter(|f| f.file_name().to_string_lossy().ends_with(".propuesta.txt"))
+            .collect();
+        assert_eq!(proposals.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn with_the_history_off_nothing_is_saved_until_the_user_flags_something() {
+        let mut rig =
+            Rig::builder().audio(hearing("hola mundo")).configure(|c| c.history.save_transcripts = false).build();
+        say(&mut rig).await;
+        assert!(rig.ctx.store.recent_transcripts(10).unwrap().is_empty());
+        assert!(!rig.ctx.harvest.dir().exists());
+
+        let events = flag(&mut rig).await;
+
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::DictationFlagged { .. })));
+        assert!(rig.ctx.harvest.dir().is_dir(), "flagging is the user's explicit yes");
+        assert!(rig.ctx.store.recent_transcripts(10).unwrap().is_empty(), "still nothing in the database");
+    }
+
+    #[tokio::test]
+    async fn a_dictation_into_a_password_field_leaves_no_trace() {
+        let mut rig = Rig::builder()
+            .desktop(MockDesktop::new().with_secure_input())
+            .audio(hearing("mi contraseña es correcta"))
+            .build();
+        say(&mut rig).await;
+
+        assert!(rig.ctx.store.recent_transcripts(10).unwrap().is_empty());
+        let events = flag(&mut rig).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+        assert!(!rig.ctx.harvest.dir().exists());
+    }
 
     #[tokio::test]
     async fn add_custom_word_persists_it_and_returns_the_updated_list() {

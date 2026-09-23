@@ -12,6 +12,7 @@ pub mod capture;
 pub mod resample;
 pub mod transcribe;
 pub mod vad;
+pub mod wav;
 
 pub use capture::{AudioError, AudioSource, CaptureHandle, MicrophoneSource, Rechunker, TARGET_SAMPLE_RATE};
 pub use transcribe::{CanarySpeechToText, SpeechToText, TranscribeError, Transcript, WhisperSpeechToText};

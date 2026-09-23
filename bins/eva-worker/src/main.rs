@@ -9,6 +9,7 @@ mod confirm;
 mod context;
 mod dictation;
 mod handler;
+mod harvest;
 mod housekeeping;
 mod recording;
 mod rpc;

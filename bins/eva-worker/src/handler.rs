@@ -36,6 +36,7 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
             tracing::info!(cancelled, "tareas canceladas desde la bandeja");
         }
         ShellToWorker::ListTasks { request_id } => housekeeping::list_tasks(ctx, request_id),
+        ShellToWorker::FlagLastDictation { request_id } => housekeeping::flag_last_dictation(ctx, request_id),
         ShellToWorker::ConfirmationResponse { confirmation_id, approved } => {
             if !ctx.broker.resolve(confirmation_id, approved) {
                 tracing::info!(%confirmation_id, "respuesta a una confirmación que ya no esperaba; se ignora");

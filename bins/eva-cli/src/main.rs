@@ -74,6 +74,15 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Los dictados recientes y cuáles marcaste como mal transcritos.
+    History {
+        /// Cuántos mostrar.
+        #[arg(long, default_value_t = 15)]
+        limit: u32,
+        /// Solo los que marcaste como mal transcritos (el corpus de pruebas).
+        #[arg(long)]
+        flagged: bool,
+    },
     /// Abrir EVA01 al iniciar sesión.
     Startup {
         #[command(subcommand)]
@@ -158,6 +167,7 @@ async fn main() {
         },
         Command::Doctor { smoke } => doctor::run(smoke).await,
         Command::Audit { limit } => audit(limit),
+        Command::History { limit, flagged } => history(limit, flagged),
         Command::Model { action } => {
             run_blocking(move || match action {
                 ModelAction::List => model::list(),
@@ -224,6 +234,32 @@ fn config(action: &ConfigAction) -> i32 {
                     1
                 }
             }
+        }
+    }
+}
+
+/// `eva history`: the recent dictations, straight from the database — the same
+/// list the flag hotkey works on, and the "retrabajos" count of
+/// `docs/PLAN.md` §7.
+fn history(limit: u32, flagged_only: bool) -> i32 {
+    let support = support_dir();
+    let path = support.join("eva.sqlite3");
+    if !path.exists() {
+        println!("(todavía no hay historial: {} no existe)", path.display());
+        return 0;
+    }
+    let read = eva_store::Store::open(&path).and_then(|store| {
+        let records = if flagged_only { store.transcripts_marked_bad()? } else { store.recent_transcripts(limit)? };
+        Ok((records, store.transcripts_marked_bad_in_last(24)?))
+    });
+    match read {
+        Ok((records, flagged_today)) => {
+            println!("{}", render::render_history(&records, flagged_today, &support.join("harvest")));
+            0
+        }
+        Err(e) => {
+            eprintln!("no se pudo leer el historial: {e}");
+            1
         }
     }
 }

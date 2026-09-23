@@ -29,7 +29,11 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
 
     match eva_intent::interpret(&gate_input, &ctx.wake_word, &ctx.app_index) {
         InterpretResult::Dictation => dictate(ctx, request_id, text).await,
-        InterpretResult::Command(intent) => crate::commands::run_intent(ctx, request_id, intent).await,
+        InterpretResult::Command(intent) => {
+            // A misheard command is as worth flagging as a misheard dictation.
+            ctx.harvest.remember_dictation(request_id, None, text, None);
+            crate::commands::run_intent(ctx, request_id, intent).await
+        }
     }
 }
 
@@ -59,9 +63,7 @@ async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
                 eva_text::clean_styled(raw, &Dictionary::new(Vec::<String>::new()), &RuleOnlyFormatter, style)
             });
 
-    if let Err(e) = ctx.store.save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted) {
-        tracing::warn!("no se pudo guardar el transcript para el corpus: {e}");
-    }
+    remember(ctx, request_id, &cleaned);
     ctx.events.emit(WorkerToShell::Transcript {
         request_id,
         raw: cleaned.raw.clone(),
@@ -78,6 +80,25 @@ async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
     let trailing_space = ctx.config.dictation.trailing_space && style != Style::Terminal;
     let text = if trailing_space { format!("{} ", cleaned.formatted) } else { cleaned.formatted };
     deliver(ctx, request_id, text).await;
+}
+
+/// Saves what was dictated to the history (if the config keeps one) and holds
+/// it for the flag hotkey. A dictation into a password field is neither: it
+/// must leave no trace.
+fn remember(ctx: &WorkerContext, request_id: Uuid, cleaned: &eva_text::CleanedTranscript) {
+    if ctx.desktop.secure_input_active() {
+        ctx.harvest.forget();
+        return;
+    }
+    let transcript_id = if ctx.config.history.save_transcripts {
+        ctx.store
+            .save_transcript(&cleaned.raw, &cleaned.pre_formatted, &cleaned.formatted)
+            .map_err(|e| tracing::warn!("no se pudo guardar el transcript en el historial: {e}"))
+            .ok()
+    } else {
+        None
+    };
+    ctx.harvest.remember_dictation(request_id, transcript_id, &cleaned.raw, Some(&cleaned.formatted));
 }
 
 /// The style for the app with this bundle id: the user's own rules from

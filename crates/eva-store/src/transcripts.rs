@@ -71,6 +71,28 @@ pub fn all_marked_bad(conn: &Connection) -> Result<Vec<TranscriptRecord>, StoreE
     rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
 }
 
+/// Deletes the transcripts saved before `cutoff` that nobody flagged as wrong
+/// (those are the eval corpus and are kept for good). Returns how many went.
+pub fn prune_unflagged_before(conn: &Connection, cutoff: DateTime<Utc>) -> Result<usize, StoreError> {
+    let deleted =
+        conn.execute("DELETE FROM transcripts WHERE marked_bad = 0 AND created_at < ?1", params![cutoff.to_rfc3339()])?;
+    Ok(deleted)
+}
+
+/// How many transcripts were flagged as wrong since `since` — the "retrabajos"
+/// number of `docs/PLAN.md` §7 (the target is fewer than five a day).
+///
+/// A flagged row keeps its original `created_at`, which is what this counts
+/// by: the day the dictation happened, the moment it was wrong.
+pub fn count_marked_bad_since(conn: &Connection, since: DateTime<Utc>) -> Result<u32, StoreError> {
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM transcripts WHERE marked_bad = 1 AND created_at >= ?1",
+        params![since.to_rfc3339()],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptRecord> {
     let id_text: String = row.get(0)?;
     let created_at_text: String = row.get(1)?;
@@ -142,6 +164,46 @@ mod tests {
         let bad = all_marked_bad(&conn).expect("all_marked_bad must succeed");
         assert_eq!(bad.len(), 1);
         assert_eq!(bad[0].id, id);
+    }
+
+    fn save_at(conn: &Connection, raw: &str, when: DateTime<Utc>, bad: bool) -> Uuid {
+        let id = save(conn, raw, raw, raw).expect("save");
+        conn.execute(
+            "UPDATE transcripts SET created_at = ?1, marked_bad = ?2 WHERE id = ?3",
+            params![when.to_rfc3339(), i64::from(bad), id.to_string()],
+        )
+        .expect("backdate");
+        id
+    }
+
+    #[test]
+    fn pruning_deletes_old_transcripts_but_never_the_flagged_ones() {
+        let conn = open_in_memory().expect("open");
+        let now = Utc::now();
+        let old = now - chrono::Duration::days(40);
+        save_at(&conn, "vieja", old, false);
+        let kept_flagged = save_at(&conn, "vieja marcada", old, true);
+        save_at(&conn, "reciente", now - chrono::Duration::days(2), false);
+
+        let deleted = prune_unflagged_before(&conn, now - chrono::Duration::days(30)).expect("prune");
+
+        assert_eq!(deleted, 1);
+        let left: Vec<String> = recent(&conn, 10).expect("recent").into_iter().map(|r| r.raw).collect();
+        assert_eq!(left.len(), 2);
+        assert!(left.contains(&"reciente".to_string()));
+        assert!(all_marked_bad(&conn).expect("bad").iter().any(|r| r.id == kept_flagged));
+    }
+
+    #[test]
+    fn the_rework_count_only_includes_flagged_transcripts_from_the_window() {
+        let conn = open_in_memory().expect("open");
+        let now = Utc::now();
+        save_at(&conn, "hoy mal", now - chrono::Duration::hours(1), true);
+        save_at(&conn, "hoy bien", now - chrono::Duration::hours(2), false);
+        save_at(&conn, "ayer mal", now - chrono::Duration::hours(30), true);
+
+        assert_eq!(count_marked_bad_since(&conn, now - chrono::Duration::hours(24)).expect("count"), 1);
+        assert_eq!(count_marked_bad_since(&conn, now - chrono::Duration::hours(48)).expect("count"), 2);
     }
 
     #[test]

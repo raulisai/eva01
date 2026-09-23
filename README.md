@@ -65,6 +65,7 @@ Si usas la tecla fn: Ajustes → Teclado → «Pulsar la tecla 🌐 para» → *
 | «Adán, continúa» | reanuda la última sesión |
 | Seleccionas texto, «Adán, hazlo más corto» | reescribe la selección |
 | **⌘↩** / **⌘⎋** | contestas sí / no cuando EVA01 pregunta (nunca por voz) |
+| **⌃⌥⌘M** (o el menú) | marcas el último dictado como mal transcrito: guarda su audio para medirlo (`eval/README.md`) |
 
 El ícono de la barra de menú muestra el estado (reposo, escuchando, trabajando, requiere
 atención) y las tareas en curso, con «Cancelar tareas».
@@ -92,6 +93,7 @@ los valores por defecto.
 | `eva config path / show / edit` | configuración |
 | `eva intent "Adán, abre Brave"` | qué entendería EVA01, sin audio y sin ejecutar |
 | `eva tasks` · `eva audit` | tareas de agente · lo que el gateway dejó pasar o rechazó |
+| `eva history [--flagged]` | dictados recientes y los que marcaste como mal transcritos |
 | `eva dictionary` · `eva wake-word` | diccionario personal · palabra de activación |
 | `eva startup enable / disable / status` | abrir al iniciar sesión |
 
@@ -102,7 +104,11 @@ los valores por defecto.
   nada de pegar varias líneas en una terminal).
 - Cada tarea corre en un worktree de git propio: lo que el agente malentienda no toca
   tu árbol.
-- Si el foco está en un campo de contraseña, el dictado va al portapapeles, no se pega.
+- Si el foco está en un campo de contraseña, el dictado va al portapapeles, no se pega,
+  y no queda en el historial.
+- El historial de dictados (texto) se guarda solo en este equipo, 30 días, y se apaga con
+  `[history] save_transcripts = false`. El audio no se guarda nunca, salvo el de lo que tú
+  marcas como mal transcrito.
 - Los agentes reciben las herramientas de EVA por un socket privado y con un token por
   ejecución; tu configuración global de Codex y Claude no se toca.
 - El modelo remoto está **apagado** por defecto; si lo activas, esos textos salen de tu Mac.

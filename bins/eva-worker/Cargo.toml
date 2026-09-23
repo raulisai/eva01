@@ -16,6 +16,7 @@ eva-config = { workspace = true }
 eva-gateway = { workspace = true }
 eva-macos = { workspace = true }
 async-trait = "0.1"
+thiserror = { workspace = true }
 libc = "0.2"
 chrono = { workspace = true }
 serde_json = { workspace = true }

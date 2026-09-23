@@ -104,6 +104,10 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         return;
     }
 
+    // Held (in memory only) until the next recording, in case the user flags
+    // what comes out as wrong — see `crate::harvest`.
+    ctx.harvest.remember_audio(request_id, samples.clone());
+
     let Some(audio) = &ctx.audio else {
         // Can only happen if the model was unloaded between Start and Stop,
         // which nothing in this binary does today — defensive, not expected.

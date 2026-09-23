@@ -45,6 +45,14 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("no se pudo revisar las tareas interrumpidas: {e}"),
     }
 
+    match store.prune_transcripts(config.history.keep_days) {
+        Ok(0) => {}
+        Ok(count) => {
+            tracing::info!(count, keep_days = config.history.keep_days, "dictados viejos borrados del historial")
+        }
+        Err(e) => tracing::warn!("no se pudo limpiar el historial: {e}"),
+    }
+
     let wake_word: String = store.get_setting("wake_word")?.unwrap_or_else(|| config.wake_word.0.clone());
     let (events, rx) = Events::channel();
     let (formatter, formatter_name) = load_formatter(&config);
@@ -84,6 +92,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         worktrees_dir: support.join("worktrees"),
         formatter_name,
         config_warnings: loaded.warnings,
+        harvest_dir: support.join("harvest"),
         config,
     }));
 
