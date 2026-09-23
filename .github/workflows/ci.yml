@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Una sola corrida por rama: un push nuevo cancela la anterior.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Las cuatro puertas de docs/ENGINEERING.md: formato, clippy sin advertencias,
+  # tests, y que el paquete .app realmente se arme y arranque su CLI.
+  build-and-test:
+    # macOS 26: FoundationModels (el puente de Apple Intelligence, swift/) no
+    # existe en SDKs anteriores, y eva-text no compila sin él.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formato
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        # Las pruebas que necesitan una Mac real (Apple Intelligence, el
+        # portapapeles, el navegador) están marcadas #[ignore] a propósito.
+        run: cargo test --workspace --locked
+      - name: Paquete EVA01.app
+        run: |
+          sh packaging/build-app.sh
+          target/EVA01.app/Contents/MacOS/eva --version
+          codesign --verify --deep --strict target/EVA01.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EVA01.app-adhoc
+          path: target/EVA01.app
+          retention-days: 7
+
+  # cargo-audit solo lee Cargo.lock: no hace falta macOS ni compilar nada.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: true
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit

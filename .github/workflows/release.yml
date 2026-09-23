@@ -1,0 +1,76 @@
+name: Release
+
+# Se dispara al empujar una etiqueta vX.Y.Z. Firma con Developer ID, notariza
+# y publica EVA01.zip. Necesita estos secretos del repositorio (ver
+# packaging/README.md); sin ellos el job falla al principio, no a medias:
+#   MACOS_CERTIFICATE          certificado "Developer ID Application" (.p12) en base64
+#   MACOS_CERTIFICATE_PASSWORD contraseña del .p12
+#   MACOS_SIGNING_IDENTITY     p. ej. "Developer ID Application: Tu Nombre (TEAMID)"
+#   NOTARY_APPLE_ID            Apple ID con acceso al equipo
+#   NOTARY_TEAM_ID             Team ID
+#   NOTARY_PASSWORD            contraseña específica de app (appleid.apple.com)
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: La etiqueta coincide con la versión del workspace
+        run: |
+          VERSION="$(awk -F'"' '/^version *=/ {print $2; exit}' Cargo.toml)"
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "la etiqueta $GITHUB_REF_NAME no es v$VERSION (Cargo.toml)" >&2
+            exit 1
+          fi
+
+      - name: Importar el certificado a un llavero temporal
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/eva01.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Compilar, empaquetar y firmar
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: sh packaging/build-app.sh
+
+      - name: Notarizar y grapar
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent target/EVA01.app "$RUNNER_TEMP/EVA01-notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/EVA01-notarize.zip" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+          xcrun stapler staple target/EVA01.app
+          spctl --assess --type execute --verbose target/EVA01.app
+
+      - name: Empaquetar y publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ditto -c -k --keepParent target/EVA01.app "EVA01-$GITHUB_REF_NAME.zip"
+          shasum -a 256 "EVA01-$GITHUB_REF_NAME.zip" > "EVA01-$GITHUB_REF_NAME.zip.sha256"
+          gh release create "$GITHUB_REF_NAME" "EVA01-$GITHUB_REF_NAME.zip" "EVA01-$GITHUB_REF_NAME.zip.sha256" \
+            --title "EVA01 $GITHUB_REF_NAME" --generate-notes

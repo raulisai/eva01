@@ -37,8 +37,8 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 | 9 Estilo, contexto, edición | hecha | estilos por app, modo edición sobre la selección, remoto OpenAI-compatible **apagado por defecto** |
 | 10 Manos libres | **diferida a propósito** | su disparador ("te sorprendes buscando la tecla") es del uso, no del calendario |
 
-**Fuera del plan original, añadido porque el uso lo pidió:** CLI `eva` (`doctor`, `model install/verify`,
-`startup enable`, `say`, `intent`, `tasks`), gestión de modelos con verificación de tamaño y prueba de
+**Fuera del plan original, añadido porque el uso lo pidió:** CLI `eva` (`doctor`, `model list/install/verify`,
+`startup enable`, `config`, `intent`, `tasks`, `audit`, `dictionary`, `wake-word`, `health`), gestión de modelos con verificación de tamaño y prueba de
 voz real, configuración en `~/Library/Application Support/EVA01/config.toml` (claves desconocidas
 avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones con hotkey.
 
@@ -82,8 +82,9 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
 
 ### Lo que falta y por qué
 
-- **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script y el
-  workflow de release están listos; solo faltan los secretos (`packaging/README.md`).
+- **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado
+  está probado; el workflow de release está escrito pero **sin ejecutar** y espera los secretos
+  (`packaging/README.md`).
 - **Verificación de extremo a extremo de la GUI con un agente real:** en esta máquina ambos CLIs de agente
   están rotos (lo que `eva doctor` reporta y explica), así que el circuito MCP se probó hasta el socket y
   el arranque del agente, no hasta una llamada de herramienta hecha por el modelo.
