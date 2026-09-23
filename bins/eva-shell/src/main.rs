@@ -1,30 +1,53 @@
 //! The process the user sees: tray icon, global hotkey, overlay panel. Per
 //! `docs/PLAN.md` §3.3, this binary is deliberately small and has almost
 //! nothing in it that can crash — the actual work (audio, STT, agents)
-//! lives in `eva-worker`, spawned and supervised by [`supervisor`].
+//! lives in `eva-worker`, spawned and supervised by [`supervisor`]. What it
+//! shows is decided by [`model::ShellModel`], a pure state machine with a
+//! watchdog; this file is the glue that feeds it key presses, worker events
+//! and the clock, and draws what it says.
 //!
 //! Runs on `tao`'s event loop because both `tray-icon` and `global-hotkey`
 //! require one on the main thread on macOS (documented in their own crate
 //! docs) — `tao` is used purely for that run loop, not for any window it
 //! could create.
 
+mod hotkeys;
+mod icons;
+mod model;
 mod supervisor;
+mod tray;
 
-use eva_ipc::{ShellToWorker, WorkerState as IpcWorkerState, WorkerToShell};
-use eva_macos::{Overlay, OverlayState};
+use eva_config::Config;
+use eva_ipc::ShellToWorker;
+use eva_macos::{FnKeyEvent, FnKeyMonitor, Overlay, OverlayContent};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use hotkeys::DictationKey;
+use model::{Command, KeyLabels, ShellModel};
 use objc2::MainThreadMarker;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use supervisor::{Supervisor, SupervisorEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::{Icon, TrayIconBuilder};
+use tray::{id as menu_id, Tray};
 use tracing_subscriber::EnvFilter;
+use tray_icon::menu::MenuEvent;
 use uuid::Uuid;
+
+/// How often the loop wakes to check keys, worker events and the clock —
+/// often enough that a key press feels instant, rarely enough to cost nothing.
+const TICK: Duration = Duration::from_millis(40);
 
 fn main() {
     init_logging();
     tracing::info!("eva-shell iniciando");
+
+    let loaded = Config::load();
+    let mut startup_notes = loaded.warnings.clone();
+    for warning in &startup_notes {
+        tracing::warn!("{warning}");
+    }
+    let config = loaded.config;
 
     let event_loop = EventLoop::new();
 
@@ -32,189 +55,288 @@ fn main() {
     // manager on the same thread the event loop pumps on macOS — this is
     // that thread (tao's `EventLoop::new` must run on the real main thread
     // too, which `fn main` already is).
-    let _tray_icon = build_tray_icon();
-    let hotkey_manager = GlobalHotKeyManager::new().expect("no se pudo inicializar el gestor de atajos globales");
-    let hotkey = register_hotkey(&hotkey_manager);
-
-    let mtm = MainThreadMarker::new().expect("eva-shell debe ejecutarse en el hilo principal");
+    let Ok(hotkey_manager) = GlobalHotKeyManager::new() else {
+        fatal("no se pudo inicializar el gestor de atajos globales");
+    };
+    let Some(mtm) = MainThreadMarker::new() else { fatal("eva-shell debe ejecutarse en el hilo principal") };
     let overlay = Overlay::new(mtm);
 
-    warn_if_accessibility_not_trusted();
+    let mut model = ShellModel::new(KeyLabels {
+        confirm: hotkeys::label(&config.hotkey.confirm),
+        cancel: hotkeys::label(&config.hotkey.cancel),
+    });
+    let mut tray = match Tray::new(&model.tray(Instant::now())) {
+        Ok(tray) => tray,
+        Err(e) => fatal(&format!("no se pudo crear el ícono de bandeja: {e}")),
+    };
+
+    let (dictation, fn_events, _fn_monitor) = install_dictation_key(&config, &hotkey_manager, &mut startup_notes);
+    let mut confirmation_keys = ConfirmationKeys::new(&config, &mut startup_notes);
+
+    if !eva_macos::is_accessibility_trusted() {
+        tracing::warn!("EVA01 no tiene permiso de Accesibilidad; el pegado y la tecla fn no funcionarán");
+        // Shows macOS's own permission dialog (once), instead of leaving the
+        // user to discover a silently-failing paste.
+        let _ = eva_macos::prompt_for_accessibility();
+        startup_notes.push(
+            "Sin el permiso de Accesibilidad EVA01 no puede pegar lo que dictas ni oír la tecla fn: \
+             Ajustes → Privacidad y seguridad → Accesibilidad → activa EVA01 y vuelve a abrirlo."
+                .to_string(),
+        );
+    }
+    if !startup_notes.is_empty() {
+        notify("EVA01", &startup_notes.join("\n"));
+    }
 
     let supervisor = Supervisor::spawn(worker_binary_path());
-
-    let mut recording_request_id: Option<Uuid> = None;
+    let mut shown_overlay: Option<OverlayContent> = None;
 
     event_loop.run(move |_event, _window_target, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(50));
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + TICK);
+        let now = Instant::now();
+        let mut commands = Vec::new();
 
-        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.id == hotkey.id() {
-                match event.state {
-                    HotKeyState::Pressed if recording_request_id.is_none() => {
-                        let request_id = Uuid::new_v4();
-                        recording_request_id = Some(request_id);
-                        overlay.set_state(OverlayState::Listening);
-                        supervisor.send(ShellToWorker::StartRecording { request_id });
-                    }
-                    HotKeyState::Released => {
-                        if let Some(request_id) = recording_request_id.take() {
-                            overlay.set_state(OverlayState::Thinking);
-                            supervisor.send(ShellToWorker::StopRecording { request_id });
-                        }
-                    }
-                    _ => {}
+        // The dictation key, however it is bound.
+        while let Ok(event) = fn_events.try_recv() {
+            commands.extend(match event {
+                FnKeyEvent::Pressed => model.press(now, Uuid::new_v4()),
+                FnKeyEvent::Released => model.release(now),
+            });
+        }
+        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if dictation.as_ref().is_some_and(|key| key.id() == event.id) {
+                commands.extend(match event.state {
+                    HotKeyState::Pressed => model.press(now, Uuid::new_v4()),
+                    HotKeyState::Released => model.release(now),
+                });
+            } else if event.state == HotKeyState::Pressed {
+                if event.id == confirmation_keys.confirm.id() {
+                    commands.extend(model.confirm_key());
+                } else if event.id == confirmation_keys.cancel.id() {
+                    commands.extend(model.cancel_key());
                 }
             }
         }
 
-        if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-            if menu_event.id.0 == QUIT_MENU_ID {
-                tracing::info!("Salir seleccionado desde la bandeja");
-                supervisor.send(ShellToWorker::Shutdown);
-                *control_flow = ControlFlow::Exit;
+        while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
+            match menu_event.id.0.as_str() {
+                menu_id::QUIT => {
+                    tracing::info!("Salir seleccionado desde la bandeja");
+                    supervisor.send(ShellToWorker::Shutdown);
+                    *control_flow = ControlFlow::Exit;
+                }
+                menu_id::CANCEL_TASKS => commands.push(Command::CancelAllTasks),
+                menu_id::OPEN_CONFIG => open_config(),
+                menu_id::OPEN_LOGS => open_path(&logs_dir()),
+                _ => {}
             }
         }
 
         while let Some(event) = supervisor.try_recv() {
-            handle_supervisor_event(&overlay, event);
+            match event {
+                SupervisorEvent::WorkerRestarting { attempt } => {
+                    tracing::warn!(attempt, "eva-worker se está reiniciando");
+                    model.worker_restarting();
+                }
+                SupervisorEvent::WorkerEvent(worker_event) => {
+                    log_worker_event(&worker_event);
+                    commands.extend(model.worker_event(now, worker_event));
+                }
+            }
         }
+
+        commands.extend(model.tick(now));
+        for notification in model.take_notifications() {
+            notify(&notification.title, &notification.body);
+        }
+
+        for command in commands {
+            supervisor.send(to_wire(command));
+        }
+        confirmation_keys.sync(&hotkey_manager, model.wants_confirmation_keys(), model.wants_cancel_key());
+
+        let content = model.overlay();
+        if content != shown_overlay {
+            match &content {
+                Some(content) => overlay.show(content),
+                None => overlay.hide(),
+            }
+            shown_overlay = content;
+        }
+        tray.update(&model.tray(now));
     });
 }
 
-/// Reflects a [`SupervisorEvent`] onto the overlay. Exhaustively matched —
-/// per `docs/PLAN.md` §3.3 point 4, an unhandled state is a compile error,
-/// not a silently-stuck overlay.
-fn handle_supervisor_event(overlay: &Overlay, event: SupervisorEvent) {
+/// Sets up the dictation key: `fn` through the flags monitor, or a
+/// combination through `global-hotkey`. A setting that does not parse falls
+/// back to `⌘⇧Space` and says so. Returns the combination (if that is what
+/// is bound), the channel the `fn` monitor sends on, and the monitor itself,
+/// which must stay alive.
+fn install_dictation_key(
+    config: &Config,
+    manager: &GlobalHotKeyManager,
+    notes: &mut Vec<String>,
+) -> (Option<HotKey>, mpsc::Receiver<FnKeyEvent>, Option<FnKeyMonitor>) {
+    let (fn_tx, fn_rx) = mpsc::channel();
+    let fallback = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
+
+    let key = hotkeys::parse_dictation(&config.hotkey.dictation).unwrap_or_else(|e| {
+        notes.push(format!("{e}; uso ⌘⇧Space."));
+        DictationKey::Combo(fallback)
+    });
+
+    match key {
+        DictationKey::Fn => match FnKeyMonitor::start(move |event| {
+            let _ = fn_tx.send(event);
+        }) {
+            Some(monitor) => {
+                tracing::info!("tecla de dictado: fn (mantenida)");
+                (None, fn_rx, Some(monitor))
+            }
+            None => {
+                notes.push("macOS no dejó escuchar la tecla fn; uso ⌘⇧Space.".to_string());
+                (register_or_note(manager, fallback, notes), fn_rx, None)
+            }
+        },
+        DictationKey::Combo(hotkey) => {
+            tracing::info!(key = %config.hotkey.dictation, "tecla de dictado");
+            (register_or_note(manager, hotkey, notes), fn_rx, None)
+        }
+    }
+}
+
+fn register_or_note(manager: &GlobalHotKeyManager, hotkey: HotKey, notes: &mut Vec<String>) -> Option<HotKey> {
+    match manager.register(hotkey) {
+        Ok(()) => Some(hotkey),
+        Err(e) => {
+            notes.push(format!("no se pudo registrar la tecla de dictado: {e}"));
+            None
+        }
+    }
+}
+
+/// The yes/no keys, registered only while they mean something: EVA01 never
+/// holds a system-wide ⌘⏎ or ⌘⎋ it does not need at that moment.
+struct ConfirmationKeys {
+    confirm: HotKey,
+    cancel: HotKey,
+    confirm_on: bool,
+    cancel_on: bool,
+}
+
+impl ConfirmationKeys {
+    fn new(config: &Config, notes: &mut Vec<String>) -> ConfirmationKeys {
+        let mut parse = |spec: &str, name: &str, fallback: HotKey| {
+            hotkeys::parse_combo(spec).unwrap_or_else(|e| {
+                notes.push(format!("hotkey.{name}: {e}"));
+                fallback
+            })
+        };
+        ConfirmationKeys {
+            confirm: parse(&config.hotkey.confirm, "confirm", HotKey::new(Some(Modifiers::SUPER), Code::Enter)),
+            cancel: parse(&config.hotkey.cancel, "cancel", HotKey::new(Some(Modifiers::SUPER), Code::Escape)),
+            confirm_on: false,
+            cancel_on: false,
+        }
+    }
+
+    /// Registers or releases each key to match what the model wants now.
+    fn sync(&mut self, manager: &GlobalHotKeyManager, wants_confirm: bool, wants_cancel: bool) {
+        Self::toggle(manager, self.confirm, &mut self.confirm_on, wants_confirm);
+        Self::toggle(manager, self.cancel, &mut self.cancel_on, wants_cancel);
+    }
+
+    fn toggle(manager: &GlobalHotKeyManager, key: HotKey, is_on: &mut bool, wanted: bool) {
+        if wanted == *is_on {
+            return;
+        }
+        let result = if wanted { manager.register(key) } else { manager.unregister(key) };
+        match result {
+            Ok(()) => *is_on = wanted,
+            Err(e) => {
+                tracing::warn!("no se pudo {} el atajo de confirmación: {e}", if wanted { "registrar" } else { "liberar" });
+                // Do not retry every tick: pretend it is in the wanted state.
+                *is_on = wanted;
+            }
+        }
+    }
+}
+
+fn to_wire(command: Command) -> ShellToWorker {
+    match command {
+        Command::StartRecording(request_id) => ShellToWorker::StartRecording { request_id },
+        Command::StopRecording(request_id) => ShellToWorker::StopRecording { request_id },
+        Command::Cancel(request_id) => ShellToWorker::Cancel { request_id },
+        Command::Confirm { id, approved } => ShellToWorker::ConfirmationResponse { confirmation_id: id, approved },
+        Command::CancelAllTasks => ShellToWorker::CancelAllTasks,
+        Command::ListTasks(request_id) => ShellToWorker::ListTasks { request_id },
+    }
+}
+
+fn log_worker_event(event: &eva_ipc::WorkerToShell) {
+    use eva_ipc::WorkerToShell as W;
     match event {
-        SupervisorEvent::WorkerRestarting { attempt } => {
-            tracing::warn!(attempt, "eva-worker se está reiniciando");
-            overlay.set_state(OverlayState::Failed);
-        }
-        SupervisorEvent::WorkerEvent(worker_event) => handle_worker_event(overlay, worker_event),
+        W::Ready => tracing::info!("eva-worker listo"),
+        W::Transcript { cleaned, .. } => tracing::info!(%cleaned, "transcript listo"),
+        W::IntentRecognized { intent_json, .. } => tracing::info!(%intent_json, "intent reconocido"),
+        W::Error { message, recoverable, .. } => tracing::warn!(%message, recoverable, "error del worker"),
+        W::TaskStarted { provider, prompt, .. } => tracing::info!(%provider, %prompt, "tarea de agente iniciada"),
+        W::TaskFinished { success, summary, .. } => tracing::info!(success, %summary, "tarea de agente terminada"),
+        W::ConfirmationRequested { title, .. } => tracing::info!(%title, "el worker pide confirmación"),
+        W::Health { report, .. } => tracing::info!(?report, "reporte de salud"),
+        // Everything else is bookkeeping the model already reflects.
+        _ => {}
     }
 }
 
-fn handle_worker_event(overlay: &Overlay, event: WorkerToShell) {
-    match event {
-        WorkerToShell::Ready => tracing::info!("eva-worker listo"),
-        WorkerToShell::StateChanged { state, .. } => overlay.set_state(map_state(state)),
-        WorkerToShell::Transcript { cleaned, .. } => {
-            // `eva-worker` already pastes the cleaned text itself, via
-            // `eva-mcp::Desktop::insert_text` (`docs/PLAN.md` fase 3) —
-            // this event is purely informational here, for logging/a future
-            // history view, not something `eva-shell` needs to act on.
-            tracing::info!(%cleaned, "transcript listo");
-        }
-        WorkerToShell::IntentRecognized { intent_json, .. } => {
-            tracing::info!(%intent_json, "intent reconocido");
-        }
-        WorkerToShell::AgentEvent { event_json, .. } => {
-            tracing::info!(%event_json, "evento de agente");
-        }
-        WorkerToShell::Error { message, recoverable, .. } => {
-            tracing::warn!(%message, recoverable, "error del worker");
-            overlay.set_state(OverlayState::Failed);
-        }
-        WorkerToShell::Health { report, .. } => {
-            tracing::info!(?report, "reporte de salud");
-        }
-        WorkerToShell::CustomWords { words, .. } => {
-            tracing::info!(count = words.len(), "diccionario personal actualizado");
-        }
-        WorkerToShell::Ack { .. } => {
-            tracing::info!("comando confirmado por eva-worker");
-        }
+fn notify(title: &str, body: &str) {
+    if let Err(e) = notify_rust::Notification::new().summary(title).body(body).show() {
+        tracing::warn!("no se pudo mostrar la notificación: {e}");
     }
 }
 
-fn map_state(state: IpcWorkerState) -> OverlayState {
-    match state {
-        IpcWorkerState::Idle => OverlayState::Idle,
-        IpcWorkerState::Listening => OverlayState::Listening,
-        IpcWorkerState::Thinking => OverlayState::Thinking,
-        IpcWorkerState::Executing => OverlayState::Executing,
-        IpcWorkerState::Done(true) => OverlayState::Done,
-        IpcWorkerState::Done(false) => OverlayState::Failed,
+fn logs_dir() -> std::path::PathBuf {
+    dirs::home_dir().map_or_else(std::env::temp_dir, |h| h.join("Library/Logs/EVA01"))
+}
+
+/// Opens the config file in the default editor, creating the commented
+/// template first if there is none — so "Abrir configuración…" always lands
+/// on something to edit.
+fn open_config() {
+    let path = Config::default_path();
+    if let Err(e) = Config::ensure_file(&path) {
+        tracing::warn!("no se pudo crear {}: {e}", path.display());
+        return;
     }
+    open_path(&path);
 }
 
-const QUIT_MENU_ID: &str = "quit";
-
-fn build_tray_icon() -> tray_icon::TrayIcon {
-    let menu = Menu::new();
-    let quit_item = MenuItem::with_id(QUIT_MENU_ID, "Salir", true, None);
-    let _ = menu.append(&quit_item);
-
-    TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("EVA01")
-        .with_icon(placeholder_icon())
-        .build()
-        .expect("no se pudo crear el ícono de bandeja")
-}
-
-/// A small solid-color square, generated in memory — no bundled asset file
-/// needed for this increment. A real icon is cosmetic polish, tracked
-/// separately from the functional pieces this session focused on.
-fn placeholder_icon() -> Icon {
-    const SIZE: u32 = 32;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for _ in 0..(SIZE * SIZE) {
-        rgba.extend_from_slice(&[0x2E, 0xA0, 0x43, 0xFF]); // opaque green
+fn open_path(path: &std::path::Path) {
+    if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
+        tracing::warn!("no se pudo abrir {}: {e}", path.display());
     }
-    #[allow(clippy::expect_used)] // a fixed-size, hand-built buffer always matches its own dimensions
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("el ícono generado en memoria siempre tiene dimensiones válidas")
-}
-
-/// Registers the dictation hotkey. `docs/PLAN.md` §10 decision 5 calls for
-/// holding `fn`, but `global-hotkey` binds named key combinations, not a
-/// hold-vs-tap gesture on a single modifier key — supporting that specific
-/// gesture needs a lower-level key-tap tracker (`docs/PLAN.md` mentions
-/// `handy-keys` for exactly this) which is a follow-up, not built here.
-/// Cmd+Shift+Space is used for this increment: a real, working
-/// press/release-gated hotkey that proves the whole chain (registration →
-/// event → `StartRecording`/`StopRecording`), on a combination
-/// `global-hotkey` is documented to support unambiguously.
-fn register_hotkey(manager: &GlobalHotKeyManager) -> HotKey {
-    let hotkey = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
-    manager.register(hotkey).expect("no se pudo registrar el atajo global");
-    hotkey
 }
 
 fn worker_binary_path() -> std::path::PathBuf {
     // Both binaries are built into the same target directory, so the
     // worker sits right next to `eva-shell` — this holds for `cargo build`
     // and for a packaged app bundle laid out the same way.
-    let mut path = std::env::current_exe().expect("no se pudo determinar la ruta de este ejecutable");
+    let mut path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("eva-shell"));
     path.set_file_name("eva-worker");
     path
 }
 
-/// Checks Accessibility trust and, if it is missing, shows a real system
-/// notification with exact instructions — closing the gap
-/// `packaging/build-app.sh` documents: `eva-macos::paste`'s synthesized
-/// Cmd+V needs this permission, but posting a `CGEvent` never triggers the
-/// system's own request dialog on its own, so a silent failure to paste is
-/// otherwise the only symptom the user would ever see.
-fn warn_if_accessibility_not_trusted() {
-    if eva_macos::is_accessibility_trusted() {
-        tracing::info!("permiso de Accesibilidad concedido");
-        return;
-    }
-
-    tracing::warn!("EVA01 no tiene permiso de Accesibilidad; el pegado por voz no funcionará");
-    let notification = notify_rust::Notification::new()
-        .summary("EVA01 necesita Accesibilidad")
-        .body("Sin este permiso, EVA01 no puede pegar lo que dictas. Ajustes → Privacidad y seguridad → Accesibilidad → activa EVA01.")
-        .show();
-    if let Err(e) = notification {
-        tracing::warn!("no se pudo mostrar la notificación de Accesibilidad: {e}");
-    }
+/// Reports a startup failure the shell cannot run without, then exits. Not a
+/// panic: a plain message and a non-zero status, which is what a launcher
+/// can show.
+fn fatal(message: &str) -> ! {
+    tracing::error!("{message}");
+    eprintln!("eva-shell: {message}");
+    std::process::exit(1);
 }
 
 fn init_logging() {
-    let log_dir = dirs::home_dir().map(|h| h.join("Library/Logs/EVA01")).unwrap_or_else(std::env::temp_dir);
+    let log_dir = logs_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::daily(&log_dir, "eva-shell.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);

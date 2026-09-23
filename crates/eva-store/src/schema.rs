@@ -13,7 +13,7 @@ use std::path::Path;
 /// The schema version this build of `eva-store` expects. Bumped whenever
 /// [`migrate`] gains a new step. Stored in SQLite's own `PRAGMA user_version`,
 /// so no extra table is needed to track it.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Opens (or creates) the database at `path`, verifying its integrity first.
 ///
@@ -104,6 +104,9 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
     if current_version < 2 {
         migrate_to_v2(conn)?;
     }
+    if current_version < 3 {
+        migrate_to_v3(conn)?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -160,6 +163,40 @@ fn migrate_to_v2(conn: &Connection) -> Result<(), StoreError> {
             session_id  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
+        ",
+    )?;
+    Ok(())
+}
+
+/// Two additions for background agent tasks (`docs/PLAN.md` fase 6/7):
+/// `agent_sessions.work_dir` — the directory the session actually ran in
+/// (a worktree, when one was used), because both CLIs key their sessions to
+/// the working directory and "continúa" must resume from the same one — and
+/// `agent_tasks`, EVA's own record of every dispatched task, which is the
+/// panel's data source for Codex (whose CLI has no `agents --json` of its
+/// own) and the way a task interrupted by a worker crash stays visible.
+fn migrate_to_v3(conn: &Connection) -> Result<(), StoreError> {
+    let has_work_dir: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agent_sessions') WHERE name = 'work_dir'")?
+        .exists([])?;
+    if !has_work_dir {
+        conn.execute_batch("ALTER TABLE agent_sessions ADD COLUMN work_dir TEXT;")?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS agent_tasks (
+            id          TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            prompt      TEXT NOT NULL,
+            project_dir TEXT NOT NULL,
+            work_dir    TEXT,
+            branch      TEXT,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT,
+            success     INTEGER,
+            summary     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_started_at ON agent_tasks(started_at);
         ",
     )?;
     Ok(())
@@ -239,6 +276,34 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("corrupt-"))
             .collect();
         assert_eq!(quarantined_files.len(), 1, "the corrupt file must be quarantined, not deleted");
+    }
+
+    #[test]
+    fn a_v2_database_is_upgraded_in_place_keeping_its_sessions() {
+        // Exactly what a user who ran the previous release has on disk: the
+        // v2 `agent_sessions` table without `work_dir`, with a row in it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch(
+                "CREATE TABLE agent_sessions (project_dir TEXT PRIMARY KEY, provider_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL, updated_at TEXT NOT NULL);
+                 INSERT INTO agent_sessions VALUES ('/repos/iam', 'codex',
+                     '11111111-1111-1111-1111-111111111111', '2026-09-22T00:00:00+00:00');
+                 PRAGMA user_version = 2;",
+            )
+            .expect("seed a v2 database");
+        }
+
+        let conn = open_checked(&path).expect("upgrade must succeed");
+
+        let work_dir: Option<String> = conn
+            .query_row("SELECT work_dir FROM agent_sessions WHERE project_dir = '/repos/iam'", [], |r| r.get(0))
+            .expect("the old row must survive and gain a work_dir column");
+        assert_eq!(work_dir, None);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

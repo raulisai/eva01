@@ -1,6 +1,6 @@
-//! The [`Desktop`] boundary: every action an MCP tool call can trigger on
-//! the real machine, behind one trait, per `docs/ENGINEERING.md` #5. The
-//! MCP tool-routing logic in [`crate::server`] is tested against
+//! The [`Desktop`] boundary: every primitive action on the real machine,
+//! behind one trait, per `docs/ENGINEERING.md` #5. The gateway-aware
+//! [`crate::service::LocalService`] is tested against
 //! [`mock::MockDesktop`]; [`SystemDesktop`] is what production actually runs.
 
 use crate::error::DesktopError;
@@ -22,18 +22,41 @@ pub trait Desktop: Send + Sync {
     fn notify(&self, title: &str, body: &str) -> Result<(), DesktopError>;
     /// Speaks `text` aloud.
     fn speak(&self, text: &str) -> Result<(), DesktopError>;
+    /// The text selected in the frontmost app, or `None` if nothing is.
+    fn selected_text(&self) -> Result<Option<String>, DesktopError>;
+    /// Puts `text` on the clipboard without pasting it — what to do with a
+    /// dictation that cannot be pasted (a password field is focused).
+    fn copy_text(&self, text: &str) -> Result<(), DesktopError>;
+    /// Whether macOS is currently blocking synthesized keystrokes
+    /// system-wide (a password field has focus, or a terminal has Secure
+    /// Keyboard Entry on), which would silently swallow a paste.
+    fn secure_input_active(&self) -> bool {
+        false
+    }
 }
 
 /// The real, production [`Desktop`]: `eva-macos` for app/window/paste
 /// control, `notify-rust` for notifications, and the system `say` command
-/// for speech — the voice chosen in `docs/PLAN.md` fase 7 (Mónica, one of
-/// the two "premium" Spanish voices confirmed installed via `say -v '?'`
-/// on this Mac, as opposed to the "novelty" ones that also match `es_ES`).
-pub struct SystemDesktop;
+/// for speech — by default the voice chosen in `docs/PLAN.md` fase 7 (Mónica,
+/// one of the two "premium" Spanish voices confirmed installed via `say -v
+/// '?'` on this Mac, as opposed to the "novelty" ones that also match
+/// `es_ES`). The voice comes from the config (`feedback.voice`).
+pub struct SystemDesktop {
+    voice: String,
+}
 
-/// The `say` voice used for [`Desktop::speak`]. A fixed choice for now;
-/// making it configurable is a small follow-up once settings exist.
-const SPEAK_VOICE: &str = "Mónica";
+impl SystemDesktop {
+    /// A desktop that speaks with `voice` (any name `say -v '?'` lists).
+    pub fn with_voice(voice: impl Into<String>) -> SystemDesktop {
+        SystemDesktop { voice: voice.into() }
+    }
+}
+
+impl Default for SystemDesktop {
+    fn default() -> Self {
+        SystemDesktop::with_voice("Mónica")
+    }
+}
 
 impl Desktop for SystemDesktop {
     fn open_app(&self, name: &str) -> Result<(), DesktopError> {
@@ -70,11 +93,25 @@ impl Desktop for SystemDesktop {
         // the duration of the speech.
         std::process::Command::new("say")
             .arg("-v")
-            .arg(SPEAK_VOICE)
+            .arg(&self.voice)
+            .arg("--")
             .arg(text)
             .spawn()
             .map(|_child| ())
             .map_err(DesktopError::from)
+    }
+
+    fn selected_text(&self) -> Result<Option<String>, DesktopError> {
+        eva_macos::read_selection().map_err(DesktopError::from)
+    }
+
+    fn copy_text(&self, text: &str) -> Result<(), DesktopError> {
+        use eva_macos::paste::Pasteboard;
+        eva_macos::paste::SystemPasteboard.write_string(text).map_err(DesktopError::from)
+    }
+
+    fn secure_input_active(&self) -> bool {
+        eva_macos::is_secure_input_enabled()
     }
 }
 
@@ -98,6 +135,10 @@ pub mod mock {
         Notify(String, String),
         /// [`Desktop::speak`] was called with this text.
         Speak(String),
+        /// [`Desktop::selected_text`] was called.
+        SelectedText,
+        /// [`Desktop::copy_text`] was called with this text.
+        CopyText(String),
     }
 
     /// Records every call made to it and, optionally, fails every call with
@@ -106,6 +147,8 @@ pub mod mock {
     pub struct MockDesktop {
         calls: Mutex<Vec<Call>>,
         active_window: Option<RunningAppInfo>,
+        selection: Option<String>,
+        secure_input: bool,
         should_fail: bool,
     }
 
@@ -119,6 +162,21 @@ pub mod mock {
         #[must_use]
         pub fn with_active_window(mut self, info: RunningAppInfo) -> Self {
             self.active_window = Some(info);
+            self
+        }
+
+        /// A mock that reports secure input as active, like a focused
+        /// password field.
+        #[must_use]
+        pub fn with_secure_input(mut self) -> Self {
+            self.secure_input = true;
+            self
+        }
+
+        /// A mock whose [`Desktop::selected_text`] returns `text`.
+        #[must_use]
+        pub fn with_selection(mut self, text: &str) -> Self {
+            self.selection = Some(text.to_string());
             self
         }
 
@@ -172,6 +230,19 @@ pub mod mock {
 
         fn speak(&self, text: &str) -> Result<(), DesktopError> {
             self.record(Call::Speak(text.to_string()))
+        }
+
+        fn selected_text(&self) -> Result<Option<String>, DesktopError> {
+            self.record(Call::SelectedText)?;
+            Ok(self.selection.clone())
+        }
+
+        fn copy_text(&self, text: &str) -> Result<(), DesktopError> {
+            self.record(Call::CopyText(text.to_string()))
+        }
+
+        fn secure_input_active(&self) -> bool {
+            self.secure_input
         }
     }
 }

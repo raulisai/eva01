@@ -19,3 +19,4 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "rt", "macros"] }
 proptest = "1"
+tempfile = "3"

@@ -26,11 +26,13 @@ mod error;
 pub mod schema;
 pub mod sessions;
 pub mod settings;
+pub mod tasks;
 pub mod transcripts;
 
 pub use audit::{AuditRecord, Decision};
 pub use error::StoreError;
 pub use sessions::AgentSessionRecord;
+pub use tasks::{NewTask, TaskRecord};
 pub use transcripts::TranscriptRecord;
 
 use rusqlite::Connection;
@@ -164,13 +166,46 @@ impl Store {
     // -- agent sessions ("Adán, continúa") ---------------------------------
 
     /// See [`sessions::save_last_session`].
-    pub fn save_last_session(&self, project_dir: &str, provider_id: &str, session_id: Uuid) -> Result<(), StoreError> {
-        self.with_conn(|c| sessions::save_last_session(c, project_dir, provider_id, session_id))
+    pub fn save_last_session(
+        &self,
+        project_dir: &str,
+        provider_id: &str,
+        session_id: Uuid,
+        work_dir: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.with_conn(|c| sessions::save_last_session(c, project_dir, provider_id, session_id, work_dir))
     }
 
     /// See [`sessions::get_last_session`].
     pub fn get_last_session(&self, project_dir: &str) -> Result<Option<AgentSessionRecord>, StoreError> {
         self.with_conn(|c| sessions::get_last_session(c, project_dir))
+    }
+
+    // -- agent task history ------------------------------------------------
+
+    /// See [`tasks::start`].
+    pub fn start_task(&self, task: NewTask<'_>) -> Result<(), StoreError> {
+        self.with_conn(|c| tasks::start(c, task))
+    }
+
+    /// See [`tasks::set_provider`].
+    pub fn set_task_provider(&self, id: Uuid, provider_id: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| tasks::set_provider(c, id, provider_id))
+    }
+
+    /// See [`tasks::finish`].
+    pub fn finish_task(&self, id: Uuid, success: bool, summary: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| tasks::finish(c, id, success, summary))
+    }
+
+    /// See [`tasks::mark_unfinished_as_interrupted`].
+    pub fn mark_unfinished_tasks_as_interrupted(&self, reason: &str) -> Result<usize, StoreError> {
+        self.with_conn(|c| tasks::mark_unfinished_as_interrupted(c, reason))
+    }
+
+    /// See [`tasks::recent`].
+    pub fn recent_tasks(&self, limit: u32) -> Result<Vec<TaskRecord>, StoreError> {
+        self.with_conn(|c| tasks::recent(c, limit))
     }
 }
 

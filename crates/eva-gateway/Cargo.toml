@@ -1,0 +1,18 @@
+[package]
+name = "eva-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eva-config = { workspace = true }
+eva-store = { workspace = true }
+async-trait = "0.1"
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+toml = "0.8"
+tokio = { workspace = true, features = ["test-util", "rt", "macros"] }

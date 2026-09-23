@@ -13,7 +13,20 @@ path = "src/main.rs"
 
 [dependencies]
 eva-ipc = { workspace = true }
+eva-config = { workspace = true }
+eva-store = { workspace = true }
+eva-agents = { workspace = true }
+eva-audio = { workspace = true }
+eva-text = { workspace = true }
+eva-macos = { workspace = true }
+transcribe-rs = { version = "0.3", features = ["whisper-cpp", "onnx"] }
 clap = { version = "4", features = ["derive"] }
-serde_json = { workspace = true }
 tokio = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
 uuid = { workspace = true }
+dirs = "5"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

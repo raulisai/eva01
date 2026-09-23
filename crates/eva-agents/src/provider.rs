@@ -24,6 +24,26 @@ pub struct AgentTask {
     pub session_id: Uuid,
     /// If set, resume this earlier session instead of starting a new one.
     pub resume_session_id: Option<Uuid>,
+    /// EVA's own MCP server, injected for this one invocation — never
+    /// written to the user's global CLI configuration (`docs/PLAN.md`
+    /// fase 8: "reversible, aislado"). `None` runs the agent without it.
+    pub mcp: Option<McpInjection>,
+}
+
+/// How to launch EVA's MCP server for one agent invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpInjection {
+    /// Absolute path of the `eva-mcp` binary.
+    pub command: PathBuf,
+    /// Arguments for it (the gateway socket to talk to).
+    pub args: Vec<String>,
+    /// Environment for it (the gateway's per-run token).
+    pub env: Vec<(String, String)>,
+}
+
+impl McpInjection {
+    /// The MCP server name agents see the tools under (`mcp__eva__open_url`).
+    pub const SERVER_NAME: &'static str = "eva";
 }
 
 /// Why an agent run could not be started or did not finish cleanly.
@@ -99,11 +119,16 @@ impl RunningAgent {
 
     /// Waits for the task to finish on its own and returns its outcome.
     pub async fn wait(self) -> AgentOutcome {
-        match self.output_task.await {
-            Ok(outcome) => outcome,
-            Err(join_error) => AgentOutcome::Failed {
-                message: format!("la tarea que leía la salida del agente falló: {join_error}"),
-            },
+        outcome_of(self.output_task.await)
+    }
+
+    /// Waits for the task to finish, but cancels it (see [`Self::cancel`]) if
+    /// `cancel` resolves first — how a background task stays stoppable from
+    /// the tray while it runs for minutes.
+    pub async fn wait_or_cancel(mut self, cancel: impl std::future::Future<Output = ()>) -> AgentOutcome {
+        tokio::select! {
+            joined = &mut self.output_task => outcome_of(joined),
+            () = cancel => self.cancel().await,
         }
     }
 
@@ -136,6 +161,15 @@ impl RunningAgent {
     }
 }
 
+fn outcome_of(joined: Result<AgentOutcome, tokio::task::JoinError>) -> AgentOutcome {
+    match joined {
+        Ok(outcome) => outcome,
+        Err(join_error) => {
+            AgentOutcome::Failed { message: format!("la tarea que leía la salida del agente falló: {join_error}") }
+        }
+    }
+}
+
 /// The two signals [`RunningAgent::cancel`] needs. Kept as an enum instead of
 /// raw `libc` constants so the call sites read as intent, not magic numbers.
 enum Signal {
@@ -155,7 +189,16 @@ fn send_signal(pid: u32, signal: Signal) {
     // the process has already exited, which `kill` reports as `ESRCH` and
     // which this function intentionally ignores — cancelling an
     // already-dead process is a no-op, not an error worth surfacing.
+    //
+    // The whole process group goes first (`-pid`): agent CLIs are launched
+    // as their own group leader (`stream::launch`), and the node/shell
+    // subprocesses they spawn would otherwise outlive a cancelled task. A
+    // negative pid only names a group this child actually leads — a pid
+    // cannot be reused while its group exists — so this can never signal
+    // anything unrelated; for a child that is not a group leader it is a
+    // harmless `ESRCH`, and the plain `pid` signal right after still lands.
     unsafe {
+        libc::kill(-(pid as libc::pid_t), sig);
         libc::kill(pid as libc::pid_t, sig);
     }
 }
@@ -309,6 +352,38 @@ mod tests {
         let running = RunningAgent::new(child, pending_output_task());
 
         let outcome = running.cancel().await;
+        assert_eq!(outcome, AgentOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_the_natural_outcome_when_the_task_finishes_first() {
+        let child = tokio::process::Command::new("true").spawn().expect("spawning `true` must succeed");
+        let output_task = tokio::spawn(async { AgentOutcome::Completed { summary: Some("listo".to_string()) } });
+        let running = RunningAgent::new(child, output_task);
+
+        let outcome = running.wait_or_cancel(std::future::pending()).await;
+        assert_eq!(outcome, AgentOutcome::Completed { summary: Some("listo".to_string()) });
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_cancels_a_running_process_when_the_signal_fires() {
+        let child = tokio::process::Command::new("sleep")
+            .arg("100")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawning `sleep` must succeed");
+        let running = RunningAgent::new(child, pending_output_task());
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let waiting = tokio::spawn(running.wait_or_cancel(async move {
+            let _ = cancel_rx.await;
+        }));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_tx.send(()).expect("the waiter is still listening");
+
+        let outcome = waiting.await.expect("the waiting task must not panic");
         assert_eq!(outcome, AgentOutcome::Cancelled);
     }
 

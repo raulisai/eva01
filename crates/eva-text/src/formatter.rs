@@ -14,6 +14,7 @@
 //! "never produce silence, degrade to rules." `eva-worker` composes this with
 //! a real LLM-backed `Formatter` implementation when one is wired in.
 
+use crate::style::Style;
 use thiserror::Error;
 
 /// Something that turns already-cleaned raw text into a polished sentence.
@@ -25,6 +26,28 @@ pub trait Formatter: Send + Sync {
     /// caller is expected to fall back to the original `text` (or to
     /// [`RuleOnlyFormatter`]) rather than lose the transcript entirely.
     fn format(&self, text: &str) -> Result<String, FormatError>;
+
+    /// Formats `text` for the app it is going into. The default ignores the
+    /// style; formatters that can honor it override this.
+    ///
+    /// # Errors
+    /// As [`Formatter::format`].
+    fn format_styled(&self, text: &str, style: Style) -> Result<String, FormatError> {
+        let _ = style;
+        self.format(text)
+    }
+
+    /// Rewrites `text` following a spoken `instruction` ("hazlo más
+    /// formal") — the edit mode of `docs/PLAN.md` fase 9. Unlike
+    /// [`Formatter::format`], the words are *meant* to change.
+    ///
+    /// # Errors
+    /// [`FormatError::Unavailable`] for a formatter that cannot rewrite
+    /// (the default), or whatever went wrong for one that can.
+    fn rewrite(&self, text: &str, instruction: &str) -> Result<String, FormatError> {
+        let _ = (text, instruction);
+        Err(FormatError::Unavailable("este formateador no sabe reescribir texto".to_string()))
+    }
 }
 
 /// Why a [`Formatter`] failed to produce output.
@@ -55,9 +78,17 @@ pub struct RuleOnlyFormatter;
 
 impl Formatter for RuleOnlyFormatter {
     fn format(&self, text: &str) -> Result<String, FormatError> {
+        self.format_styled(text, Style::Default)
+    }
+
+    fn format_styled(&self, text: &str, style: Style) -> Result<String, FormatError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Ok(String::new());
+        }
+
+        if style == Style::Terminal {
+            return Ok(terminal_form(trimmed));
         }
 
         // Capitalize the first *alphabetic* character, not literally the
@@ -80,6 +111,13 @@ impl Formatter for RuleOnlyFormatter {
             None => trimmed.to_string(),
         };
 
+        // A chat message is not closed with a period; a question or an
+        // exclamation keeps its mark, and a multi-sentence message keeps the
+        // periods between its sentences.
+        if style == Style::Casual {
+            return Ok(strip_lone_final_period(&capitalized));
+        }
+
         let needs_terminator = !capitalized.ends_with(['.', '?', '!', '…', ':']);
         let result = if needs_terminator {
             format!("{capitalized}.")
@@ -88,6 +126,29 @@ impl Formatter for RuleOnlyFormatter {
         };
 
         Ok(result)
+    }
+}
+
+/// A command line: words only. Drops opening `¿`/`¡` and trailing
+/// punctuation, and lowercases the first letter (`Git status.` → `git status`).
+fn terminal_form(text: &str) -> String {
+    let without_edges = text
+        .trim_start_matches(['¿', '¡'])
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', '…'])
+        .trim();
+    let mut chars = without_edges.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Removes a final `.` only when it is the sentence's only period — "Voy
+/// para allá." loses it, "Llego tarde. Empiecen sin mí." keeps both.
+fn strip_lone_final_period(text: &str) -> String {
+    match text.strip_suffix('.') {
+        Some(rest) if !rest.contains('.') && !rest.ends_with('.') => rest.to_string(),
+        _ => text.to_string(),
     }
 }
 
@@ -114,6 +175,37 @@ mod tests {
     fn empty_input_produces_empty_output_not_a_stray_period() {
         let out = RuleOnlyFormatter.format("   ").expect("never fails");
         assert_eq!(out, "");
+    }
+
+    #[test]
+    fn terminal_style_is_words_only() {
+        let f = |t: &str| RuleOnlyFormatter.format_styled(t, Style::Terminal).expect("never fails");
+        assert_eq!(f("Git status."), "git status");
+        assert_eq!(f("¿Cómo estás?"), "cómo estás");
+        assert_eq!(f("cd código, "), "cd código");
+    }
+
+    #[test]
+    fn casual_style_drops_a_lone_final_period_but_keeps_marks_that_mean_something() {
+        let f = |t: &str| RuleOnlyFormatter.format_styled(t, Style::Casual).expect("never fails");
+        assert_eq!(f("voy para allá"), "Voy para allá");
+        assert_eq!(f("¿vienes?"), "¿Vienes?");
+        assert_eq!(f("qué bien!"), "Qué bien!");
+        assert_eq!(f("llego tarde. empiecen sin mí."), "Llego tarde. empiecen sin mí.");
+    }
+
+    #[test]
+    fn formal_and_default_styles_close_every_sentence() {
+        for style in [Style::Default, Style::Formal] {
+            let out = RuleOnlyFormatter.format_styled("gracias por tu tiempo", style).expect("never fails");
+            assert_eq!(out, "Gracias por tu tiempo.");
+        }
+    }
+
+    #[test]
+    fn a_formatter_that_does_not_override_rewrite_says_so_instead_of_pretending() {
+        let result = RuleOnlyFormatter.rewrite("hola", "hazlo formal");
+        assert!(matches!(result, Err(FormatError::Unavailable(_))));
     }
 
     #[test]

@@ -1,0 +1,84 @@
+# EVA01 — configuración
+#
+# Todo es opcional: lo que no escribas aquí usa el valor de abajo. Quita el
+# «#» de una línea para cambiarla y reinicia EVA01. Si algo tiene un error de
+# tipeo, EVA01 te lo dice (`eva doctor`) y usa los valores por defecto.
+
+# La palabra que convierte lo dictado en una orden ("Adán, abre Brave").
+# `eva wake-word <palabra>` la cambia sin editar este archivo y gana sobre esta.
+# wake_word = "Adán"
+
+[hotkey]
+# La tecla de dictado, mantenida mientras hablas. "fn" es la tecla fn / 🌐
+# (en Ajustes del Sistema → Teclado, "Pulsar la tecla 🌐 para" debe estar en
+# "No hacer nada"). También sirve una combinación: "cmd+shift+space", "alt+space".
+# dictation = "fn"
+# Mientras EVA01 te hace una pregunta en pantalla: sí / no (nunca por voz).
+# confirm = "cmd+return"
+# cancel = "cmd+escape"
+
+[stt]
+# Modelo de voz. Sin esto EVA01 busca en ~/Library/Application Support/EVA01/models:
+# primero canary-1b-flash, luego canary-180m-flash, luego cualquier *.bin de Whisper.
+# canary_dir = "~/Library/Application Support/EVA01/models/canary-1b-flash"
+# whisper_path = "~/Library/Application Support/EVA01/models/ggml-base.bin"
+# language = "es"
+
+[agents]
+# Qué agente probar primero. Si falla antes de hacer algo, se prueba el siguiente.
+# "usa Claude y…" o "usa Codex y…" fuerzan uno.
+# priority = ["codex", "claude_code"]
+# Cada tarea corre en un worktree de git propio (rama eva/xxxx): lo que el agente
+# malentienda no toca tu árbol. Si no hay repositorio, corre en el proyecto mismo.
+# worktree = true
+# Proyecto a usar cuando la ventana enfocada no dice cuál.
+# default_project = "~/code/mi-proyecto"
+# Carpetas cuyos repositorios EVA01 conoce (y reconoce por el título de la ventana).
+# project_roots = ["~/code", "~/Developer", "~/projects"]
+
+# Qué deja pasar el gateway, qué pregunta y qué rechaza: "auto", "confirm" o "block".
+# Acciones: open_app, close_app, open_url, web_search, insert_text, agent_task,
+# edit_selection, read_selection, notify, speak.
+# Hay reglas que esta configuración no puede aflojar (cerrar Finder, enlaces
+# javascript:, pegar varias líneas por un agente…).
+[gateway.voice]
+# lo que pides por voz (todo "auto" por defecto)
+# agent_task = "confirm"
+
+[gateway.agent]
+# lo que un agente pide por las herramientas MCP de EVA
+# (por defecto close_app, insert_text y read_selection piden confirmación)
+# open_url = "confirm"
+
+[gateway]
+# Cuánto espera una pregunta en pantalla antes de contar como "no".
+# confirm_timeout_secs = 30
+
+[feedback]
+# Voz de `say -v '?'` para avisar cuando una tarea termina.
+# voice = "Mónica"
+# speak_task_results = true
+# notify_task_results = true
+# Segundos antes de detener una tarea de agente; 0 = sin límite.
+# task_timeout_secs = 1800
+
+[dictation]
+# Un espacio después de cada dictado, para que el siguiente no se pegue.
+# trailing_space = true
+
+[styles]
+# Estilo de puntuación por app (además de los que ya trae EVA01: chat, correo,
+# terminales). Estilos: "default", "casual", "formal", "terminal".
+# apps = [
+#   { bundle_id = "com.tinyspeck.slackmacgap", style = "casual" },
+# ]
+
+[remote]
+# Modelo remoto compatible con OpenAI para editar texto o formatear. APAGADO por
+# defecto: los dictados llevan secretos y nada sale de tu Mac salvo que lo actives.
+# La clave NO va aquí, sino en la variable de entorno que nombres en api_key_env.
+# enabled = false
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+# model = "gpt-4o-mini"
+# use_for = ["edit"]   # "edit" (reescribir selección) y/o "format" (cada dictado)

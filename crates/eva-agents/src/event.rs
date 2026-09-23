@@ -11,6 +11,14 @@ use serde::Serialize;
 pub enum AgentEvent {
     /// The agent's process started and produced its first output.
     Started,
+    /// The CLI reported the id of the session it is running in. Codex
+    /// assigns its own (`thread.started`'s `thread_id`) — EVA cannot choose
+    /// it the way it can for Claude (`--session-id`) — so this is what
+    /// "continúa" must save to resume the right conversation later.
+    SessionAssigned {
+        /// The session id, as the CLI reports it.
+        id: String,
+    },
     /// A plain-text message from the agent (its reasoning or response text).
     Message {
         /// The message text.
@@ -57,6 +65,10 @@ mod tests {
     fn every_variant_serializes_to_a_tagged_json_shape() {
         let cases = vec![
             (AgentEvent::Started, serde_json::json!({"kind": "started"})),
+            (
+                AgentEvent::SessionAssigned { id: "01a0c7b4".into() },
+                serde_json::json!({"kind": "session_assigned", "id": "01a0c7b4"}),
+            ),
             (
                 AgentEvent::Message { text: "hola".into() },
                 serde_json::json!({"kind": "message", "text": "hola"}),

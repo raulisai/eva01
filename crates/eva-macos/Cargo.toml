@@ -22,10 +22,18 @@ objc2-app-kit = { version = "0.3", features = [
     "NSColor",
     "NSFont",
     "NSResponder",
+    "NSEvent",
+    "NSControl",
+    "NSText",
+    "NSParagraphStyle",
+    "block2",
 ] }
+block2 = "0.6"
 objc2-core-graphics = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+objc2-application-services = "0.3.2"
+objc2-core-foundation = "0.3.2"
 
 [dependencies]
 serde = { workspace = true }

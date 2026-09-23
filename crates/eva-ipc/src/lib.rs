@@ -15,6 +15,8 @@
 //! `eva-worker` can change independently as long as they agree on this file.
 //! See `docs/PLAN.md` §3.3 for why the two processes are split at all.
 
+pub mod rpc;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -79,6 +81,23 @@ pub enum ShellToWorker {
         request_id: uuid::Uuid,
         /// The new wake word.
         word: String,
+    },
+    /// Cancels every agent task currently running in the background
+    /// (the tray's "Cancelar tareas" item).
+    CancelAllTasks,
+    /// Asks for the agent tasks currently running in the background.
+    ListTasks {
+        /// Correlates this request with its [`WorkerToShell::TaskList`] response.
+        request_id: uuid::Uuid,
+    },
+    /// The user's answer to a [`WorkerToShell::ConfirmationRequested`] —
+    /// given by clicking or pressing a hotkey, never by voice
+    /// (`docs/PLAN.md` §6).
+    ConfirmationResponse {
+        /// The confirmation being answered.
+        confirmation_id: uuid::Uuid,
+        /// `true` to allow the action, `false` to refuse it.
+        approved: bool,
     },
     /// Ask the worker to shut down cleanly before the shell terminates it.
     Shutdown,
@@ -155,6 +174,84 @@ pub enum WorkerToShell {
         /// Correlates with the request being acknowledged.
         request_id: uuid::Uuid,
     },
+    /// An agent task was accepted and is now running in the background —
+    /// the worker keeps serving other commands (dictation included) while
+    /// it works (`docs/PLAN.md` fase 7).
+    TaskStarted {
+        /// The request that started the task; also its id everywhere else.
+        request_id: uuid::Uuid,
+        /// Which agent is running it (`"codex"`, `"claude_code"`).
+        provider: String,
+        /// What the agent was asked to do.
+        prompt: String,
+    },
+    /// A background agent task ended, however it ended.
+    TaskFinished {
+        /// The task's id, as in [`WorkerToShell::TaskStarted`].
+        request_id: uuid::Uuid,
+        /// `true` only if the agent reported success.
+        success: bool,
+        /// A short, speakable summary (the agent's own, or the failure reason).
+        summary: String,
+    },
+    /// Response to [`ShellToWorker::ListTasks`]: the tasks still running
+    /// first, then the most recent finished ones.
+    TaskList {
+        /// Correlates with the request.
+        request_id: uuid::Uuid,
+        /// Running tasks, then recent history, newest first within each.
+        tasks: Vec<TaskInfo>,
+    },
+    /// The gateway needs a human decision before it lets an action run
+    /// (`docs/PLAN.md` fase 5). The shell must show it and answer with
+    /// [`ShellToWorker::ConfirmationResponse`]; the worker treats silence
+    /// past `timeout_secs` as a refusal.
+    ConfirmationRequested {
+        /// Identifies this question in the answer.
+        confirmation_id: uuid::Uuid,
+        /// A one-line description of the action, e.g. `Abrir file:///etc/hosts`.
+        title: String,
+        /// Why confirmation is needed, shown under the title.
+        detail: String,
+        /// How long the worker waits before assuming "no".
+        timeout_secs: u64,
+    },
+    /// A [`WorkerToShell::ConfirmationRequested`] is no longer waiting for an
+    /// answer — it timed out, or was answered elsewhere. The shell takes its
+    /// prompt down.
+    ConfirmationClosed {
+        /// The confirmation that ended.
+        confirmation_id: uuid::Uuid,
+    },
+}
+
+/// Where an agent task stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    /// Still working.
+    Running,
+    /// Finished and succeeded.
+    Succeeded,
+    /// Finished and failed, was cancelled, or was interrupted.
+    Failed,
+}
+
+/// One agent task, as reported by [`WorkerToShell::TaskList`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskInfo {
+    /// The task's id.
+    pub request_id: uuid::Uuid,
+    /// Which agent runs (or ran) it.
+    pub provider: String,
+    /// What it was asked to do.
+    pub prompt: String,
+    /// Where it stands.
+    pub state: TaskState,
+    /// The agent's summary or the failure reason, once finished.
+    pub summary: Option<String>,
+    /// Seconds since it started.
+    pub age_secs: u64,
 }
 
 /// The high-level state of a single request, mirrored in the overlay.
@@ -191,7 +288,7 @@ impl fmt::Display for WorkerState {
 }
 
 /// A snapshot of worker health, returned by [`ShellToWorker::HealthCheck`]
-/// and printed by the `eva doctor` command described in `docs/PLAN.md` §3.4.
+/// and printed by `eva doctor` (`docs/PLAN.md` §3.4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct HealthReport {
     /// Whether the STT model is loaded and ready.
@@ -202,6 +299,15 @@ pub struct HealthReport {
     pub store_ok: bool,
     /// Detected agent CLIs and their status, e.g. `[("codex", "active"), ("claude", "not_installed")]`.
     pub agents: Vec<(String, String)>,
+    /// Which formatter is in use: `"apple_intelligence"`, `"reglas"`, or a
+    /// composite naming both.
+    pub formatter: String,
+    /// Problems found in `config.toml`, in words fit to show.
+    pub config_warnings: Vec<String>,
+    /// The socket agents' MCP servers use to reach this worker, if it is up.
+    pub gateway_socket: Option<String>,
+    /// How many projects EVA knows about (`agents.project_roots`).
+    pub project_count: usize,
 }
 
 /// Encodes a message as a single line of JSON, terminated with `\n`, ready to
@@ -245,6 +351,9 @@ mod tests {
             ShellToWorker::RemoveCustomWord { request_id, word: "García".into() },
             ShellToWorker::ListCustomWords { request_id },
             ShellToWorker::SetWakeWord { request_id, word: "Eva".into() },
+            ShellToWorker::CancelAllTasks,
+            ShellToWorker::ListTasks { request_id },
+            ShellToWorker::ConfirmationResponse { confirmation_id: request_id, approved: true },
             ShellToWorker::Shutdown,
         ];
 
@@ -300,10 +409,38 @@ mod tests {
                     stt_model_id: Some("canary-1b-flash".into()),
                     store_ok: true,
                     agents: vec![("codex".into(), "active".into())],
+                    formatter: "apple_intelligence".into(),
+                    config_warnings: vec!["agents.priority: no conozco el agente \"x\"".into()],
+                    gateway_socket: Some("/tmp/gateway.sock".into()),
+                    project_count: 3,
                 },
             },
             WorkerToShell::CustomWords { request_id, words: vec!["García".into(), "Núñez".into()] },
             WorkerToShell::Ack { request_id },
+            WorkerToShell::TaskStarted {
+                request_id,
+                provider: "codex".into(),
+                prompt: "agrega tests al login".into(),
+            },
+            WorkerToShell::TaskFinished { request_id, success: true, summary: "3 archivos".into() },
+            WorkerToShell::TaskList {
+                request_id,
+                tasks: vec![TaskInfo {
+                    request_id,
+                    provider: "claude_code".into(),
+                    prompt: "arregla el build".into(),
+                    state: TaskState::Succeeded,
+                    summary: Some("3 archivos".into()),
+                    age_secs: 42,
+                }],
+            },
+            WorkerToShell::ConfirmationRequested {
+                confirmation_id: request_id,
+                title: "Abrir file:///etc/hosts".into(),
+                detail: "un esquema que no es web".into(),
+                timeout_secs: 30,
+            },
+            WorkerToShell::ConfirmationClosed { confirmation_id: request_id },
         ];
 
         for msg in messages {

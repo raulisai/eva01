@@ -1,0 +1,15 @@
+[package]
+name = "eva-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = "0.8"
+thiserror = { workspace = true }
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"

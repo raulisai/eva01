@@ -1,57 +1,59 @@
-//! The "rayita": a small, borderless panel that shows the current
-//! [`OverlayState`] without ever stealing keyboard focus from whatever app
-//! the user is dictating into. Backed by `NSPanel` with the
-//! `NonactivatingPanel` style mask — the same technique `tauri-nspanel`
-//! wraps for Tauri apps, used here directly.
+//! The "rayita": a small, borderless panel that shows what EVA is doing
+//! without ever stealing keyboard focus from whatever app the user is
+//! dictating into. Backed by `NSPanel` with the `NonactivatingPanel` style
+//! mask — the same technique `tauri-nspanel` wraps for Tauri apps, used here
+//! directly.
 //!
-//! Must be constructed on the main thread — `Overlay::new` takes a
-//! [`MainThreadMarker`] as proof, per objc2's convention for AppKit types
-//! that are not thread-safe.
+//! The panel only draws: *what* to say is decided by `eva-shell`'s state
+//! model, which hands over an [`OverlayContent`] (text plus a [`Tone`]) and
+//! this shows it. Must be constructed on the main thread — [`Overlay::new`]
+//! takes a [`MainThreadMarker`] as proof, per objc2's convention for AppKit
+//! types that are not thread-safe.
 
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSPanel, NSTextField, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSBackingStoreType, NSColor, NSPanel, NSTextField, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-/// The states the overlay can show, matching `docs/PLAN.md` §3.3 point 4's
-/// worker state machine (`eva_ipc::WorkerState`) plus the neutral "nothing
-/// happening, hide the panel entirely" state — this crate does not depend on
-/// `eva-ipc` to avoid a cross-cutting dependency for four strings, so
-/// `eva-worker` maps `WorkerState` to this enum at the boundary instead.
+/// How the panel looks: a tint that says at a glance whether things are
+/// fine, done, broken, or waiting for the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayState {
-    /// Hide the panel; nothing is happening.
-    Idle,
-    /// Actively capturing audio.
-    Listening,
-    /// Transcribing, formatting, or waiting on an agent.
-    Thinking,
-    /// An OS action or agent task is running.
-    Executing,
-    /// The last request finished successfully.
-    Done,
-    /// The last request failed.
-    Failed,
+pub enum Tone {
+    /// Working on something: neutral dark.
+    Neutral,
+    /// It worked: green.
+    Ok,
+    /// It did not: red.
+    Error,
+    /// A question for the user: blue.
+    Ask,
 }
 
-impl OverlayState {
-    fn label_text(self) -> &'static str {
+impl Tone {
+    /// The panel's background as (red, green, blue, alpha).
+    fn background(self) -> (f64, f64, f64, f64) {
         match self {
-            OverlayState::Idle => "",
-            OverlayState::Listening => "● Escuchando…",
-            OverlayState::Thinking => "◌ Pensando…",
-            OverlayState::Executing => "▶ Ejecutando…",
-            OverlayState::Done => "✓ Listo",
-            OverlayState::Failed => "✗ Algo falló",
+            Tone::Neutral => (0.10, 0.10, 0.10, 0.88),
+            Tone::Ok => (0.05, 0.30, 0.15, 0.92),
+            Tone::Error => (0.42, 0.09, 0.09, 0.93),
+            Tone::Ask => (0.08, 0.20, 0.42, 0.95),
         }
     }
+}
+
+/// What the overlay shows: one or more lines of text and their tone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayContent {
+    /// The text; `\n` starts a new line.
+    pub text: String,
+    /// The tint.
+    pub tone: Tone,
 }
 
 /// The overlay panel itself.
 pub struct Overlay {
     panel: objc2::rc::Retained<NSPanel>,
     label: objc2::rc::Retained<NSTextField>,
+    mtm: MainThreadMarker,
 }
 
 /// AppKit's floating window level (`NSFloatingWindowLevel` in
@@ -60,14 +62,16 @@ pub struct Overlay {
 /// `NSWindow::setLevel` as taking the raw `NSInteger`, not a named enum.
 const FLOATING_WINDOW_LEVEL: isize = 3;
 
-const PANEL_WIDTH: f64 = 280.0;
-const PANEL_HEIGHT: f64 = 40.0;
+const PANEL_WIDTH: f64 = 340.0;
+const LINE_HEIGHT: f64 = 20.0;
+const PANEL_PADDING: f64 = 20.0;
+const BOTTOM_MARGIN: f64 = 80.0;
 
 impl Overlay {
-    /// Builds the overlay panel, initially hidden ([`OverlayState::Idle`]).
+    /// Builds the overlay panel, initially hidden.
     pub fn new(mtm: MainThreadMarker) -> Self {
         let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
-        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PANEL_WIDTH, PANEL_HEIGHT));
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PANEL_WIDTH, LINE_HEIGHT + PANEL_PADDING));
 
         let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
             NSPanel::alloc(mtm),
@@ -76,50 +80,53 @@ impl Overlay {
             NSBackingStoreType::Buffered,
             false,
         );
-
         panel.setLevel(FLOATING_WINDOW_LEVEL);
         panel.setOpaque(false);
         panel.setHasShadow(true);
-        panel.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(0.1, 0.1, 0.1, 0.85)));
 
-        let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        label.setFrame(content_rect);
+        let label = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
         label.setTextColor(Some(&NSColor::whiteColor()));
         label.setBackgroundColor(None);
         label.setAlignment(objc2_app_kit::NSTextAlignment::Center);
-
         panel.setContentView(Some(&label));
 
-        let overlay = Overlay { panel, label };
-        overlay.position_bottom_center(mtm);
-        overlay
+        Overlay { panel, label, mtm }
     }
 
-    /// Moves the panel to bottom-center of the main screen, where Handy's
-    /// overlay (and Wispr Flow's) conventionally sit.
-    fn position_bottom_center(&self, mtm: MainThreadMarker) {
-        let Some(screen) = objc2_app_kit::NSScreen::mainScreen(mtm) else {
+    /// Shows `content`, resizing the panel to fit its lines and keeping it
+    /// at the bottom center of the main screen, where Wispr Flow's overlay
+    /// (and Handy's) conventionally sit.
+    pub fn show(&self, content: &OverlayContent) {
+        let lines = content.text.lines().count().max(1);
+        let height = LINE_HEIGHT * lines as f64 + PANEL_PADDING;
+        let size = NSSize::new(PANEL_WIDTH, height);
+
+        let (r, g, b, a) = content.tone.background();
+        self.panel.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a)));
+        self.label.setStringValue(&NSString::from_str(&content.text));
+        self.label.setFrame(NSRect::new(NSPoint::new(0.0, PANEL_PADDING / 2.0 - 2.0), NSSize::new(PANEL_WIDTH, height - PANEL_PADDING / 2.0)));
+        self.panel.setContentSize(size);
+        self.position_bottom_center(size);
+
+        // `orderFrontRegardless` shows the panel without activating the app
+        // or stealing focus from whatever the user is dictating into — the
+        // entire point of using an `NSPanel` here.
+        self.panel.orderFrontRegardless();
+    }
+
+    /// Hides the panel.
+    pub fn hide(&self) {
+        self.panel.orderOut(None);
+    }
+
+    fn position_bottom_center(&self, size: NSSize) {
+        let Some(screen) = objc2_app_kit::NSScreen::mainScreen(self.mtm) else {
             return; // headless session with no screen — nothing to position against
         };
-        let screen_frame = screen.frame();
-        let x = screen_frame.origin.x + (screen_frame.size.width - PANEL_WIDTH) / 2.0;
-        let y = screen_frame.origin.y + 80.0; // a bit above the very bottom edge
+        let frame = screen.frame();
+        let x = frame.origin.x + (frame.size.width - size.width) / 2.0;
+        let y = frame.origin.y + BOTTOM_MARGIN;
         self.panel.setFrameOrigin(NSPoint::new(x, y));
-    }
-
-    /// Updates the panel to reflect `state`, showing or hiding it as needed.
-    /// [`OverlayState::Idle`] hides the panel; every other state shows it
-    /// with the matching label text.
-    pub fn set_state(&self, state: OverlayState) {
-        self.label.setStringValue(&NSString::from_str(state.label_text()));
-        if state == OverlayState::Idle {
-            self.panel.orderOut(None);
-        } else {
-            // `orderFrontRegardless` shows the panel without activating the
-            // app or stealing focus from whatever the user is dictating
-            // into — the entire point of using an `NSPanel` here.
-            self.panel.orderFrontRegardless();
-        }
     }
 }
 
@@ -129,16 +136,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn label_text_is_empty_only_for_idle() {
-        assert_eq!(OverlayState::Idle.label_text(), "");
-        for state in [
-            OverlayState::Listening,
-            OverlayState::Thinking,
-            OverlayState::Executing,
-            OverlayState::Done,
-            OverlayState::Failed,
-        ] {
-            assert!(!state.label_text().is_empty(), "{state:?} must have a non-empty label");
+    fn every_tone_has_its_own_background_and_is_mostly_opaque() {
+        let tones = [Tone::Neutral, Tone::Ok, Tone::Error, Tone::Ask];
+        let backgrounds: Vec<_> = tones.iter().map(|t| t.background()).collect();
+        for (i, a) in backgrounds.iter().enumerate() {
+            assert!(a.3 > 0.8, "the text must stay readable over any app: {a:?}");
+            for b in &backgrounds[i + 1..] {
+                assert_ne!(a, b, "two tones look the same");
+            }
         }
     }
 

@@ -13,6 +13,8 @@ members = [
     "crates/eva-macos",
     "crates/eva-mcp",
     "crates/eva-audio",
+    "crates/eva-config",
+    "crates/eva-gateway",
     "bins/eva-worker",
     "bins/eva-shell",
     "bins/eva-cli",
@@ -37,13 +39,15 @@ eva-macos = { path = "crates/eva-macos" }
 eva-audio = { path = "crates/eva-audio" }
 eva-mcp = { path = "crates/eva-mcp" }
 eva-ipc = { path = "crates/eva-ipc" }
+eva-config = { path = "crates/eva-config" }
+eva-gateway = { path = "crates/eva-gateway" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time", "sync", "signal", "net"] }
 strsim = "0.11"
 unicode-normalization = "0.1"
 rusqlite = { version = "0.40", features = ["bundled"] }

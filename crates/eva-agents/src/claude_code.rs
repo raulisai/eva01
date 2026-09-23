@@ -1,4 +1,4 @@
-//! The Claude Code provider: spawns `claude -p --output-format stream-json
+//! The Claude Code provider: runs `claude -p --output-format stream-json
 //! --verbose` and normalizes its JSONL to [`AgentEvent`]s.
 //!
 //! [`parse_line`] is verified against a real, captured session, saved at
@@ -16,13 +16,19 @@
 //! `assistant.message.content` is documented to wrap (the same schema the
 //! `text` blocks in the fixture already match exactly), so it is
 //! well-founded, just not from this specific capture.
+//!
+//! Resuming: `claude --resume <id>` continues that session in place. It must
+//! **not** be combined with `--session-id` — the real CLI rejects the pair
+//! ("--session-id can only be used with --continue or --resume if
+//! --fork-session is also specified", found by running it, not from its
+//! docs) — so a resumed task passes only `--resume`, and a fresh one passes
+//! only `--session-id` with the id EVA assigned.
 
 use crate::event::AgentEvent;
-use crate::provider::{AgentError, AgentOutcome, AgentProvider, AgentTask, ProviderStatus, RunningAgent};
+use crate::provider::{AgentError, AgentProvider, AgentTask, McpInjection, ProviderStatus, RunningAgent};
+use crate::stream::{detect_cli, launch};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -39,31 +45,9 @@ impl AgentProvider for ClaudeCodeProvider {
     }
 
     async fn detect(&self) -> ProviderStatus {
-        let version = match Command::new(BINARY).arg("--version").output().await {
-            Ok(output) if output.status.success() => {
-                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-            }
-            Ok(_) => None,
-            Err(_) => return ProviderStatus::NotInstalled,
-        };
-
         // `claude doctor` exits non-zero when there is no usable
         // authentication; a zero exit is treated as "has an active session".
-        let has_session = Command::new(BINARY)
-            .arg("doctor")
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        match (version, has_session) {
-            (Some(version), true) => ProviderStatus::Active { version },
-            // The session check succeeded but `--version` did not parse —
-            // treat it as active with an unknown version rather than
-            // reporting "no session" when there plainly is one.
-            (None, true) => ProviderStatus::Active { version: "desconocida".to_string() },
-            (version, false) => ProviderStatus::InstalledNoSession { version },
-        }
+        detect_cli(BINARY, &["doctor"]).await
     }
 
     async fn execute(
@@ -71,68 +55,61 @@ impl AgentProvider for ClaudeCodeProvider {
         task: &AgentTask,
         events: UnboundedSender<AgentEvent>,
     ) -> Result<RunningAgent, AgentError> {
-        let mut command = Command::new(BINARY);
-        command
-            .arg("-p")
-            .arg(&task.prompt)
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose")
-            .arg("--add-dir")
-            .arg(&task.project_dir)
-            .arg("--permission-mode")
-            .arg("acceptEdits")
-            .arg("--session-id")
-            .arg(task.session_id.to_string())
-            .current_dir(&task.project_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null()); // protocol lives on stdout only; see the module doc's capture notes
-
-        if let Some(resume_id) = task.resume_session_id {
-            command.arg("--resume").arg(resume_id.to_string());
-        }
-
-        let mut child = command.spawn().map_err(|source| AgentError::Spawn { provider: "claude_code", source })?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AgentError::Io { provider: "claude_code", source: std::io::Error::other("no stdout pipe") })?;
-
-        let _ = events.send(AgentEvent::Started);
-        let output_task = tokio::spawn(read_loop(stdout, events));
-
-        Ok(RunningAgent::new(child, output_task))
+        launch("claude_code", build_command(task), events, parse_line)
     }
 }
 
-async fn read_loop(stdout: tokio::process::ChildStdout, events: UnboundedSender<AgentEvent>) -> AgentOutcome {
-    let mut lines = BufReader::new(stdout).lines();
-    let mut outcome = AgentOutcome::Failed { message: "el proceso terminó sin emitir un resultado".to_string() };
+/// The exact command line for `task`. Separate from [`ClaudeCodeProvider::execute`]
+/// so the flag combinations — the part that broke against the real CLI —
+/// are unit-testable without spawning anything.
+fn build_command(task: &AgentTask) -> Command {
+    let mut command = Command::new(BINARY);
+    command
+        .arg("-p")
+        .arg(&task.prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--add-dir")
+        .arg(&task.project_dir)
+        .arg("--permission-mode")
+        .arg("acceptEdits")
+        .current_dir(&task.project_dir);
 
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                for event in parse_line(&line) {
-                    if let AgentEvent::Completed { summary } = &event {
-                        outcome = AgentOutcome::Completed { summary: summary.clone() };
-                    }
-                    if let AgentEvent::Failed { message } = &event {
-                        outcome = AgentOutcome::Failed { message: message.clone() };
-                    }
-                    let _ = events.send(event);
-                }
-            }
-            Ok(None) => break,
-            Err(e) => {
-                outcome = AgentOutcome::Failed { message: format!("error leyendo la salida: {e}") };
-                break;
-            }
-        }
+    match task.resume_session_id {
+        Some(resume_id) => command.arg("--resume").arg(resume_id.to_string()),
+        None => command.arg("--session-id").arg(task.session_id.to_string()),
+    };
+
+    if let Some(mcp) = &task.mcp {
+        // Added on top of whatever MCP servers the user already has (no
+        // `--strict-mcp-config`): EVA's tools are an addition to the
+        // agent's world, not a replacement of it. `mcp__eva` allows every
+        // tool of that server — without it, `-p` mode has nobody to answer
+        // the permission prompt and the agent's calls would just be denied.
+        command
+            .arg("--mcp-config")
+            .arg(mcp_config_json(mcp))
+            .arg("--allowedTools")
+            .arg(format!("mcp__{}", McpInjection::SERVER_NAME));
     }
 
-    outcome
+    command
+}
+
+fn mcp_config_json(mcp: &McpInjection) -> String {
+    let env: serde_json::Map<String, serde_json::Value> =
+        mcp.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
+    serde_json::json!({
+        "mcpServers": {
+            McpInjection::SERVER_NAME: {
+                "command": mcp.command,
+                "args": mcp.args,
+                "env": env,
+            }
+        }
+    })
+    .to_string()
 }
 
 /// Parses one line of `claude --output-format stream-json` output into zero
@@ -145,16 +122,19 @@ fn parse_line(line: &str) -> Vec<AgentEvent> {
     };
 
     match value {
-        RawEvent::System { .. } => vec![AgentEvent::Started],
+        RawEvent::System { session_id } => {
+            let mut events = vec![AgentEvent::Started];
+            events.extend(session_id.map(|id| AgentEvent::SessionAssigned { id }));
+            events
+        }
         RawEvent::Assistant { message } => message
             .content
             .into_iter()
             .filter_map(|block| match block {
                 ContentBlock::Text { text } => Some(AgentEvent::Message { text }),
-                ContentBlock::ToolUse { name, input } => Some(AgentEvent::ToolCall {
-                    name,
-                    summary: summarize_tool_input(&input),
-                }),
+                ContentBlock::ToolUse { name, input } => {
+                    Some(AgentEvent::ToolCall { name, summary: summarize_tool_input(&input) })
+                }
                 ContentBlock::Other => None,
             })
             .collect(),
@@ -186,7 +166,10 @@ fn summarize_tool_input(input: &serde_json::Value) -> String {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawEvent {
-    System {},
+    System {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
     Assistant { message: AssistantMessage },
     Result {
         is_error: bool,
@@ -215,8 +198,75 @@ enum ContentBlock {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use uuid::Uuid;
 
     const REAL_CAPTURE: &str = include_str!("../tests/fixtures/claude_stream_sample.jsonl");
+
+    fn task(resume: Option<Uuid>, mcp: Option<McpInjection>) -> AgentTask {
+        AgentTask {
+            prompt: "arregla el login".to_string(),
+            project_dir: PathBuf::from("/repos/iam"),
+            session_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid"),
+            resume_session_id: resume,
+            mcp,
+        }
+    }
+
+    fn args_of(command: &Command) -> Vec<String> {
+        command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn a_fresh_task_passes_the_session_id_eva_assigned() {
+        let args = args_of(&build_command(&task(None, None)));
+        let position = args.iter().position(|a| a == "--session-id").expect("must pass --session-id");
+        assert_eq!(args[position + 1], "11111111-1111-1111-1111-111111111111");
+        assert!(!args.contains(&"--resume".to_string()));
+    }
+
+    #[test]
+    fn a_resumed_task_passes_only_resume_never_session_id_together() {
+        // The real CLI rejects `--resume` + `--session-id` without
+        // `--fork-session`; this is the regression test for that.
+        let resume = Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("uuid");
+        let args = args_of(&build_command(&task(Some(resume), None)));
+        let position = args.iter().position(|a| a == "--resume").expect("must pass --resume");
+        assert_eq!(args[position + 1], "22222222-2222-2222-2222-222222222222");
+        assert!(!args.contains(&"--session-id".to_string()), "combining them makes the CLI refuse to start");
+    }
+
+    #[test]
+    fn the_prompt_comes_right_after_dash_p_so_variadic_flags_cannot_swallow_it() {
+        let args = args_of(&build_command(&task(None, None)));
+        assert_eq!(&args[..2], ["-p", "arregla el login"]);
+    }
+
+    #[test]
+    fn without_mcp_no_mcp_flags_are_passed() {
+        let args = args_of(&build_command(&task(None, None)));
+        assert!(!args.iter().any(|a| a.contains("mcp")));
+    }
+
+    #[test]
+    fn mcp_is_injected_per_invocation_and_its_tools_pre_approved() {
+        let mcp = McpInjection {
+            command: PathBuf::from("/Apps/EVA01.app/Contents/MacOS/eva-mcp"),
+            args: vec!["--gateway".into(), "/tmp/eva.sock".into()],
+            env: vec![("EVA_GATEWAY_TOKEN".into(), "abc".into())],
+        };
+        let args = args_of(&build_command(&task(None, Some(mcp))));
+
+        let position = args.iter().position(|a| a == "--mcp-config").expect("must pass --mcp-config");
+        let config: serde_json::Value = serde_json::from_str(&args[position + 1]).expect("must be valid JSON");
+        assert_eq!(config["mcpServers"]["eva"]["command"], "/Apps/EVA01.app/Contents/MacOS/eva-mcp");
+        assert_eq!(config["mcpServers"]["eva"]["args"], serde_json::json!(["--gateway", "/tmp/eva.sock"]));
+        assert_eq!(config["mcpServers"]["eva"]["env"]["EVA_GATEWAY_TOKEN"], "abc");
+
+        let allowed = args.iter().position(|a| a == "--allowedTools").expect("must pre-approve the tools");
+        assert_eq!(args[allowed + 1], "mcp__eva");
+        assert!(!args.contains(&"--strict-mcp-config".to_string()), "the user's own MCP servers stay available");
+    }
 
     #[test]
     fn parses_every_line_of_the_real_captured_session_without_panicking() {
@@ -226,9 +276,15 @@ mod tests {
     }
 
     #[test]
-    fn the_system_init_line_becomes_started() {
+    fn the_system_init_line_becomes_started_and_reports_the_session_id() {
         let first_line = REAL_CAPTURE.lines().next().expect("fixture has at least one line");
-        assert_eq!(parse_line(first_line), vec![AgentEvent::Started]);
+        assert_eq!(
+            parse_line(first_line),
+            vec![
+                AgentEvent::Started,
+                AgentEvent::SessionAssigned { id: "606e00e1-fe88-45b2-9157-8c8c6b6b63fd".to_string() }
+            ]
+        );
     }
 
     #[test]

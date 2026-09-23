@@ -34,18 +34,34 @@ impl AgentRegistry {
         AgentRegistry { providers }
     }
 
-    /// Picks the provider to run a task with.
+    /// Picks the provider to run a task with: the first of
+    /// [`Self::candidates`].
     ///
-    /// If `forced_id` is `Some` (the user said "usa Claude y…"), that
-    /// provider is used if and only if it is currently [`ProviderStatus::Active`].
-    /// Otherwise, the first `Active` provider in priority order is used.
+    /// # Errors
+    /// See [`Self::candidates`].
+    pub async fn select(&self, forced_id: Option<&str>) -> Result<&dyn AgentProvider, DispatchError> {
+        let mut candidates = self.candidates(forced_id).await?;
+        Ok(candidates.remove(0))
+    }
+
+    /// Every provider a task may run on, best first, so the caller can fall
+    /// through to the next when one fails before doing anything — an agent
+    /// that is installed and signed in but broken (an outdated CLI whose
+    /// configured model it no longer accepts, say) must not make every voice
+    /// command fail while a second, working agent sits unused.
+    ///
+    /// If `forced_id` is `Some` (the user said "usa Claude y…"), the result
+    /// is that provider alone, and only if it is currently
+    /// [`ProviderStatus::Active`] — an explicit choice is never silently
+    /// replaced by another agent. Otherwise: every `Active` provider, in
+    /// priority order.
     ///
     /// # Errors
     /// [`DispatchError::UnknownProvider`] if `forced_id` does not match any
     /// registered provider; [`DispatchError::RequestedProviderNotReady`] if
     /// it does but is not active; [`DispatchError::NoActiveProvider`] if no
     /// provider is forced and none are active.
-    pub async fn select(&self, forced_id: Option<&str>) -> Result<&dyn AgentProvider, DispatchError> {
+    pub async fn candidates(&self, forced_id: Option<&str>) -> Result<Vec<&dyn AgentProvider>, DispatchError> {
         if let Some(forced_id) = forced_id {
             let provider = self
                 .providers
@@ -54,19 +70,24 @@ impl AgentRegistry {
                 .ok_or_else(|| DispatchError::UnknownProvider(forced_id.to_string()))?;
 
             return if provider.detect().await.is_active() {
-                Ok(provider.as_ref())
+                Ok(vec![provider.as_ref()])
             } else {
                 Err(DispatchError::RequestedProviderNotReady(forced_id.to_string()))
             };
         }
 
+        let mut active = Vec::new();
         for provider in &self.providers {
             if provider.detect().await.is_active() {
-                return Ok(provider.as_ref());
+                active.push(provider.as_ref());
             }
         }
 
-        Err(DispatchError::NoActiveProvider)
+        if active.is_empty() {
+            Err(DispatchError::NoActiveProvider)
+        } else {
+            Ok(active)
+        }
     }
 
     /// Detects every registered provider's status, in priority order — the
@@ -150,6 +171,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn candidates_lists_every_active_provider_in_priority_order() {
+        let registry = AgentRegistry::new(vec![
+            Box::new(active("codex")),
+            Box::new(inactive("gemini")),
+            Box::new(active("claude_code")),
+        ]);
+        let ids: Vec<_> = registry.candidates(None).await.expect("two are active").iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["codex", "claude_code"]);
+    }
+
+    #[tokio::test]
+    async fn a_forced_provider_is_the_only_candidate_and_is_never_replaced() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex")), Box::new(active("claude_code"))]);
+        let ids: Vec<_> =
+            registry.candidates(Some("claude_code")).await.expect("active").iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["claude_code"]);
+    }
+
+    #[tokio::test]
+    async fn candidates_with_nothing_active_is_the_no_provider_error() {
+        let registry = AgentRegistry::new(vec![Box::new(inactive("codex"))]);
+        assert!(matches!(registry.candidates(None).await, Err(DispatchError::NoActiveProvider)));
+    }
+
+    #[tokio::test]
     async fn selected_provider_can_actually_execute_a_task() {
         let registry = AgentRegistry::new(vec![Box::new(MockProvider::always_completes("codex", "listo"))]);
         let provider = registry.select(None).await.expect("must select codex");
@@ -159,6 +205,7 @@ mod tests {
             project_dir: std::env::temp_dir(),
             session_id: uuid::Uuid::new_v4(),
             resume_session_id: None,
+            mcp: None,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let running = provider.execute(&task, tx).await.expect("execute must succeed");

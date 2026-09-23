@@ -36,12 +36,16 @@ pub trait Pasteboard: Send + Sync {
     /// A counter that increments every time anything writes to the
     /// clipboard — the mechanism the change-count guard is built on.
     fn change_count(&self) -> isize;
+    /// Empties the clipboard.
+    fn clear(&self);
 }
 
 /// Something that can simulate the Cmd+V keystroke.
 pub trait KeystrokeSynthesizer: Send + Sync {
     /// Posts a Cmd+V key-down/key-up pair to the system.
     fn synthesize_cmd_v(&self) -> Result<(), MacosError>;
+    /// Posts a Cmd+C key-down/key-up pair to the system.
+    fn synthesize_cmd_c(&self) -> Result<(), MacosError>;
 }
 
 /// Sets the clipboard to `text`, synthesizes Cmd+V so the frontmost app
@@ -97,6 +101,55 @@ pub fn paste_text(text: &str, restore_delay: Duration) -> Result<(), MacosError>
     paste_text_with(Arc::new(SystemPasteboard), &SystemKeystrokeSynthesizer, text, restore_delay)
 }
 
+/// How long [`copy_selection`] waits for the frontmost app to answer Cmd+C.
+pub const COPY_TIMEOUT: Duration = Duration::from_millis(350);
+
+/// Reads the selected text out of whatever app is in front by asking it to
+/// copy: posts Cmd+C, waits for the clipboard to change, reads it, and puts
+/// the clipboard back exactly as it was. This is the fallback for apps whose
+/// accessibility tree does not expose the selection (terminals, some
+/// Electron apps) — it works in nearly anything with a Copy command, at the
+/// price of touching the clipboard for a few milliseconds.
+///
+/// Returns `Ok(None)` when nothing changed within `timeout`: there was no
+/// selection (Cmd+C on an empty selection copies nothing).
+///
+/// # Errors
+/// [`MacosError::SynthesizeKeystrokeFailed`] if the keystroke could not be
+/// posted; the clipboard is untouched in that case.
+pub fn copy_selection_with(
+    pasteboard: &dyn Pasteboard,
+    keystroke: &dyn KeystrokeSynthesizer,
+    timeout: Duration,
+) -> Result<Option<String>, MacosError> {
+    let previous_text = pasteboard.read_string();
+    let count_before = pasteboard.change_count();
+
+    keystroke.synthesize_cmd_c()?;
+
+    let deadline = std::time::Instant::now() + timeout;
+    while pasteboard.change_count() == count_before {
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let selected = pasteboard.read_string();
+    match previous_text {
+        Some(previous) => {
+            let _ = pasteboard.write_string(&previous);
+        }
+        None => pasteboard.clear(),
+    }
+    Ok(selected.filter(|text| !text.is_empty()))
+}
+
+/// The production entry point for [`copy_selection_with`].
+pub fn copy_selection() -> Result<Option<String>, MacosError> {
+    copy_selection_with(&SystemPasteboard, &SystemKeystrokeSynthesizer, COPY_TIMEOUT)
+}
+
 /// The real `NSPasteboard`-backed [`Pasteboard`].
 pub struct SystemPasteboard;
 
@@ -124,36 +177,50 @@ impl Pasteboard for SystemPasteboard {
         let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
         pasteboard.changeCount()
     }
+
+    fn clear(&self) {
+        objc2_app_kit::NSPasteboard::generalPasteboard().clearContents();
+    }
 }
 
 /// The real `CGEvent`-backed [`KeystrokeSynthesizer`].
 pub struct SystemKeystrokeSynthesizer;
 
-/// The virtual keycode for the "V" key on a US keyboard layout
-/// (`kVK_ANSI_V` in Apple's `Carbon/HIToolbox/Events.h` — a stable, publicly
-/// documented constant, not something guessed at).
+/// Virtual keycodes on a US keyboard layout (`kVK_ANSI_V` / `kVK_ANSI_C` in
+/// Apple's `Carbon/HIToolbox/Events.h` — stable, publicly documented
+/// constants, not something guessed at).
 const VIRTUAL_KEYCODE_V: u16 = 0x09;
+const VIRTUAL_KEYCODE_C: u16 = 0x08;
 
 impl KeystrokeSynthesizer for SystemKeystrokeSynthesizer {
     fn synthesize_cmd_v(&self) -> Result<(), MacosError> {
-        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation};
-
-        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-            .ok_or(MacosError::SynthesizeKeystrokeFailed)?;
-
-        let key_down = CGEvent::new_keyboard_event(Some(&source), VIRTUAL_KEYCODE_V, true)
-            .ok_or(MacosError::SynthesizeKeystrokeFailed)?;
-        let key_up = CGEvent::new_keyboard_event(Some(&source), VIRTUAL_KEYCODE_V, false)
-            .ok_or(MacosError::SynthesizeKeystrokeFailed)?;
-
-        CGEvent::set_flags(Some(&key_down), CGEventFlags::MaskCommand);
-        CGEvent::set_flags(Some(&key_up), CGEventFlags::MaskCommand);
-
-        CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&key_down));
-        CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&key_up));
-
-        Ok(())
+        post_cmd_key(VIRTUAL_KEYCODE_V)
     }
+
+    fn synthesize_cmd_c(&self) -> Result<(), MacosError> {
+        post_cmd_key(VIRTUAL_KEYCODE_C)
+    }
+}
+
+/// Posts Cmd + `keycode`, key-down then key-up, to the session event tap.
+fn post_cmd_key(keycode: u16) -> Result<(), MacosError> {
+    use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation};
+
+    let source =
+        CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok_or(MacosError::SynthesizeKeystrokeFailed)?;
+
+    let key_down =
+        CGEvent::new_keyboard_event(Some(&source), keycode, true).ok_or(MacosError::SynthesizeKeystrokeFailed)?;
+    let key_up =
+        CGEvent::new_keyboard_event(Some(&source), keycode, false).ok_or(MacosError::SynthesizeKeystrokeFailed)?;
+
+    CGEvent::set_flags(Some(&key_down), CGEventFlags::MaskCommand);
+    CGEvent::set_flags(Some(&key_up), CGEventFlags::MaskCommand);
+
+    CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&key_down));
+    CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&key_up));
+
+    Ok(())
 }
 
 /// In-memory test doubles for [`Pasteboard`] and [`KeystrokeSynthesizer`],
@@ -162,7 +229,7 @@ impl KeystrokeSynthesizer for SystemKeystrokeSynthesizer {
 pub mod mock {
     use super::{KeystrokeSynthesizer, MacosError, Pasteboard};
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// An in-memory clipboard: no AppKit, no real system state.
     #[derive(Default)]
@@ -198,25 +265,47 @@ pub mod mock {
         fn change_count(&self) -> isize {
             self.change_count.load(Ordering::SeqCst)
         }
+
+        fn clear(&self) {
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            let mut guard = self.contents.lock().unwrap();
+            *guard = None;
+            self.change_count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     /// A keystroke synthesizer that records whether it was called and can be
-    /// configured to fail, without touching the real system.
+    /// configured to fail, without touching the real system. It can also
+    /// play the part of the frontmost app answering Cmd+C, by writing a
+    /// "selection" onto a [`MockPasteboard`] when it is asked to copy.
     #[derive(Default)]
     pub struct MockKeystrokeSynthesizer {
         called: AtomicBool,
         should_fail: bool,
+        copy_called: AtomicBool,
+        selection: Option<(Arc<MockPasteboard>, String)>,
     }
 
     impl MockKeystrokeSynthesizer {
         /// A mock that always succeeds.
         pub fn succeeding() -> Self {
-            MockKeystrokeSynthesizer { called: AtomicBool::new(false), should_fail: false }
+            MockKeystrokeSynthesizer { should_fail: false, ..MockKeystrokeSynthesizer::default() }
+        }
+
+        /// A mock whose Cmd+C "copies" `selection` onto `pasteboard`, like an
+        /// app that has that text selected.
+        pub fn with_selection(pasteboard: Arc<MockPasteboard>, selection: &str) -> Self {
+            MockKeystrokeSynthesizer { selection: Some((pasteboard, selection.to_string())), ..Self::default() }
+        }
+
+        /// Whether [`KeystrokeSynthesizer::synthesize_cmd_c`] was called.
+        pub fn copy_was_called(&self) -> bool {
+            self.copy_called.load(Ordering::SeqCst)
         }
 
         /// A mock that always fails, to exercise `paste_text_with`'s error path.
         pub fn failing() -> Self {
-            MockKeystrokeSynthesizer { called: AtomicBool::new(false), should_fail: true }
+            MockKeystrokeSynthesizer { should_fail: true, ..MockKeystrokeSynthesizer::default() }
         }
 
         /// Whether [`KeystrokeSynthesizer::synthesize_cmd_v`] was called.
@@ -233,6 +322,17 @@ pub mod mock {
             } else {
                 Ok(())
             }
+        }
+
+        fn synthesize_cmd_c(&self) -> Result<(), MacosError> {
+            self.copy_called.store(true, Ordering::SeqCst);
+            if self.should_fail {
+                return Err(MacosError::SynthesizeKeystrokeFailed);
+            }
+            if let Some((pasteboard, selection)) = &self.selection {
+                pasteboard.write_string(selection)?;
+            }
+            Ok(())
         }
     }
 }
@@ -313,6 +413,58 @@ mod tests {
             Some("original".to_string()),
             "a failed keystroke must not leave the clipboard mutated"
         );
+    }
+
+    #[test]
+    fn copy_selection_returns_the_selected_text_and_restores_the_clipboard() {
+        let pasteboard = Arc::new(MockPasteboard::new(Some("lo que el usuario había copiado")));
+        let keystroke = MockKeystrokeSynthesizer::with_selection(pasteboard.clone(), "texto seleccionado");
+
+        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200))
+            .expect("must succeed");
+
+        assert_eq!(selected, Some("texto seleccionado".to_string()));
+        assert!(keystroke.copy_was_called());
+        assert_eq!(
+            pasteboard.read_string(),
+            Some("lo que el usuario había copiado".to_string()),
+            "the user's clipboard must come back exactly as it was"
+        );
+    }
+
+    #[test]
+    fn copy_selection_with_nothing_selected_is_none_and_leaves_the_clipboard_alone() {
+        let pasteboard = Arc::new(MockPasteboard::new(Some("original")));
+        let keystroke = MockKeystrokeSynthesizer::succeeding(); // the "app" copies nothing
+
+        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(60))
+            .expect("must succeed");
+
+        assert_eq!(selected, None);
+        assert_eq!(pasteboard.read_string(), Some("original".to_string()));
+    }
+
+    #[test]
+    fn copy_selection_clears_the_clipboard_again_when_it_started_empty() {
+        let pasteboard = Arc::new(MockPasteboard::new(None));
+        let keystroke = MockKeystrokeSynthesizer::with_selection(pasteboard.clone(), "seleccionado");
+
+        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200))
+            .expect("must succeed");
+
+        assert_eq!(selected, Some("seleccionado".to_string()));
+        assert_eq!(pasteboard.read_string(), None, "the selection must not linger on an initially empty clipboard");
+    }
+
+    #[test]
+    fn a_failed_copy_keystroke_is_an_error_and_touches_nothing() {
+        let pasteboard = Arc::new(MockPasteboard::new(Some("original")));
+        let keystroke = MockKeystrokeSynthesizer::failing();
+
+        let result = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(60));
+
+        assert!(matches!(result, Err(MacosError::SynthesizeKeystrokeFailed)));
+        assert_eq!(pasteboard.read_string(), Some("original".to_string()));
     }
 
     // The AppKit- and CGEvent-backed implementations below have no logic of

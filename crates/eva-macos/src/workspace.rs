@@ -15,6 +15,13 @@ pub struct RunningAppInfo {
     pub localized_name: Option<String>,
     /// The app's bundle identifier (e.g. `"com.microsoft.VSCode"`), if AppKit reports one.
     pub bundle_identifier: Option<String>,
+    /// The app's process id — what the Accessibility queries in [`crate::ax`]
+    /// need to look inside its windows.
+    pub pid: i32,
+    /// The focused window's title, when Accessibility is granted and the app
+    /// answers in time. This is what names the project being worked on
+    /// (`eva_config::ProjectIndex`).
+    pub window_title: Option<String>,
 }
 
 /// Returns the frontmost (active) application, or `None` if AppKit could not
@@ -26,10 +33,13 @@ pub fn frontmost_app() -> Option<RunningAppInfo> {
     // compiling on macOS.
     let workspace = NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication()?;
+    let pid = app.processIdentifier();
 
     Some(RunningAppInfo {
         localized_name: app.localizedName().map(|s| s.to_string()),
         bundle_identifier: app.bundleIdentifier().map(|s| s.to_string()),
+        pid,
+        window_title: if crate::is_accessibility_trusted() { crate::focused_window_title(pid) } else { None },
     })
 }
 

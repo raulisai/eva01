@@ -1,0 +1,44 @@
+# Frases dictadas para medir el formateador (una por línea, sin puntuación ni
+# mayúsculas, como las entrega el STT). Líneas con # se ignoran.
+# Cubre lo que más confunde al modelo: frases cortas dirigidas a "tú",
+# saludos, órdenes, preguntas, cifras, nombres y muletillas.
+hola cómo estás
+gracias
+ya voy
+llego en diez minutos
+nos vemos mañana
+te llamo más tarde
+buenos días a todos
+perdón por la demora
+no te preocupes
+dime cuando estés listo
+quedamos a las cinco
+avísame si necesitas algo
+qué hora es
+cuando sale el vuelo a madrid
+puedes enviarme el reporte
+necesito tres archivos y dos carpetas para mañana
+manda un correo a soporte diciendo que el servidor está caído
+dile a maría que la reunión se movió a las tres
+recuérdame comprar leche mañana en la mañana
+o sea este mándale el archivo a juan pero antes pregúntale si ya llegó a la oficina
+eh pues no sé si deberíamos ir hoy o mañana
+bueno la verdad es que no tengo idea
+la reunión es el quince de marzo a las diez y media
+son doscientos cincuenta dólares por mes
+el proyecto tiene veinte tareas pendientes
+que buena idea vamos a la playa
+qué susto me diste
+increíble lo que pasó ayer
+juan garcía viene con su hermana
+mi correo es pedro arroba ejemplo punto com
+el código está en la rama principal
+hay que actualizar la documentación antes del viernes
+ya terminé de revisar el documento y tiene algunos errores
+creo que deberíamos mover la fecha de entrega para la semana próxima
+el cliente pidió que agreguemos un botón de exportar en la pantalla de reportes
+por favor confirma si recibiste mi mensaje anterior
+estoy en camino
+sí claro
+no puedo hoy
+un momento por favor

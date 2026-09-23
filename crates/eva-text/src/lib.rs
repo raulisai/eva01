@@ -10,14 +10,17 @@
 
 pub mod apple_intelligence;
 pub mod dictionary;
+mod faithfulness;
 pub mod filler;
 pub mod formatter;
 mod normalize;
+pub mod style;
 
 pub use apple_intelligence::AppleIntelligenceFormatter;
 pub use dictionary::Dictionary;
 pub use formatter::{FormatError, Formatter, RuleOnlyFormatter};
 pub use normalize::fold_diacritics;
+pub use style::Style;
 
 /// The result of running [`clean`]: both the intermediate and final text are
 /// kept, because `docs/PLAN.md` §3 fase 3's corpus harvesting stores the raw,
@@ -32,25 +35,31 @@ pub struct CleanedTranscript {
     pub formatted: String,
 }
 
+/// Runs the full text pipeline with the default style — see [`clean_styled`].
+pub fn clean(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter) -> CleanedTranscript {
+    clean_styled(raw, dictionary, formatter, Style::Default)
+}
+
 /// Runs the full text pipeline: strip universal fillers, correct against the
 /// personal dictionary, then hand off to `formatter` for the context-aware
-/// pass. If `formatter` fails for any reason, falls back to
-/// [`RuleOnlyFormatter`] rather than losing the transcript — this is the
-/// "never silent" rule from `docs/PLAN.md` §3.3 point 5, enforced in code
-/// rather than left as a convention to remember.
-pub fn clean(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter) -> CleanedTranscript {
+/// pass in the `style` of the app the text is going into. If `formatter`
+/// fails for any reason, falls back to [`RuleOnlyFormatter`] (in the same
+/// style) rather than losing the transcript — this is the "never silent"
+/// rule from `docs/PLAN.md` §3.3 point 5, enforced in code rather than left
+/// as a convention to remember.
+pub fn clean_styled(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter, style: Style) -> CleanedTranscript {
     let after_fillers = filler::remove_universal_fillers(raw);
     let pre_formatted = dictionary.correct(&after_fillers, 0.88);
 
-    let formatted = match formatter.format(&pre_formatted) {
+    let formatted = match formatter.format_styled(&pre_formatted, style) {
         Ok(text) if !text.trim().is_empty() || pre_formatted.trim().is_empty() => text,
         _ => {
             // Either the formatter errored, or it returned empty output for
             // non-empty input (an InvalidOutput case worth degrading from
             // too) — fall back rather than paste nothing.
-            #[allow(clippy::expect_used)] // RuleOnlyFormatter::format never returns Err
+            #[allow(clippy::expect_used)] // RuleOnlyFormatter::format_styled never returns Err
             RuleOnlyFormatter
-                .format(&pre_formatted)
+                .format_styled(&pre_formatted, style)
                 .expect("RuleOnlyFormatter never fails")
         }
     };
@@ -103,6 +112,15 @@ mod tests {
         let dict = Dictionary::new(Vec::<String>::new());
         let result = clean("hola mundo", &dict, &AlwaysEmpty);
         assert_eq!(result.formatted, "Hola mundo.");
+    }
+
+    #[test]
+    fn the_style_reaches_the_fallback_too() {
+        let dict = Dictionary::new(Vec::<String>::new());
+        let terminal = clean_styled("git status", &dict, &AlwaysFails, Style::Terminal);
+        assert_eq!(terminal.formatted, "git status", "a terminal must not get a capital or a period even on fallback");
+        let casual = clean_styled("voy para allá", &dict, &AlwaysFails, Style::Casual);
+        assert_eq!(casual.formatted, "Voy para allá");
     }
 
     #[test]

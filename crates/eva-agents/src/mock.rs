@@ -23,6 +23,10 @@ pub struct MockProvider {
     /// a test assert on what was asked for (a resumed session id, the right
     /// project directory, …), not just that *something* was called.
     received_tasks: Mutex<Vec<AgentTask>>,
+    /// When set, `execute` starts a run that never finishes on its own — the
+    /// shape of a real agent mid-task, for tests of cancellation and of
+    /// things that must keep working while an agent runs.
+    hangs: bool,
 }
 
 impl MockProvider {
@@ -36,6 +40,16 @@ impl MockProvider {
             scripts: Mutex::new(scripts),
             executions: AtomicUsize::new(0),
             received_tasks: Mutex::new(Vec::new()),
+            hangs: false,
+        }
+    }
+
+    /// A provider whose runs never finish until cancelled: after emitting
+    /// [`AgentEvent::Started`] they sit there, like a real agent working.
+    pub fn never_finishes(id: &'static str) -> Self {
+        MockProvider {
+            hangs: true,
+            ..MockProvider::new(id, ProviderStatus::Active { version: "mock".to_string() }, Vec::new())
         }
     }
 
@@ -80,6 +94,23 @@ impl AgentProvider for MockProvider {
         #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
         self.received_tasks.lock().unwrap().push(task.clone());
 
+        if self.hangs {
+            let _ = events.send(AgentEvent::Started);
+            let child = tokio::process::Command::new("sleep")
+                .arg("300")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|source| AgentError::Spawn { provider: self.id, source })?;
+            let output_task = tokio::spawn(async move {
+                std::future::pending::<()>().await;
+                AgentOutcome::Cancelled
+            });
+            return Ok(RunningAgent::new(child, output_task));
+        }
+
         #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
         let mut scripts = self.scripts.lock().unwrap();
         let (script_events, outcome) = if scripts.is_empty() {
@@ -119,6 +150,7 @@ mod tests {
             project_dir: std::env::temp_dir(),
             session_id: uuid::Uuid::new_v4(),
             resume_session_id: None,
+            mcp: None,
         }
     }
 
