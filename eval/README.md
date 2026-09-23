@@ -92,6 +92,15 @@ Lo que enseñó (y quedó corregido o anotado):
 - La única frase que falla es la de 0,5 s ("Ya voy"): con audios tan
   cortos el modelo alucina, con o sin relleno.
 
+## Frases de una o dos palabras
+
+Es el punto débil que sigue abierto. 28 clips de `say` de 0,2–1,2 s («sí», «gracias», «vale», «de acuerdo»…)
+con `canary-1b-flash`: solo 12 de 28 salen exactos; el resto se calla (nada que pegar) o inventa («Vale» →
+«Ballet», «De acuerdo» → «Y ser como, camino a ir»). Más silencio alrededor (0–3 s) no lo arregla: se probó
+y ningún relleno pasa de 14/28, y sin ninguno es peor (10/28), así que se dejó en 300 ms + 200 ms. Es el
+límite del modelo con audio tan corto; con dos o tres palabras ya es fiable (`Un momento`, `Nos vemos mañana`).
+Si dictas muchas respuestas de una palabra, este es el caso a medir con tu propia voz.
+
 ## Dictados largos
 
 Un minuto de dictado es uso normal, y era lo que peor funcionaba. Voz continua de `say`

@@ -115,6 +115,10 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     cuenta ocurrencias (perdonando solo la repetición inmediata, «el el coche») y un símbolo solo cuenta si va
     *dentro* de una palabra («ejemplo.com», «3,5», «pre-registro»).
 
+16. **Las respuestas de una palabra son el punto débil que sigue abierto**: con clips de 0,2–1,2 s solo 12 de 28
+    salen exactos (el resto se calla o inventa). Se probó más y menos relleno de silencio (0–3 s): no cambia la
+    cifra. Se deja documentado en `eval/README.md` en vez de esconderlo con una heurística sin datos que la respalden.
+
 ### Lo que falta y por qué
 
 - **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado
