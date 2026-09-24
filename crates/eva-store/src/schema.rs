@@ -13,7 +13,7 @@ use std::path::Path;
 /// The schema version this build of `eva-store` expects. Bumped whenever
 /// [`migrate`] gains a new step. Stored in SQLite's own `PRAGMA user_version`,
 /// so no extra table is needed to track it.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Opens (or creates) the database at `path`, verifying its integrity first.
 ///
@@ -149,6 +149,9 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
     if current_version < 4 {
         migrate_to_v4(conn)?;
     }
+    if current_version < 5 {
+        migrate_to_v5(conn)?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -239,6 +242,14 @@ fn migrate_to_v3(conn: &Connection) -> Result<(), StoreError> {
         );
         CREATE INDEX IF NOT EXISTS idx_agent_tasks_started_at ON agent_tasks(started_at);
         ",
+    )?;
+    Ok(())
+}
+
+/// v5: `wake_variants`, how often each spelling was taken for the wake word.
+fn migrate_to_v5(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS wake_variants (heard TEXT PRIMARY KEY, hits INTEGER NOT NULL DEFAULT 0);",
     )?;
     Ok(())
 }
@@ -378,6 +389,19 @@ mod tests {
         assert_eq!(work_dir, None);
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_v4_database_gains_the_wake_variants_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        drop(open_checked(&path).expect("fresh"));
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch("DROP TABLE wake_variants; PRAGMA user_version = 4;").expect("back to v4");
+        }
+        let conn = open_checked(&path).expect("upgrade must succeed");
+        conn.execute("INSERT INTO wake_variants (heard, hits) VALUES ('adam', 1)", []).expect("the table exists");
     }
 
     #[test]

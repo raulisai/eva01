@@ -322,6 +322,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_wake_word_heard_as_adam_works_for_commands_and_is_learned_for_tasks_after_a_few_times() {
+        let mut rig = Rig::new();
+
+        rig.run(typed("Adam, abre Brave")).await;
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+
+        // A task after a look-alike word is not started on a guess…
+        let events = rig.run(typed("Adam agrega tests al login")).await;
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::TaskStarted { .. })), "{events:?}");
+        assert_eq!(rig.ctx.store.trusted_wake_variants(3).unwrap(), Vec::<String>::new());
+
+        // …until the same spelling has been taken for the wake word enough times.
+        rig.run(typed("Adam, abre Brave")).await;
+        rig.run(typed("Adam, abre Brave")).await;
+        assert_eq!(rig.ctx.store.trusted_wake_variants(3).unwrap(), vec!["adam".to_string()]);
+        let interpreted = crate::dictation::interpret_text_for_test(&rig.ctx, "Adam agrega tests al login");
+        assert_eq!(interpreted["kind"], "agent_task");
+    }
+
+    #[tokio::test]
     async fn an_app_that_is_not_installed_says_so_and_offers_the_app_store_only_on_a_yes() {
         let mut rig = Rig::new();
         let declined = rig.run_answering(typed("Adán, abre Photoshop"), false).await;

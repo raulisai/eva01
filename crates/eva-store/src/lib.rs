@@ -29,6 +29,7 @@ pub mod sessions;
 pub mod settings;
 pub mod tasks;
 pub mod transcripts;
+pub mod wake_variants;
 
 pub use audit::{AuditRecord, Decision};
 pub use error::StoreError;
@@ -147,6 +148,18 @@ impl Store {
     /// See [`app_aliases::list`].
     pub fn list_app_aliases(&self) -> Result<Vec<(String, String)>, StoreError> {
         self.with_conn(app_aliases::list)
+    }
+
+    // -- wake word variants -----------------------------------------------
+
+    /// See [`wake_variants::count`].
+    pub fn count_wake_variant(&self, heard: &str) -> Result<u32, StoreError> {
+        self.with_conn(|c| wake_variants::count(c, heard))
+    }
+
+    /// See [`wake_variants::trusted`].
+    pub fn trusted_wake_variants(&self, min_hits: u32) -> Result<Vec<String>, StoreError> {
+        self.with_conn(|c| wake_variants::trusted(c, min_hits))
     }
 
     // -- settings ---------------------------------------------------------

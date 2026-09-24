@@ -202,7 +202,7 @@ fn load_audio(config: &Config, support: &Path, wake_word: &str) -> Option<AudioC
                 let wake_word = wake_word.to_string();
                 let wanted = Arc::new(move |text: &str| {
                     let text = eva_text::filler::remove_universal_fillers(text);
-                    eva_intent::wake::strip_wake_word(&text, &wake_word).is_some()
+                    eva_intent::looks_like_command(&text, &wake_word, &[])
                 });
                 let stt =
                     eva_audio::second_opinion::SecondOpinion::new(Arc::new(stt.with_padding(padding)), second, wanted);

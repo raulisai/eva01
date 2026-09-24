@@ -120,6 +120,14 @@ pub enum Intent {
     },
 }
 
+impl Intent {
+    /// Whether this is something said on purpose — not the fallback that
+    /// hands anything else to an agent, nor a blocked request.
+    pub fn is_clear_command(&self) -> bool {
+        !matches!(self, Intent::AgentTask { provider: None, .. } | Intent::Blocked { .. } | Intent::Dictation)
+    }
+}
+
 /// Whether `spoken` is the user's `phrase`: the same words, whatever the
 /// accents, case or punctuation the speech model happened to give them.
 pub fn is_phrase(spoken: &str, phrase: &str) -> bool {

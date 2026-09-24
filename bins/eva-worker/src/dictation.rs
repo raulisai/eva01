@@ -7,17 +7,29 @@
 use crate::context::WorkerContext;
 use eva_config::{ActionKind, Origin};
 use eva_gateway::{Action, Verdict};
-use eva_intent::InterpretResult;
+use eva_intent::{InterpretResult, Interpreted};
 use eva_ipc::{WorkerState, WorkerToShell};
 use eva_mcp::{Desktop, DesktopService};
 use eva_text::{Dictionary, FormatError, RuleOnlyFormatter, Style};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// A spelling of the wake word taken for it this many times is trusted for
+/// anything, not only for a clear command.
+const TRUSTED_AFTER_HITS: u32 = 3;
+
 /// A real transcript, from either STT or (in `RunIntentText`'s case) typed
 /// text, is either plain dictation or a wake-word-prefixed command.
 pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str) {
-    let result = classify(ctx, text);
+    let Interpreted { result, wake } = classify(ctx, text);
+    if let Some((eva_intent::wake::WakeMatch::Similar, heard)) = &wake {
+        // Taken for the wake word on a guess: count it, so that after a
+        // few times it is trusted (this is how "Adam" becomes "Adán").
+        match ctx.store.count_wake_variant(heard) {
+            Ok(hits) => tracing::info!(%heard, hits, "palabra de activación aproximada aceptada"),
+            Err(e) => tracing::warn!("no se pudo contar la variante «{heard}»: {e}"),
+        }
+    }
     // The line to read when "it didn't do what I said": what was heard, what
     // the gate made of it, and so whether it was pasted or run.
     match &result {
@@ -49,7 +61,7 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
 
 /// What `text` is: dictation, or a command (the user's own phrases included).
 /// Does nothing about it.
-fn classify(ctx: &WorkerContext, text: &str) -> InterpretResult {
+fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
     // A hesitation before the wake word ("eh, Adán, abre Brave") is normal,
     // natural speech, but `strip_wake_word` requires the wake word to be the
     // literal first word — found while testing the recording pipeline end
@@ -61,12 +73,16 @@ fn classify(ctx: &WorkerContext, text: &str) -> InterpretResult {
     let gate_input = eva_text::filler::remove_universal_fillers(text);
 
     let phrases: Vec<&str> = ctx.config.custom_commands().flat_map(|c| c.phrases()).collect();
-    let interpret =
-        |apps: &eva_intent::AppIndex| eva_intent::interpret_with(&gate_input, &ctx.wake_word, apps, &phrases);
+    let learned = ctx.store.trusted_wake_variants(TRUSTED_AFTER_HITS).unwrap_or_default();
+    let interpret = |apps: &eva_intent::AppIndex| {
+        eva_intent::interpret_tolerant(&gate_input, &ctx.wake_word, apps, &phrases, &learned)
+    };
     let result = interpret(&ctx.app_index.current());
     // An app the index does not know may have been installed since it was
     // built: look again before saying it is not there.
-    if matches!(result, InterpretResult::Command(eva_intent::Intent::AppNotFound { .. })) && ctx.app_index.refresh() {
+    if matches!(result.result, InterpretResult::Command(eva_intent::Intent::AppNotFound { .. }))
+        && ctx.app_index.refresh()
+    {
         return interpret(&ctx.app_index.current());
     }
     result
@@ -75,12 +91,21 @@ fn classify(ctx: &WorkerContext, text: &str) -> InterpretResult {
 /// Says what `text` would be taken for — `eva intent`'s default — without
 /// pasting, opening or asking anything.
 pub fn interpret_text(ctx: &WorkerContext, request_id: Uuid, text: &str) {
-    let intent_json = match classify(ctx, text) {
+    let intent_json = match classify(ctx, text).result {
         InterpretResult::Dictation => serde_json::json!({ "kind": "dictation" }),
         InterpretResult::Command(intent) => serde_json::to_value(intent).unwrap_or(serde_json::Value::Null),
     };
     ctx.events.emit(WorkerToShell::IntentRecognized { request_id, intent_json });
     ctx.events.emit(WorkerToShell::Ack { request_id });
+}
+
+/// What `text` would be taken for, as the JSON `eva intent` shows (tests).
+#[cfg(test)]
+pub fn interpret_text_for_test(ctx: &WorkerContext, text: &str) -> serde_json::Value {
+    match classify(ctx, text).result {
+        InterpretResult::Dictation => serde_json::json!({ "kind": "dictation" }),
+        InterpretResult::Command(intent) => serde_json::to_value(intent).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 /// Cleans `raw` in the style of the frontmost app, saves it to the corpus and

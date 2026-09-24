@@ -11,6 +11,65 @@
 
 use eva_text::fold_diacritics;
 
+/// How the wake word was heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeMatch {
+    /// As written in the config (accents and case aside).
+    Exact,
+    /// A spelling this user's speech has been confirmed to produce ("adam").
+    Learned,
+    /// Close to it ("adam", "agan" for "Adán") but not known: only good
+    /// enough when what follows is clearly a command.
+    Similar,
+}
+
+/// The wake word found at the start of a transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wake<'a> {
+    /// What follows it, as [`strip_wake_word`] gives it.
+    pub rest: &'a str,
+    /// How it was heard.
+    pub how: WakeMatch,
+    /// The first word as heard, folded (no accents, lowercase): what is
+    /// remembered when it turns out to be right.
+    pub heard: String,
+}
+
+/// How far a heard word may be from the wake word, in single-letter edits:
+/// one for short words, two for long ones. A four-letter word two edits away
+/// is a different word.
+fn tolerated_edits(wake_len: usize) -> usize {
+    if wake_len <= 5 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Finds the wake word at the start of `text`, however it was heard: exactly,
+/// as one of the `learned` spellings, or merely close to it. Never decides
+/// whether a [`WakeMatch::Similar`] is good enough — that depends on what
+/// follows, which is the caller's to judge.
+pub fn find_wake_word<'a>(text: &'a str, wake_word: &str, learned: &[String]) -> Option<Wake<'a>> {
+    let folded_wake = fold_diacritics(wake_word.trim()).to_lowercase();
+    if let Some(rest) = strip_wake_word(text, wake_word) {
+        return Some(Wake { rest, how: WakeMatch::Exact, heard: folded_wake });
+    }
+    let trimmed = text.trim_start();
+    let end = trimmed.find(|c: char| !c.is_alphanumeric()).unwrap_or(trimmed.len());
+    let heard = fold_diacritics(&trimmed[..end]).to_lowercase();
+    if heard.chars().count() < 3 || folded_wake.is_empty() {
+        return None;
+    }
+    let rest = trimmed[end..].trim_start_matches(|c: char| !c.is_alphanumeric());
+    if learned.iter().any(|known| *known == heard) {
+        return Some(Wake { rest, how: WakeMatch::Learned, heard });
+    }
+    let close = heard.chars().next() == folded_wake.chars().next()
+        && strsim::levenshtein(&heard, &folded_wake) <= tolerated_edits(folded_wake.chars().count());
+    close.then_some(Wake { rest, how: WakeMatch::Similar, heard })
+}
+
 /// If `text` begins with `wake_word` as a whole word (accent-insensitive,
 /// case-insensitive), returns the remainder of `text` with the wake word and
 /// any punctuation/whitespace immediately after it stripped. Returns `None`
@@ -76,6 +135,25 @@ pub fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> Option<&'a str> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
+    #[test]
+    fn a_wake_word_close_to_the_real_one_is_found_as_similar_and_a_far_one_is_not() {
+        for heard in ["Adam, abre Spotify", "Agan abre Spotify", "adan abre Spotify"] {
+            let found = find_wake_word(heard, "Adán", &[]).unwrap_or_else(|| panic!("{heard}"));
+            assert_eq!(found.rest, "abre Spotify", "{heard}");
+        }
+        assert_eq!(find_wake_word("Adam abre Spotify", "Adán", &[]).unwrap().how, WakeMatch::Similar);
+        assert_eq!(find_wake_word("Adán abre Spotify", "Adán", &[]).unwrap().how, WakeMatch::Exact);
+        for far in ["Hola, abre Spotify", "Ah, Dan, abre", "Ana abre Spotify", "Abre Spotify", "Ad abre"] {
+            assert_eq!(find_wake_word(far, "Adán", &[]), None, "{far}");
+        }
+    }
+
+    #[test]
+    fn a_learned_spelling_is_found_as_learned_even_if_it_is_far() {
+        let learned = vec!["atan".to_string(), "eydan".to_string()];
+        assert_eq!(find_wake_word("Eydan, abre", "Adán", &learned).unwrap().how, WakeMatch::Learned);
+    }
+
     use super::*;
 
     #[test]
