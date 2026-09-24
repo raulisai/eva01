@@ -169,6 +169,11 @@ async fn deliver(ctx: &Arc<WorkerContext>, request_id: Uuid, text: String) {
 
     match result {
         Ok(Ok(Delivery::Pasted)) => ctx.events.state(request_id, WorkerState::Done(true)),
+        Ok(Ok(Delivery::CopiedNoTarget)) => {
+            // Not a failure: the words are safe on the clipboard, one ⌘V away.
+            ctx.events.emit(WorkerToShell::Notice { request_id, message: "Copiado · pégalo con ⌘V".to_string() });
+            ctx.events.state(request_id, WorkerState::Done(true));
+        }
         Ok(Ok(Delivery::CopiedInstead)) => ctx.events.fail(
             request_id,
             "hay un campo de contraseña activo y macOS no deja pegar aquí; el texto quedó en el portapapeles",
@@ -180,13 +185,20 @@ async fn deliver(ctx: &Arc<WorkerContext>, request_id: Uuid, text: String) {
 
 enum Delivery {
     Pasted,
+    /// A password field blocks synthesized keystrokes.
     CopiedInstead,
+    /// Nothing that takes text has the focus.
+    CopiedNoTarget,
 }
 
 fn paste_or_copy(desktop: &dyn Desktop, text: &str) -> Result<Delivery, eva_mcp::DesktopError> {
     if desktop.secure_input_active() {
         desktop.copy_text(text)?;
         return Ok(Delivery::CopiedInstead);
+    }
+    if !desktop.has_text_target() {
+        desktop.copy_text(text)?;
+        return Ok(Delivery::CopiedNoTarget);
     }
     desktop.insert_text(text).map(|()| Delivery::Pasted)
 }
@@ -369,6 +381,18 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+    }
+
+    #[tokio::test]
+    async fn with_nowhere_to_paste_the_text_is_copied_and_the_user_told_to_paste_it_not_an_error() {
+        let desktop = MockDesktop::new().with_no_text_target();
+        let mut rig = Rig::builder().desktop(desktop).build();
+        let events = rig.run(typed(&rig, "hola mundo")).await;
+
+        assert_eq!(rig.desktop.calls(), vec![Call::CopyText("Hola mundo. ".to_string())], "no paste into nothing");
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Notice { message, .. } if message.contains("⌘V"))));
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
     }
 
     #[tokio::test]

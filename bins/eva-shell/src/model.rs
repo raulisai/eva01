@@ -37,6 +37,8 @@ pub const PING_EVERY: Duration = Duration::from_secs(15);
 pub const PONG_WITHIN: Duration = Duration::from_secs(10);
 const OK_NOTICE: Duration = Duration::from_millis(1_400);
 const ERROR_NOTICE: Duration = Duration::from_millis(4_500);
+/// "Copiado · pégalo con ⌘V" stays long enough to move to where it goes.
+const CLIPBOARD_NOTICE: Duration = Duration::from_millis(4_000);
 /// "Ejecutando en Claude Code" stays this long: the task itself runs on.
 const TASK_START_NOTICE: Duration = Duration::from_millis(2_500);
 const TASK_RESULT_NOTICE: Duration = Duration::from_millis(5_000);
@@ -416,6 +418,14 @@ impl ShellModel {
                 if self.unanswered_ping.is_some_and(|(id, _)| id == request_id) {
                     self.unanswered_ping = None;
                 }
+            }
+            WorkerToShell::Notice { message, .. } => {
+                self.notice = Some(Notice {
+                    text: message,
+                    tone: Tone::Ok,
+                    icon: Icon::Symbol("doc.on.clipboard"),
+                    until: now + CLIPBOARD_NOTICE,
+                });
             }
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
@@ -1486,6 +1496,23 @@ mod tests {
                 .unwrap()
                 .now,
             "Ejecutando en Codex"
+        );
+    }
+
+    #[test]
+    fn a_dictation_copied_for_lack_of_a_place_to_paste_says_so_in_green_with_the_clipboard() {
+        let t0 = Instant::now();
+        let mut model = ShellModel::new(keys());
+        let id = Uuid::new_v4();
+        model
+            .worker_event(t0, WorkerToShell::Notice { request_id: id, message: "Copiado · pégalo con ⌘V".to_string() });
+        model.worker_event(t0, state(id, WorkerState::Done(true)));
+
+        let overlay = model.overlay().unwrap();
+        assert_eq!(
+            (overlay.text.as_str(), overlay.tone, overlay.icon),
+            ("Copiado · pégalo con ⌘V", Tone::Ok, Icon::Symbol("doc.on.clipboard")),
+            "the Done that follows must not replace it with a bare ✓ Listo"
         );
     }
 }

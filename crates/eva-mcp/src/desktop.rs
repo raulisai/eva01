@@ -33,6 +33,12 @@ pub trait Desktop: Send + Sync {
     fn secure_input_active(&self) -> bool {
         false
     }
+    /// Whether there is somewhere to paste: `false` only when it is certain
+    /// there is not (focus on a list, a button, the bare desktop), so the
+    /// text goes to the clipboard instead of into nothing.
+    fn has_text_target(&self) -> bool {
+        true
+    }
 }
 
 /// The real, production [`Desktop`]: `eva-macos` for app/window/paste
@@ -108,6 +114,11 @@ impl Desktop for SystemDesktop {
     fn secure_input_active(&self) -> bool {
         eva_macos::is_secure_input_enabled()
     }
+
+    fn has_text_target(&self) -> bool {
+        let pid = eva_macos::frontmost_app().map(|app| app.pid);
+        eva_macos::text_target_focused(pid) != Some(false)
+    }
 }
 
 /// An in-memory [`Desktop`] for tests, per `docs/ENGINEERING.md` #5.
@@ -144,6 +155,7 @@ pub mod mock {
         active_window: Option<RunningAppInfo>,
         selection: Option<String>,
         secure_input: bool,
+        no_text_target: bool,
         should_fail: bool,
     }
 
@@ -157,6 +169,14 @@ pub mod mock {
         #[must_use]
         pub fn with_active_window(mut self, info: RunningAppInfo) -> Self {
             self.active_window = Some(info);
+            self
+        }
+
+        /// A mock whose focus is on something with nowhere to paste (a list,
+        /// the bare desktop).
+        #[must_use]
+        pub fn with_no_text_target(mut self) -> Self {
+            self.no_text_target = true;
             self
         }
 
@@ -240,6 +260,10 @@ pub mod mock {
 
         fn secure_input_active(&self) -> bool {
             self.secure_input
+        }
+
+        fn has_text_target(&self) -> bool {
+            !self.no_text_target
         }
     }
 }

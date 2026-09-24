@@ -67,6 +67,66 @@ pub fn selected_text(frontmost_pid: Option<i32>) -> Option<String> {
     string_attribute(focused, "AXSelectedText").filter(|text| !text.is_empty())
 }
 
+/// Roles that are never somewhere to type: pasting into one goes nowhere.
+/// Deliberately a list of what is certainly not text, not of what is: an
+/// editor in a browser or an Electron app reports roles no list could
+/// foresee, and a paste wrongly refused loses the user's words.
+const NON_TEXT_ROLES: &[&str] = &[
+    "AXButton",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXPopUpButton",
+    "AXMenuButton",
+    "AXMenuBar",
+    "AXMenuItem",
+    "AXStaticText",
+    "AXImage",
+    "AXList",
+    "AXTable",
+    "AXOutline",
+    "AXBrowser",
+    "AXRow",
+    "AXColumn",
+    "AXCell",
+    "AXToolbar",
+    "AXTabGroup",
+    "AXSlider",
+    "AXDockItem",
+    "AXWindow",
+    "AXApplication",
+];
+
+/// Whether a text can be pasted where the keyboard focus is: `Some(false)`
+/// when the focused element is certainly not a place for text (a list, a
+/// button, the desktop), `Some(true)` when it is one or might be, and `None`
+/// when that cannot be told (no permission, nothing reported) — which callers
+/// treat as "try the paste", as before.
+pub fn text_target_focused(frontmost_pid: Option<i32>) -> Option<bool> {
+    if !crate::is_accessibility_trusted() {
+        return None;
+    }
+    if let Some(pid) = frontmost_pid {
+        // SAFETY: as in `focused_window_title`.
+        let app = unsafe { AXUIElement::new_application(pid) };
+        set_timeout(&app);
+        // SAFETY: `kCFBooleanTrue` is a valid `CFType` for this attribute.
+        unsafe {
+            let _ = app.set_attribute_value(&CFString::from_str("AXManualAccessibility"), CFBoolean::new(true));
+        }
+    }
+    // SAFETY: the system-wide element takes no input.
+    let system = unsafe { AXUIElement::new_system_wide() };
+    set_timeout(&system);
+    let focused = attribute(&system, "AXFocusedUIElement")?;
+    let focused = focused.downcast_ref::<AXUIElement>()?;
+    // Anything that has a text cursor says where it is.
+    if attribute(focused, "AXSelectedTextRange").is_some() {
+        return Some(true);
+    }
+    let role = string_attribute(focused, "AXRole")?;
+    Some(!NON_TEXT_ROLES.contains(&role.as_str()))
+}
+
 fn set_timeout(element: &AXUIElement) {
     // SAFETY: a plain call on a valid element with a finite timeout.
     unsafe {
@@ -100,6 +160,16 @@ fn string_attribute(element: &AXUIElement, name: &str) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_roles_that_rule_text_out_are_the_plain_widgets_not_the_editors() {
+        for editor in
+            ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea", "AXGroup", "AXScrollArea"]
+        {
+            assert!(!NON_TEXT_ROLES.contains(&editor), "{editor} may hold text");
+        }
+        assert!(NON_TEXT_ROLES.contains(&"AXButton") && NON_TEXT_ROLES.contains(&"AXList"));
+    }
 
     #[test]
     fn the_queries_never_crash_whatever_the_permission_or_focus_state_is() {

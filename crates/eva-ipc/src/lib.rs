@@ -251,6 +251,15 @@ pub enum WorkerToShell {
         /// Correlates with the ping.
         request_id: uuid::Uuid,
     },
+    /// Something the user should know that is neither an error nor a result
+    /// of its own: "copied, paste it with ⌘V". The request still ends with
+    /// its own `Done`, which does not override this.
+    Notice {
+        /// The request it is about.
+        request_id: uuid::Uuid,
+        /// What to tell the user, short.
+        message: String,
+    },
     /// Response to [`ShellToWorker::FlagLastDictation`] when it worked.
     DictationFlagged {
         /// Correlates with the request.
@@ -468,6 +477,7 @@ mod tests {
             },
             WorkerToShell::ConfirmationClosed { confirmation_id: request_id },
             WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
+            WorkerToShell::Notice { request_id, message: "copiado".into() },
             WorkerToShell::Pong { request_id },
         ];
 

@@ -36,7 +36,9 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
         | WorkerToShell::ConfirmationRequested { .. }
         | WorkerToShell::ConfirmationClosed { .. }
         | WorkerToShell::Pong { .. } => None,
-        WorkerToShell::DictationFlagged { message, .. } => Line::out(message.clone()),
+        WorkerToShell::DictationFlagged { message, .. } | WorkerToShell::Notice { message, .. } => {
+            Line::out(message.clone())
+        }
         WorkerToShell::Transcript { raw, cleaned, .. } => {
             Line::out(format!("transcript crudo:     {raw}\ntranscript limpio:    {cleaned}"))
         }
