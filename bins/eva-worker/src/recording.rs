@@ -49,9 +49,19 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let capture = Arc::new(Mutex::new(Capture::Opening));
-    *recording = Some(RecordingSession { request_id, capture: Arc::clone(&capture), buffer: Arc::clone(&buffer) });
+    let streaming = Arc::new(Mutex::new(None));
+    *recording = Some(RecordingSession {
+        request_id,
+        capture: Arc::clone(&capture),
+        buffer: Arc::clone(&buffer),
+        streaming: Arc::clone(&streaming),
+    });
     drop(recording);
     ctx.events.state(request_id, WorkerState::Listening);
+    #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+    {
+        *streaming.lock().unwrap() = crate::streaming::start(ctx, request_id, Arc::clone(&buffer));
+    }
 
     let source = Arc::clone(&audio.source);
     let job_ctx = Arc::clone(ctx);
@@ -90,6 +100,11 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
             }
         }
     });
+}
+
+/// Whether `request_id` is still the recording in progress.
+pub(crate) fn still_recording(ctx: &WorkerContext, request_id: Uuid) -> bool {
+    ctx.recording().as_ref().is_some_and(|s| s.request_id == request_id)
 }
 
 /// The microphone would not open: the recording is over before it began.
@@ -148,6 +163,8 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         return;
     };
     let handle = close(&session);
+    #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+    let streaming = session.streaming.lock().unwrap().take();
     ctx.events.state(request_id, WorkerState::Thinking);
 
     let job_ctx = Arc::clone(ctx);
@@ -159,11 +176,21 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         }
         #[allow(clippy::unwrap_used)] // only poisoned if the capture callback panicked, forbidden by workspace policy
         let samples = std::mem::take(&mut *session.buffer.lock().unwrap());
-        transcribe_and_process(&job_ctx, request_id, samples).await;
+        // What was transcribed while the key was down is not done again.
+        let streamed = match streaming {
+            Some(streaming) => streaming.finish().await,
+            None => crate::streaming::Streamed::default(),
+        };
+        transcribe_and_process(&job_ctx, request_id, samples, streamed).await;
     });
 }
 
-async fn transcribe_and_process(ctx: &Arc<WorkerContext>, request_id: Uuid, samples: Vec<f32>) {
+async fn transcribe_and_process(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    samples: Vec<f32>,
+    streamed: crate::streaming::Streamed,
+) {
     if is_silence(&samples) {
         tracing::info!(samples = samples.len(), "grabación sin voz; no se transcribe");
         ctx.events.state(request_id, WorkerState::Idle);
@@ -184,10 +211,25 @@ async fn transcribe_and_process(ctx: &Arc<WorkerContext>, request_id: Uuid, samp
     // Whisper/Canary inference is CPU-bound and takes real time; running it
     // on this async task's thread would hold up everything else on it (an
     // agent's event streaming, a cancel) for that whole duration.
+    //
+    // A long dictation already had its finished stretches transcribed while
+    // the key was down; only what came after the last of them is left.
+    let tail = samples[streamed.upto.min(samples.len())..].to_vec();
     let stt = Arc::clone(&audio.stt);
-    let transcript = tokio::task::spawn_blocking(move || stt.transcribe(&samples)).await;
+    let transcript = tokio::task::spawn_blocking(move || {
+        if streamed.upto > 0 && is_silence(&tail) {
+            return Ok(eva_audio::Transcript { text: String::new() });
+        }
+        stt.transcribe(&tail)
+    })
+    .await;
     match transcript {
-        Ok(Ok(transcript)) => crate::dictation::process_text(ctx, request_id, &transcript.text).await,
+        Ok(Ok(transcript)) => {
+            let mut texts = streamed.texts;
+            texts.push(transcript.text);
+            let text = texts.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+            crate::dictation::process_text(ctx, request_id, &text).await;
+        }
         Ok(Err(e)) => ctx.events.fail(request_id, e.to_string()),
         Err(join_error) => ctx.events.fail(request_id, format!("la tarea de transcripción falló: {join_error}")),
     }

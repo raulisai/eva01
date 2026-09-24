@@ -78,6 +78,12 @@ struct Cli {
     #[arg(long, default_value = "Adán")]
     wake_word: String,
 
+    /// Mide como si el audio se hubiera hablado en vivo: se transcribe y formatea
+    /// lo ya dicho mientras se habla (como hace EVA01) y solo cuenta la espera
+    /// de después de soltar la tecla: la última cola de audio y la última frase.
+    #[arg(long)]
+    streaming: bool,
+
     /// Muestra también lo que devolvió el modelo de voz antes de formatear,
     /// para saber si un error es del oído o del formato.
     #[arg(long)]
@@ -142,16 +148,16 @@ fn main() {
         return;
     }
 
-    let formatter: Box<dyn Formatter> = if cli.apple_intelligence {
+    let formatter: std::sync::Arc<dyn Formatter> = if cli.apple_intelligence {
         match eva_text::AppleIntelligenceFormatter::new() {
-            Some(formatter) => Box::new(formatter),
+            Some(formatter) => std::sync::Arc::new(formatter),
             None => {
                 eprintln!("Apple Intelligence no está disponible en este equipo; usa el eval sin --apple-intelligence");
                 std::process::exit(2);
             }
         }
     } else {
-        Box::new(RuleOnlyFormatter)
+        std::sync::Arc::new(RuleOnlyFormatter)
     };
 
     // The worker warms the formatter at startup, so the numbers exclude the
@@ -164,7 +170,7 @@ fn main() {
     let dictionary = Dictionary::new(cli.custom_words);
     let results: Vec<SampleResult> = samples
         .iter()
-        .filter_map(|sample| run_one_sample(sample, &stt, &dictionary, formatter.as_ref(), cli.strict))
+        .filter_map(|sample| run_one_sample(sample, &stt, &dictionary, &formatter, cli.strict, cli.streaming))
         .collect();
 
     print_report(&results, cli.strict, cli.apple_intelligence, cli.raw);
@@ -189,8 +195,9 @@ fn run_one_sample(
     sample: &corpus::Sample,
     stt: &dyn SpeechToText,
     dictionary: &Dictionary,
-    formatter: &dyn Formatter,
+    formatter: &std::sync::Arc<dyn Formatter>,
     strict: bool,
+    streaming: bool,
 ) -> Option<SampleResult> {
     let samples = match transcribe_rs::audio::read_wav_samples(&sample.wav_path) {
         Ok(samples) => samples,
@@ -200,21 +207,29 @@ fn run_one_sample(
         }
     };
 
-    let start = Instant::now();
-    let transcript = match stt.transcribe(&samples) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{}: la transcripción falló: {e}", sample.name);
-            return None;
+    let (transcript, stt_latency, cleaned, format_latency) = if streaming {
+        match stream_like_a_live_recording(&samples, stt, dictionary, formatter) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("{}: la transcripción falló: {e}", sample.name);
+                return None;
+            }
         }
+    } else {
+        let start = Instant::now();
+        let transcript = match stt.transcribe(&samples) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{}: la transcripción falló: {e}", sample.name);
+                return None;
+            }
+        };
+        let stt_latency = start.elapsed();
+        let start = Instant::now();
+        let cleaned = eva_text::clean(&transcript.text, dictionary, formatter.as_ref());
+        (transcript, stt_latency, cleaned, start.elapsed())
     };
-    let stt_latency = start.elapsed();
-
-    let start = Instant::now();
-    let cleaned = eva_text::clean(&transcript.text, dictionary, formatter);
-    let format_latency = start.elapsed();
     let hypothesis = cleaned.formatted;
-
     let wer_result = if strict {
         wer::word_error_rate(&sample.reference, &hypothesis)
     } else {
@@ -233,6 +248,40 @@ fn run_one_sample(
         hypothesis,
         has_surviving_filler,
     })
+}
+
+/// Replays `samples` the way the worker meets a live recording: every 250 ms
+/// the audio so far is looked at for a pause, each finished stretch is
+/// transcribed and the text so far formatted ahead (into a remembering
+/// formatter); when the "key comes up" only the tail is transcribed and the
+/// whole text formatted. Returns the transcript and the two waits *after that
+/// moment* — the ones the user feels.
+fn stream_like_a_live_recording(
+    samples: &[f32],
+    stt: &dyn SpeechToText,
+    dictionary: &Dictionary,
+    formatter: &std::sync::Arc<dyn Formatter>,
+) -> Result<(eva_audio::Transcript, Duration, eva_text::CleanedTranscript, Duration), eva_audio::TranscribeError> {
+    const STEP: usize = eva_audio::TARGET_SAMPLE_RATE as usize / 4;
+    let cache = eva_text::CachingFormatter::new(std::sync::Arc::clone(formatter));
+    let (mut upto, mut texts) = (0, Vec::new());
+    for heard in (STEP..samples.len()).step_by(STEP) {
+        let Some(cut) = eva_audio::segment::cut_while_recording(&samples[upto..heard]) else { continue };
+        let text = stt.transcribe(&samples[upto..upto + cut])?.text;
+        upto += cut;
+        if !text.trim().is_empty() {
+            texts.push(text);
+        }
+        let _ = eva_text::clean(&texts.join(" "), dictionary, &cache);
+    }
+
+    let start = Instant::now();
+    texts.push(stt.transcribe(&samples[upto..])?.text);
+    let stt_latency = start.elapsed();
+    let text = texts.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+    let start = Instant::now();
+    let cleaned = eva_text::clean(&text, dictionary, &cache);
+    Ok((eva_audio::Transcript { text }, stt_latency, cleaned, start.elapsed()))
 }
 
 fn contains_filler(text: &str) -> bool {

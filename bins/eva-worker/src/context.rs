@@ -92,6 +92,8 @@ pub(crate) struct RecordingSession {
     pub(crate) request_id: Uuid,
     pub(crate) capture: Arc<Mutex<Capture>>,
     pub(crate) buffer: Arc<Mutex<Vec<f32>>>,
+    /// The work done on it while it is still going (`crate::streaming`).
+    pub(crate) streaming: Arc<Mutex<Option<crate::streaming::Streaming>>>,
 }
 
 /// Where the microphone stream of a recording stands. Opening it happens off

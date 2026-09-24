@@ -10,6 +10,7 @@
 
 pub mod apple_intelligence;
 pub mod dictionary;
+mod cache;
 mod faithfulness;
 pub mod filler;
 pub mod formatter;
@@ -22,6 +23,7 @@ pub mod style;
 
 pub use apple_intelligence::AppleIntelligenceFormatter;
 pub use dictionary::Dictionary;
+pub use cache::CachingFormatter;
 pub use formatter::{warm_up, FormatError, Formatter, RuleOnlyFormatter};
 pub use normalize::fold_diacritics;
 pub use remote::{OpenAiCompatibleFormatter, RemoteAssisted};

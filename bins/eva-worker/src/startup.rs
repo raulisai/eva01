@@ -102,7 +102,8 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         desktop: Arc::new(eva_mcp::SystemDesktop::with_voice(config.feedback.voice.clone())),
         agents: eva_agents::registry_with_priority(&config.agents.priority),
         audio,
-        formatter,
+        // Remembers what it formats, so a long dictation can be formatted ahead while it is spoken.
+        formatter: Arc::new(eva_text::CachingFormatter::new(formatter)),
         events,
         mcp,
         worktrees_dir: support.join("worktrees"),

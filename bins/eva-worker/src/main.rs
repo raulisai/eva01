@@ -17,6 +17,7 @@ mod orphans;
 mod recording;
 mod rpc;
 mod startup;
+mod streaming;
 mod tasks;
 #[cfg(test)]
 mod testkit;

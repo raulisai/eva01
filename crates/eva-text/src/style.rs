@@ -8,7 +8,7 @@
 //! chatbot instead of formatting it.
 
 /// How the text should be presented in the app it is going into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Style {
     /// Ordinary prose: capitalized, closed with punctuation.
     #[default]

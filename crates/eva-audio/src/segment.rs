@@ -49,6 +49,71 @@ pub fn split_at_pauses(samples: &[f32]) -> Vec<&[f32]> {
     pieces
 }
 
+/// Nothing is cut while less than this is waiting: a short dictation is
+/// transcribed whole, when the key comes up, exactly as before.
+const STREAM_MIN: usize = 8 * RATE;
+
+/// A piece cut while recording is at least this long: shorter ones cost a
+/// model call each and give it less to go on.
+const STREAM_PIECE_MIN: usize = 5 * RATE;
+
+/// The newest audio is never cut off: the speaker may be in the middle of a word.
+const STREAM_GUARD: usize = 7 * RATE / 10;
+
+/// A pause is this many quiet frames in a row (300 ms): a breath between
+/// phrases, not the gap inside a word.
+const PAUSE_FRAMES: usize = 6;
+
+/// A frame is quiet below this share of how loud speech is in this very
+/// recording (its 80th-percentile frame), so it holds for any microphone gain.
+const QUIET_SHARE: f64 = 0.04;
+
+/// Below this the recording is silence, whatever the share says.
+const SILENCE_ENERGY: f64 = 1e-6;
+
+/// While the user is still speaking: where the audio so far can be cut so that
+/// the piece before the cut is transcribed now and only the rest waits for
+/// the key to come up. `None` until there is enough and a real pause in it.
+///
+/// A cut is only ever made in a pause of at least 300 ms, as near the newest
+/// audio as the 20 s limit allows; with no pause at all before that limit, at
+/// the quietest point near it, as [`split_at_pauses`] would.
+pub fn cut_while_recording(samples: &[f32]) -> Option<usize> {
+    if samples.len() < STREAM_MIN {
+        return None;
+    }
+    let energies: Vec<f64> = samples
+        .as_chunks::<FRAME>()
+        .0
+        .iter()
+        .map(|frame| frame.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / FRAME as f64)
+        .collect();
+    let mut sorted = energies.clone();
+    sorted.sort_by(f64::total_cmp);
+    let loud = sorted.get(sorted.len() * 4 / 5).copied().unwrap_or(0.0);
+    if loud < SILENCE_ENERGY {
+        return None;
+    }
+    let quiet = |frame: usize| energies[frame] <= loud * QUIET_SHARE;
+
+    let last_frame = ((samples.len() - STREAM_GUARD).min(MAX_LEN) / FRAME).min(energies.len());
+    let first_frame = STREAM_PIECE_MIN / FRAME;
+    let mut end = last_frame;
+    while end >= first_frame + PAUSE_FRAMES {
+        // The pause that ends at `end`, if the PAUSE_FRAMES frames before it are all quiet.
+        if (end - PAUSE_FRAMES..end).all(quiet) {
+            // Extend it back to its start, then cut in the middle.
+            let mut start = end - PAUSE_FRAMES;
+            while start > first_frame && quiet(start - 1) {
+                start -= 1;
+            }
+            return Some((start + end) / 2 * FRAME);
+        }
+        end -= 1;
+    }
+    (samples.len() >= MAX_LEN + STREAM_GUARD).then(|| quietest_point(samples, MAX_LEN - SEARCH_LEN, MAX_LEN))
+}
+
 /// The middle of the quietest 50 ms window that starts in `earliest..latest`
 /// (the latest one on a tie, so pieces come out as long as they can).
 fn quietest_point(samples: &[f32], earliest: usize, latest: usize) -> usize {
@@ -123,6 +188,49 @@ mod tests {
             let last = pieces.last().unwrap();
             assert!(last.len() >= MIN_TAIL, "{total}: last piece is {} samples", last.len());
         }
+    }
+
+    #[test]
+    fn nothing_is_cut_until_there_is_enough_and_a_pause_in_it() {
+        assert_eq!(cut_while_recording(&speech_with_gaps(7, &[(3.0, 3.5)])), None, "too short");
+        assert_eq!(cut_while_recording(&vec![0.3; 12 * RATE]), None, "12 s with no pause: keep listening");
+        assert_eq!(cut_while_recording(&vec![0.0; 12 * RATE]), None, "silence is not speech");
+    }
+
+    #[test]
+    fn a_pause_in_the_speech_so_far_is_where_the_first_piece_ends() {
+        // 12 s so far, a breath at 9.0–9.5 s, speech again after it.
+        let samples = speech_with_gaps(12, &[(9.0, 9.5)]);
+        let cut = cut_while_recording(&samples).expect("a pause to cut at") as f32 / RATE as f32;
+        assert!((9.0..=9.5).contains(&cut), "cut at {cut} s");
+    }
+
+    #[test]
+    fn the_latest_pause_wins_and_a_pause_too_early_or_too_late_does_not_count() {
+        // A breath at 2 s (too early: the piece would be a sliver) and at 6.0 s and 9.2 s;
+        // the newest 0.7 s stay unprocessed, so 11.8 s of pause at the end is not one.
+        let samples = speech_with_gaps(12, &[(2.0, 2.5), (6.0, 6.5), (9.2, 9.6), (11.6, 12.0)]);
+        let cut = cut_while_recording(&samples).unwrap() as f32 / RATE as f32;
+        assert!((9.2..=9.6).contains(&cut), "cut at {cut} s");
+    }
+
+    #[test]
+    fn a_short_gap_inside_a_word_is_not_a_pause() {
+        let samples = speech_with_gaps(12, &[(9.0, 9.15)]);
+        assert_eq!(cut_while_recording(&samples), None);
+    }
+
+    #[test]
+    fn the_same_pause_is_found_at_any_microphone_gain() {
+        let quiet_mic: Vec<f32> = speech_with_gaps(12, &[(9.0, 9.5)]).iter().map(|s| s * 0.05).collect();
+        assert!(cut_while_recording(&quiet_mic).is_some());
+    }
+
+    #[test]
+    fn with_no_pause_past_the_limit_it_still_cuts_near_it() {
+        let samples = vec![0.3; 22 * RATE];
+        let cut = cut_while_recording(&samples).unwrap();
+        assert!(cut <= MAX_LEN && cut > MAX_LEN - SEARCH_LEN, "cut at {cut}");
     }
 
     proptest::proptest! {

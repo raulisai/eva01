@@ -180,7 +180,7 @@ fn remember(ctx: &WorkerContext, request_id: Uuid, cleaned: &eva_text::CleanedTr
 
 /// The style for the app with this bundle id: the user's own rules from
 /// `[styles]`, then the built-in table.
-fn style_for(ctx: &WorkerContext, bundle_id: Option<&str>) -> Style {
+pub(crate) fn style_for(ctx: &WorkerContext, bundle_id: Option<&str>) -> Style {
     let overrides: Vec<(String, Style)> = ctx
         .config
         .styles
