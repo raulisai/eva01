@@ -37,6 +37,12 @@ pub const BUILTINS: &[Builtin] = &[
         kind: "open_url",
     },
     Builtin {
+        say: "abre <app mal dicha>",
+        does: "si suena parecido a una app tuya, pregunta «¿quisiste decir…?»; al confirmar lo recuerda y la próxima vez no pregunta",
+        example: "abre Spotifi",
+        kind: "confirm_app",
+    },
+    Builtin {
         say: "abre <app que no tienes>",
         does: "avisa de que no está instalada y ofrece buscarla en la App Store",
         example: "abre Photoshop",

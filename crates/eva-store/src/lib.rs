@@ -20,6 +20,7 @@
 //! pretending a mutex-guarded SQLite call is non-blocking would be a lie the
 //! scheduler pays for later.
 
+pub mod app_aliases;
 pub mod audit;
 pub mod dictionary;
 mod error;
@@ -129,6 +130,23 @@ impl Store {
     /// See [`dictionary::list`].
     pub fn list_custom_words(&self) -> Result<Vec<String>, StoreError> {
         self.with_conn(dictionary::list)
+    }
+
+    // -- app aliases ------------------------------------------------------
+
+    /// See [`app_aliases::learn`].
+    pub fn learn_app_alias(&self, heard: &str, app: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| app_aliases::learn(c, heard, app))
+    }
+
+    /// See [`app_aliases::forget`].
+    pub fn forget_app_alias(&self, heard: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| app_aliases::forget(c, heard))
+    }
+
+    /// See [`app_aliases::list`].
+    pub fn list_app_aliases(&self) -> Result<Vec<(String, String)>, StoreError> {
+        self.with_conn(app_aliases::list)
     }
 
     // -- settings ---------------------------------------------------------

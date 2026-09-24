@@ -50,6 +50,7 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, voice.web_search(&query).await);
         }
+        Intent::ConfirmApp { heard, app, opening } => confirm_app(ctx, request_id, &heard, &app, opening, &voice).await,
         Intent::AppNotFound { name, opening } => app_not_found(ctx, request_id, &name, opening, &voice).await,
         Intent::Custom { phrase } => run_custom(ctx, request_id, &phrase, intent_json).await,
         Intent::AgentTask { prompt, provider } => {
@@ -62,6 +63,34 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             crate::dictation::edit_selection(ctx, request_id, instruction, intent_json).await;
         }
     }
+}
+
+/// "Abre Spotifi": asks "¿quisiste decir Spotify?". A yes does it and
+/// remembers how the user says it, so that name needs no question again; a
+/// no does nothing and remembers nothing.
+async fn confirm_app(
+    ctx: &WorkerContext,
+    request_id: Uuid,
+    heard: &str,
+    app: &str,
+    opening: bool,
+    voice: &impl DesktopService,
+) {
+    ctx.events.state(request_id, WorkerState::Executing);
+    let yes =
+        voice.ask_confirmation(&format!("¿Quisiste decir «{app}»?"), &format!("Oí «{heard}»")).await.unwrap_or(false);
+    if !yes {
+        ctx.events.fail(request_id, format!("no abro nada: «{heard}» no era «{app}»"));
+        return;
+    }
+    let folded = eva_text::fold_diacritics(heard).to_lowercase();
+    if let Err(e) = ctx.store.learn_app_alias(&folded, app) {
+        tracing::warn!("no se pudo guardar que «{heard}» es «{app}»: {e}");
+    }
+    ctx.app_index.learn(heard, app);
+    tracing::info!(%heard, %app, "aprendido: así dices esta app");
+    let outcome = if opening { voice.open_app(app).await } else { voice.close_app(app).await };
+    report(ctx, request_id, outcome);
 }
 
 /// "Abre Photoshop" without Photoshop: says so, and — for opening — offers to
@@ -265,6 +294,31 @@ mod tests {
         let mut rig = with_commands("[[commands]]\nsay = \"abre brave\"").build();
         rig.run(typed("Adán, abre brave")).await;
         assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_misheard_app_name_is_confirmed_once_and_then_understood_without_asking() {
+        let apps =
+            crate::apps::AppCatalog::fixed(eva_intent::AppIndex::new(vec![eva_intent::AppEntry::new("Spotify")]));
+        let mut rig = Rig::builder().apps(apps).build();
+
+        let declined = rig.run_answering(typed("Adán, abre Spotifi"), false).await;
+        assert!(
+            declined
+                .iter()
+                .any(|e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("Spotify"))),
+            "{declined:?}"
+        );
+        assert!(rig.desktop.calls().is_empty(), "a no opens nothing");
+        assert!(rig.ctx.store.list_app_aliases().unwrap().is_empty(), "and teaches nothing");
+
+        rig.run_answering(typed("Adán, abre Spotifi"), true).await;
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Spotify".to_string())]);
+        assert_eq!(rig.ctx.store.list_app_aliases().unwrap(), vec![("spotifi".to_string(), "Spotify".to_string())]);
+
+        let again = rig.run(typed("Adán, abre Spotifi")).await;
+        assert!(!again.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })), "no second question");
+        assert_eq!(rig.desktop.calls().len(), 2);
     }
 
     #[tokio::test]

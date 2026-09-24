@@ -92,9 +92,11 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     let gateway_socket = endpoint.as_ref().map(|e| e.socket.clone());
 
     let audio = load_audio(&config, &support, &wake_word);
+    let app_catalog =
+        crate::apps::AppCatalog::new(scan_applications).with_learned(store.list_app_aliases().unwrap_or_default());
     let ctx = Arc::new(WorkerContext::new(WorkerDeps {
         store,
-        app_index: crate::apps::AppCatalog::new(scan_applications),
+        app_index: app_catalog,
         wake_word,
         base_dir: std::env::current_dir()?,
         desktop: Arc::new(eva_mcp::SystemDesktop::with_voice(config.feedback.voice.clone())),

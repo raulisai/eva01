@@ -42,6 +42,7 @@ impl AppEntry {
 }
 
 /// A queryable set of applications.
+#[derive(Debug, Clone)]
 pub struct AppIndex {
     apps: Vec<AppEntry>,
 }
@@ -202,6 +203,12 @@ impl AppIndex {
     /// spelling. `None` rather than a guess: a wrong app opening is a worse
     /// outcome than "didn't understand".
     pub fn find(&self, query: &str) -> Option<&AppEntry> {
+        self.find_guess(query).map(|(app, _)| app)
+    }
+
+    /// Like [`AppIndex::find`], also saying whether the match is only a guess
+    /// from spelling (a misheard name) — the case worth asking about.
+    pub fn find_guess(&self, query: &str) -> Option<(&AppEntry, bool)> {
         let query = words(query);
         if query.is_empty() {
             return None;
@@ -218,7 +225,17 @@ impl AppIndex {
                     // ("Visual Studio Code" over "…Code - Insiders").
                     .then_with(|| b.0.canonical_name.len().cmp(&a.0.canonical_name.len()))
             })
-            .map(|(app, _, _)| app)
+            .map(|(app, tier, _)| (app, tier == Tier::Fuzzy))
+    }
+
+    /// Makes `heard` an exact name of `canonical_name` from now on — how the
+    /// user says it, confirmed. `false` if no such app is installed.
+    pub fn teach(&mut self, heard: &str, canonical_name: &str) -> bool {
+        let Some(app) = self.apps.iter_mut().find(|a| a.canonical_name == canonical_name) else { return false };
+        if !app.match_keys().any(|key| words(key) == words(heard)) {
+            app.aliases.push(heard.to_string());
+        }
+        true
     }
 }
 

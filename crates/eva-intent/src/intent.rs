@@ -43,6 +43,18 @@ pub enum Intent {
         app: String,
     },
 
+    /// "Adán, abre Spotifi": close in spelling to an installed app but not a
+    /// name it answers to. The caller asks "¿quisiste decir Spotify?" and,
+    /// on a yes, remembers it, so the next time it is exact.
+    ConfirmApp {
+        /// What was heard, as an app name.
+        heard: String,
+        /// The installed app it is probably meant to be.
+        app: String,
+        /// `true` for "abre", `false` for "cierra".
+        opening: bool,
+    },
+
     /// "Adán, abre github.com/foo" — open a URL directly, no app resolution needed.
     OpenUrl {
         /// The URL as dictated (scheme added by the caller if missing).
@@ -153,8 +165,9 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
         return Intent::AgentTask { prompt: task.to_string(), provider: Some(provider.to_string()) };
     }
 
+    let plainly = without_courtesy(trimmed);
     for (verb, build) in RULES {
-        if let Some(rest) = strip_verb(trimmed, verb) {
+        if let Some(rest) = strip_verb(plainly, verb) {
             return build(rest, app_index);
         }
     }
@@ -166,15 +179,81 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
 /// the command, and what to build from the rest of the text.
 type RuleBuilder = fn(&str, &AppIndex) -> Intent;
 const RULES: &[(&[&str], RuleBuilder)] = &[
-    (&["abre", "abrir"], build_open),
-    (&["cierra", "cerrar"], build_close),
-    (&["busca", "buscar"], build_search),
+    (&["abre", "abrir", "abres", "abras"], build_open),
+    (&["cierra", "cerrar", "cierras", "cierres"], build_close),
+    (&["busca", "buscar", "buscas", "busques"], build_search),
     // Both spellings, not just the accented one: `strip_verb` (unlike the
     // wake-word gate) does not accent-fold, and this session's own testing
     // found an STT engine drop a tilde on a much more common word — no
     // reason to assume "continúa" survives every engine unaccented-safe.
     (&["continúa", "continua", "continuar"], build_continue),
 ];
+
+/// Ways of asking politely that come before the verb, folded (no accents),
+/// longest first: "me puedes abrir Spotify", "por favor abre Spotify".
+const COURTESY: &[&[&str]] = &[
+    &["me", "haces", "el", "favor", "de"],
+    &["quiero", "que", "me"],
+    &["necesito", "que", "me"],
+    &["me", "podrias"],
+    &["me", "puedes"],
+    &["me", "podria"],
+    &["por", "favor"],
+    &["quiero", "que"],
+    &["necesito", "que"],
+    &["podrias"],
+    &["puedes"],
+    &["podria"],
+    &["quiero"],
+    &["necesito"],
+    &["oye"],
+    &["hola"],
+    &["ok"],
+    &["okay"],
+    &["pues"],
+    &["entonces"],
+    &["ahora"],
+    &["me"],
+];
+
+/// `text` without a polite lead-in ("¿me puedes …?", "por favor …") or a
+/// trailing "por favor", so "me puedes abrir Spotify" is "abrir Spotify".
+fn without_courtesy(text: &str) -> &str {
+    let mut rest = text.trim_start_matches(|c: char| !c.is_alphanumeric());
+    'lead: loop {
+        for phrase in COURTESY {
+            if let Some(after) = strip_words(rest, phrase) {
+                rest = after;
+                continue 'lead;
+            }
+        }
+        break;
+    }
+    let body = rest.trim_end_matches(|c: char| !c.is_alphanumeric());
+    let folded = eva_text::fold_diacritics(body).to_lowercase();
+    if folded.ends_with(" por favor") {
+        let keep = body.chars().count() - " por favor".chars().count();
+        return body.char_indices().nth(keep).map_or(body, |(end, _)| &body[..end]);
+    }
+    rest
+}
+
+/// `text` without its first words if they are `words` (case, accents and
+/// punctuation aside).
+fn strip_words<'a>(text: &'a str, words: &[&str]) -> Option<&'a str> {
+    let mut rest = text;
+    for word in words {
+        let rest_trimmed = rest.trim_start();
+        let end = rest_trimmed.find(char::is_whitespace).unwrap_or(rest_trimmed.len());
+        let token = rest_trimmed[..end].trim_matches(|c: char| !c.is_alphanumeric());
+        if eva_text::fold_diacritics(token).to_lowercase() != *word {
+            return None;
+        }
+        rest = &rest_trimmed[end..];
+    }
+    let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || ",;:".contains(c));
+    (!rest.is_empty()).then_some(rest)
+}
 
 /// If `text` starts with one of `verbs` as a whole word, returns the rest of
 /// the text with that verb and the whitespace after it removed.
@@ -279,6 +358,11 @@ fn looks_like_an_app_name(rest: &str) -> bool {
         && !words.iter().any(|w| NOT_AN_APP.contains(&w.as_str()))
 }
 
+/// The app `rest` names, and whether that is only a spelling guess.
+fn find_app<'a>(rest: &str, app_index: &'a AppIndex) -> Option<(&'a crate::apps::AppEntry, bool)> {
+    app_index.find_guess(rest).or_else(|| app_index.find_guess(app_name(rest)))
+}
+
 fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
     if let Some(url) = crate::spoken::spoken_url(rest) {
@@ -287,8 +371,11 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     if looks_like_url(rest) {
         return Intent::OpenUrl { url: rest.to_string() };
     }
-    match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
-        Some(app) => Intent::OpenApp { app: app.canonical_name.clone() },
+    match find_app(rest, app_index) {
+        Some((app, true)) => {
+            Intent::ConfirmApp { heard: app_name(rest).to_string(), app: app.canonical_name.clone(), opening: true }
+        }
+        Some((app, false)) => Intent::OpenApp { app: app.canonical_name.clone() },
         // A short name that no installed app answers to: not installed. A
         // longer or project-shaped request ("abre mi proyecto de X") is what
         // an agent with project context is for, better than a classifier guessing.
@@ -299,8 +386,11 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
 
 fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
-    match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
-        Some(app) => Intent::CloseApp { app: app.canonical_name.clone() },
+    match find_app(rest, app_index) {
+        Some((app, true)) => {
+            Intent::ConfirmApp { heard: app_name(rest).to_string(), app: app.canonical_name.clone(), opening: false }
+        }
+        Some((app, false)) => Intent::CloseApp { app: app.canonical_name.clone() },
         None if looks_like_an_app_name(rest) => {
             Intent::AppNotFound { name: app_name(rest).to_string(), opening: false }
         }
@@ -697,5 +787,30 @@ mod tests {
         fn parse_never_panics_on_arbitrary_command_text(text in ".*") {
             let _ = parse(&text, &sample_index());
         }
+    }
+
+    #[test]
+    fn a_polite_request_is_the_same_command_as_the_bare_one() {
+        let index = AppIndex::new(vec![crate::apps::AppEntry::new("Spotify")]);
+        let open = Intent::OpenApp { app: "Spotify".to_string() };
+        for said in [
+            "¿me puedes abrir Spotify?",
+            "por favor abre Spotify",
+            "abre Spotify por favor",
+            "Oye, ¿podrías abrir Spotify?",
+            "quiero que me abras Spotify",
+            "me abres Spotify",
+            "abrir Spotify",
+        ] {
+            assert_eq!(parse(said, &index), open, "{said}");
+        }
+        assert_eq!(parse("me puedes cerrar Spotify", &index), Intent::CloseApp { app: "Spotify".to_string() });
+    }
+
+    #[test]
+    fn courtesy_alone_does_not_turn_a_task_into_a_command() {
+        let index = AppIndex::new(vec![crate::apps::AppEntry::new("Spotify")]);
+        assert!(matches!(parse("me puedes ayudar con el login", &index), Intent::AgentTask { .. }));
+        assert!(matches!(parse("por favor", &index), Intent::AgentTask { .. }));
     }
 }

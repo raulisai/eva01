@@ -167,6 +167,11 @@ fn migrate_to_v1(conn: &Connection) -> Result<(), StoreError> {
             word TEXT PRIMARY KEY
         );
 
+        CREATE TABLE IF NOT EXISTS app_aliases (
+            heard TEXT PRIMARY KEY,
+            app   TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL

@@ -20,6 +20,9 @@ pub struct AppCatalog {
     index: RwLock<Arc<AppIndex>>,
     scan: Option<Scan>,
     last_scan: Mutex<Instant>,
+    /// How the user says their apps (`heard`, canonical name), confirmed
+    /// once; applied on top of every scan.
+    learned: Mutex<Vec<(String, String)>>,
 }
 
 impl AppCatalog {
@@ -30,13 +33,40 @@ impl AppCatalog {
             index: RwLock::new(Arc::new(index)),
             scan: Some(Box::new(scan)),
             last_scan: Mutex::new(Instant::now()),
+            learned: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Starts out knowing how the user says their apps.
+    #[must_use]
+    pub fn with_learned(self, learned: Vec<(String, String)>) -> AppCatalog {
+        for (heard, app) in learned {
+            self.learn(&heard, &app);
+        }
+        self
+    }
+
+    /// From now on `heard` is an exact name of `app`, through rescans too.
+    pub fn learn(&self, heard: &str, app: &str) {
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        self.learned.lock().unwrap().push((heard.to_string(), app.to_string()));
+        let mut index = (*self.current()).clone();
+        index.teach(heard, app);
+        #[allow(clippy::unwrap_used)] // as above
+        {
+            *self.index.write().unwrap() = Arc::new(index);
         }
     }
 
     /// A catalog that is exactly `index` and never rescans (tests).
     #[cfg(test)]
     pub fn fixed(index: AppIndex) -> AppCatalog {
-        AppCatalog { index: RwLock::new(Arc::new(index)), scan: None, last_scan: Mutex::new(Instant::now()) }
+        AppCatalog {
+            index: RwLock::new(Arc::new(index)),
+            scan: None,
+            last_scan: Mutex::new(Instant::now()),
+            learned: Mutex::new(Vec::new()),
+        }
     }
 
     /// Lets the next [`AppCatalog::refresh`] scan at once (tests).
@@ -64,7 +94,12 @@ impl AppCatalog {
         }
         *last = Instant::now();
         drop(last);
-        let fresh = Arc::new(scan());
+        let mut fresh = scan();
+        #[allow(clippy::unwrap_used)] // as above
+        for (heard, app) in self.learned.lock().unwrap().iter() {
+            fresh.teach(heard, app);
+        }
+        let fresh = Arc::new(fresh);
         #[allow(clippy::unwrap_used)] // as above
         {
             *self.index.write().unwrap() = fresh;
