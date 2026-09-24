@@ -22,23 +22,14 @@ pub struct Piece {
     pub cut_mid_sentence: bool,
 }
 
-/// Words a new clause starts with: cutting *before* one of these reads as
-/// natural, cutting anywhere else splits a phrase ("presentó el | equipo").
-const CLAUSE_STARTERS: &[&str] = &[
-    "y",
-    "e",
-    "o",
-    "u",
+/// Words that open a clause with some weight of their own: cutting *before*
+/// one reads as natural, and the model's full stop there becomes a comma
+/// that belongs ("…del contrato nuevo, porque todavía…").
+const STRONG_STARTERS: &[&str] = &[
     "pero",
     "porque",
-    "pues",
-    "que",
-    "si",
     "aunque",
-    "cuando",
-    "mientras",
-    "donde",
-    "como",
+    "sino",
     "así",
     "entonces",
     "luego",
@@ -46,13 +37,28 @@ const CLAUSE_STARTERS: &[&str] = &[
     "además",
     "también",
     "finalmente",
+    "mientras",
+    "cuando",
+    "donde",
     "primero",
     "segundo",
-    "por",
-    "para",
-    "sin",
-    "sino",
-    "ya",
+    "y",
+    "e",
+    "o",
+    "u",
+];
+
+/// Words that often open a clause but just as often a plain phrase ("mándalo
+/// | por correo"): a cut before one of these is a last resort.
+const WEAK_STARTERS: &[&str] = &["que", "si", "como", "ya", "pues", "por", "para", "sin"];
+
+/// Words that bind to what follows them, so a cut right after one splits a
+/// phrase: "por | si", "así | que", "del | contrato", "lo | que".
+const BINDS_FORWARD: &[&str] = &[
+    "a", "al", "de", "del", "en", "con", "por", "para", "sin", "sobre", "entre", "hasta", "desde", "hacia", "así",
+    "ya", "que", "lo", "la", "el", "los", "las", "un", "una", "unos", "unas", "y", "e", "o", "u", "ni", "pero", "mi",
+    "tu", "su", "mis", "tus", "sus", "muy", "más", "me", "te", "se", "le", "les", "nos", "no", "si", "como", "cuando",
+    "porque", "aunque", "este", "esta", "ese", "esa", "aquel", "aquella",
 ];
 
 /// `text` as the pieces to format one by one, in order; joining them with
@@ -113,17 +119,23 @@ fn sentences<'a>(words: &'a [&'a str]) -> Vec<&'a [&'a str]> {
 }
 
 /// Where to cut `words` (more than [`PIECE_WORDS`] of them, no full stop
-/// inside): the last clause boundary in the final third of the window, else
-/// the end of the window.
+/// inside), looking at the final third of the window, latest first: after a
+/// comma; else before a strong clause word; else before a weak one; else at
+/// the window's end. A cut never falls right after a word that binds to the
+/// next one, which is what split "por si" and "así que" in a real dictation.
 fn clause_boundary(words: &[&str]) -> usize {
-    let earliest = PIECE_WORDS * 2 / 3;
-    (earliest..=PIECE_WORDS)
-        .rev()
-        .find(|&cut| {
-            let after_comma = words[cut - 1].ends_with([',', ';', ':']);
-            let before_starter = words.get(cut).is_some_and(|w| CLAUSE_STARTERS.contains(&w.to_lowercase().as_str()));
-            after_comma || before_starter
-        })
+    let lower = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    let splits_a_phrase = |cut: usize| BINDS_FORWARD.contains(&lower(words[cut - 1]).as_str());
+    let before = |cut: usize, starters: &[&str]| {
+        !splits_a_phrase(cut) && words.get(cut).is_some_and(|w| starters.contains(&lower(w).as_str()))
+    };
+    let candidates = || (PIECE_WORDS * 2 / 3..=PIECE_WORDS).rev();
+
+    candidates()
+        .find(|&cut| words[cut - 1].ends_with([',', ';', ':']))
+        .or_else(|| candidates().find(|&cut| before(cut, STRONG_STARTERS)))
+        .or_else(|| candidates().find(|&cut| before(cut, WEAK_STARTERS)))
+        .or_else(|| candidates().find(|&cut| !splits_a_phrase(cut)))
         .unwrap_or(PIECE_WORDS)
 }
 
@@ -217,6 +229,34 @@ mod tests {
         assert_eq!(count(&pieces[0]), 25);
         assert!(pieces[1].text.starts_with("porque"), "{pieces:?}");
         assert!(pieces[0].cut_mid_sentence && !pieces[1].cut_mid_sentence);
+    }
+
+    #[test]
+    fn a_cut_never_splits_por_si_or_asi_que() {
+        // The two bad seams of a real 70 s dictation.
+        let copia = "recuérdame también llevar la presentación impresa y una copia del acuerdo anterior \
+                     por si hay que compararlos durante la conversación y además revisar el presupuesto con calma";
+        let lista = "el equipo de desarrollo terminó la versión nueva de la aplicación móvil y ya está lista para \
+                     pruebas así que te pido que coordines con marta para que la revisen antes de publicarla hoy";
+        for text in [format!("{copia} {copia}"), format!("{lista} {lista}")] {
+            let pieces = split_for_formatting(&text);
+            assert!(pieces.len() > 1);
+            for seam in pieces.windows(2) {
+                let end = seam[0].text.split_whitespace().last().unwrap();
+                let start = seam[1].text.split_whitespace().next().unwrap();
+                assert!(!BINDS_FORWARD.contains(&end), "cut after «{end}» before «{start}»: {pieces:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_strong_clause_word_beats_a_later_weak_one() {
+        // "pero" at word 22, "que" at word 27: the cut goes before "pero".
+        let mut words: Vec<String> = (0..45).map(|i| format!("p{i}")).collect();
+        words[21] = "pero".to_string();
+        words[26] = "que".to_string();
+        let pieces = split_for_formatting(&words.join(" "));
+        assert!(pieces[1].text.starts_with("pero"), "{pieces:?}");
     }
 
     #[test]

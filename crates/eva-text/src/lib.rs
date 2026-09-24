@@ -16,6 +16,8 @@ pub mod formatter;
 mod normalize;
 mod pieces;
 pub mod remote;
+mod repair;
+mod seams;
 pub mod style;
 
 pub use apple_intelligence::AppleIntelligenceFormatter;
@@ -52,7 +54,7 @@ pub fn clean(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter) -> C
 /// as a convention to remember.
 pub fn clean_styled(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter, style: Style) -> CleanedTranscript {
     let after_fillers = filler::remove_universal_fillers(raw);
-    let pre_formatted = dictionary.correct(&after_fillers, 0.88);
+    let pre_formatted = seams::mend_sentence_seams(&dictionary.correct(&after_fillers, 0.88));
 
     // A long dictation goes to the formatter a piece at a time (see
     // `pieces`): a piece that fails falls back alone, not the whole text.

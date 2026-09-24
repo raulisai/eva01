@@ -30,7 +30,16 @@ use std::time::{Duration, Instant};
 /// (`docs/PLAN.md` §2A) and need the context-aware formatter to go, so
 /// their presence here is exactly the signal this eval is meant to catch —
 /// not a bug in the pipeline being measured.
-const FILLER_WATCHLIST: &[&str] = &["eh", "este", "o sea", "pues", "bueno", "digo", "osea"];
+///
+/// Most of these are also ordinary words ("este coche", "será muy bueno"),
+/// so a word only counts in a filler's position: set off by a comma, as the
+/// speech model and the formatter punctuate a filler ("Bueno, vamos…").
+/// "o sea" is a filler wherever it appears.
+const FILLER_WATCHLIST: &[&str] = &["eh", "este", "pues", "bueno", "digo", "osea"];
+
+/// How long a clip may be and still count toward the latency goal
+/// (`docs/PLAN.md` §7: "p95 < 1200 ms, frase de 10 s").
+const SHORT_CLIP_SECS: f64 = 15.0;
 
 #[derive(Parser)]
 #[command(name = "eva-eval", about = "Corre el corpus de EVA01 y reporta WER, latencia y muletillas")]
@@ -59,14 +68,21 @@ struct Cli {
     /// camino real de un dictado (y su latencia) en este equipo.
     #[arg(long)]
     apple_intelligence: bool,
+
+    /// Muestra también lo que devolvió el modelo de voz antes de formatear,
+    /// para saber si un error es del oído o del formato.
+    #[arg(long)]
+    raw: bool,
 }
 
 struct SampleResult {
     name: String,
     wer: wer::WerResult,
+    audio_secs: f64,
     stt_latency: Duration,
     format_latency: Duration,
     reference: String,
+    transcript: String,
     hypothesis: String,
     has_surviving_filler: bool,
 }
@@ -125,7 +141,7 @@ fn main() {
         .filter_map(|sample| run_one_sample(sample, stt.as_ref(), &dictionary, formatter.as_ref(), cli.strict))
         .collect();
 
-    print_report(&results, cli.strict, cli.apple_intelligence);
+    print_report(&results, cli.strict, cli.apple_intelligence, cli.raw);
 }
 
 fn load_stt(padding: eva_audio::transcribe::Padding) -> Result<Box<dyn SpeechToText>, String> {
@@ -183,9 +199,11 @@ fn run_one_sample(
     Some(SampleResult {
         name: sample.name.clone(),
         wer: wer_result,
+        audio_secs: samples.len() as f64 / f64::from(eva_audio::TARGET_SAMPLE_RATE),
         stt_latency,
         format_latency,
         reference: sample.reference.clone(),
+        transcript: transcript.text.clone(),
         hypothesis,
         has_surviving_filler,
     })
@@ -193,12 +211,19 @@ fn run_one_sample(
 
 fn contains_filler(text: &str) -> bool {
     let folded = eva_text::fold_diacritics(text);
-    FILLER_WATCHLIST.iter().any(|filler| {
-        folded.split_whitespace().any(|word| word.trim_matches(|c: char| !c.is_alphanumeric()) == *filler)
-    })
+    let words: Vec<&str> = folded.split_whitespace().collect();
+    let core = |word: &str| word.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+    let o_sea = words.windows(2).any(|pair| core(pair[0]) == "o" && core(pair[1]) == "sea");
+    let set_off = words.iter().enumerate().any(|(i, word)| {
+        let after_comma = i > 0 && words[i - 1].ends_with(',');
+        let starts = i == 0 || words[i - 1].ends_with(['.', '?', '!']);
+        let followed_by_comma = word.ends_with(',');
+        FILLER_WATCHLIST.contains(&core(word).as_str()) && (followed_by_comma || (after_comma && starts))
+    });
+    o_sea || set_off
 }
 
-fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool) {
+fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool, raw: bool) {
     println!(
         "=== EVA01 — resultados del corpus ({} muestras · formateo: {} · WER {}) ===\n",
         results.len(),
@@ -216,6 +241,9 @@ fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool
             r.format_latency.as_millis(),
         );
         println!("  ref: {}", r.reference);
+        if raw {
+            println!("  stt: {}", r.transcript);
+        }
         println!("  hyp: {}", r.hypothesis);
     }
 
@@ -227,8 +255,10 @@ fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool
     let mean_wer = rates.iter().sum::<f64>() / rates.len() as f64;
     let perfect = rates.iter().filter(|r| **r == 0.0).count();
 
-    let stt: Vec<Duration> = results.iter().map(|r| r.stt_latency).collect();
-    let total: Vec<Duration> = results.iter().map(|r| r.stt_latency + r.format_latency).collect();
+    let short: Vec<&SampleResult> = results.iter().filter(|r| r.audio_secs <= SHORT_CLIP_SECS).collect();
+    let long: Vec<&SampleResult> = results.iter().filter(|r| r.audio_secs > SHORT_CLIP_SECS).collect();
+    let stt: Vec<Duration> = short.iter().map(|r| r.stt_latency).collect();
+    let total: Vec<Duration> = short.iter().map(|r| r.stt_latency + r.format_latency).collect();
     let fmt = |d: Option<Duration>| d.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".to_string());
     let filler_count = results.iter().filter(|r| r.has_surviving_filler).count();
 
@@ -239,15 +269,26 @@ fn print_report(results: &[SampleResult], strict: bool, apple_intelligence: bool
         results.len()
     );
     println!(
-        "Voz      p50 / p95:            {} / {}",
+        "Voz      p50 / p95:            {} / {}   ({} frases de hasta {SHORT_CLIP_SECS:.0} s)",
         fmt(percentile::percentile(&stt, 50.0)),
-        fmt(percentile::percentile(&stt, 95.0))
+        fmt(percentile::percentile(&stt, 95.0)),
+        short.len()
     );
     println!(
         "Voz+formato p50 / p95:         {} / {}   (la meta es p95 < 1200ms, sin contar el pegado)",
         fmt(percentile::percentile(&total, 50.0)),
         fmt(percentile::percentile(&total, 95.0))
     );
+    for r in &long {
+        let busy = (r.stt_latency + r.format_latency).as_secs_f64();
+        println!(
+            "Dictado largo {:<16} {:.0} s de audio → {:.1} s de espera ({:.2} s por segundo dictado)",
+            r.name,
+            r.audio_secs,
+            busy,
+            busy / r.audio_secs
+        );
+    }
     println!("Muletillas que sobrevivieron:  {filler_count}/{}", results.len());
     println!("\n(WER es diagnóstico, no bloquea release — docs/PLAN.md §7. Audio sintético, si viene de `say`: mide el modelo, no tu voz.)");
 }
@@ -260,12 +301,26 @@ mod tests {
     #[test]
     fn detects_a_watchlisted_filler_as_a_whole_word() {
         assert!(contains_filler("Bueno, vamos a hacerlo."));
-        assert!(contains_filler("pues claro que sí"));
+        assert!(contains_filler("Pues, claro que sí."));
     }
 
     #[test]
     fn is_accent_and_case_insensitive() {
-        assert!(contains_filler("ESTE es el punto"));
+        assert!(contains_filler("ESTE, es el punto"));
+        assert!(contains_filler("Mándalo, PUES, ya."));
+    }
+
+    #[test]
+    fn the_same_words_used_as_ordinary_words_are_not_fillers() {
+        assert!(!contains_filler("El clima de mañana será muy bueno."));
+        assert!(!contains_filler("Este es el punto."));
+        assert!(!contains_filler("Pues claro que sí."));
+    }
+
+    #[test]
+    fn o_sea_is_a_filler_wherever_it_is() {
+        assert!(contains_filler("Mándale el archivo, o sea, ya."));
+        assert!(contains_filler("o sea que no vienes"));
     }
 
     #[test]

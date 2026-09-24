@@ -91,6 +91,7 @@ fn main() {
 
     let supervisor = Supervisor::spawn(worker_binary_path());
     let mut shown_overlay: Option<OverlayContent> = None;
+    let started = Instant::now();
 
     event_loop.run(move |_event, _window_target, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + TICK);
@@ -166,6 +167,9 @@ fn main() {
                 None => overlay.hide(),
             }
             shown_overlay = content;
+        }
+        if shown_overlay.is_some() {
+            overlay.animate(started.elapsed().as_secs_f64());
         }
         tray.update(&model.tray(now));
     });

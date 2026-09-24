@@ -11,7 +11,7 @@
 //! stops being an overlay state and becomes a line in the tray.
 
 use eva_ipc::{TaskInfo, TaskState, WorkerState, WorkerToShell};
-use eva_macos::{OverlayContent, Tone};
+use eva_macos::{Activity, OverlayContent, Tone};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -399,10 +399,11 @@ impl ShellModel {
     /// everything (it is blocking something), then what the user is doing
     /// right now, then how the last thing went.
     pub fn overlay(&self) -> Option<OverlayContent> {
-        let show = |text: &str, tone| Some(OverlayContent { text: text.to_string(), tone });
+        let show = |text: &str, tone| Some(OverlayContent { text: text.to_string(), tone, activity: Activity::None });
+        let working = |text: &str, activity| Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity });
 
         if self.restarting {
-            return show("↻ Reiniciando EVA…", Tone::Neutral);
+            return working("Reiniciando EVA", Activity::Thinking);
         }
         if let Some(confirmation) = &self.confirmation {
             let text = format!(
@@ -415,15 +416,15 @@ impl ShellModel {
             return show(&text, Tone::Ask);
         }
         if self.requests.values().any(|t| t.phase == Phase::Listening) {
-            return show("● Escuchando…", Tone::Neutral);
+            return working("Escuchando", Activity::Listening);
         }
         if self.requests.values().any(|t| t.phase == Phase::Thinking) {
-            return show("◌ Pensando…", Tone::Neutral);
+            return working("Pensando", Activity::Thinking);
         }
         if self.requests.values().any(|t| t.phase == Phase::Executing) {
-            return show("▶ Ejecutando…", Tone::Neutral);
+            return working("Ejecutando", Activity::Executing);
         }
-        self.notice.as_ref().map(|n| OverlayContent { text: n.text.clone(), tone: n.tone })
+        self.notice.as_ref().map(|n| OverlayContent { text: n.text.clone(), tone: n.tone, activity: Activity::None })
     }
 
     /// What the tray should show, as of `now` (task ages are relative to it).
@@ -545,7 +546,7 @@ mod tests {
         let id = Uuid::new_v4();
 
         assert_eq!(model.press(t0, id), vec![Command::StartRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("● Escuchando…"));
+        assert_eq!(text(&model).as_deref(), Some("Escuchando"));
         assert_eq!(model.tray(t0).icon, TrayIcon::Listening);
     }
 
@@ -741,7 +742,7 @@ mod tests {
 
         let dictation = Uuid::new_v4();
         model.press(t0, dictation);
-        assert_eq!(text(&model).as_deref(), Some("● Escuchando…"));
+        assert_eq!(text(&model).as_deref(), Some("Escuchando"));
         model.release(t0);
         model.worker_event(t0, state(dictation, WorkerState::Done(true)));
         model.tick(t0 + secs(5));

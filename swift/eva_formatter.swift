@@ -95,7 +95,7 @@ Corregida: Necesito tres archivos y dos carpetas para mañana.
 Transcripción: cuando vas a llegar a la oficina
 Corregida: ¿Cuándo vas a llegar a la oficina?
 
-Transcripción: o sea este mandale el archivo a juan pero antes pregúntale si ya llegó a la oficina
+Transcripción: o sea este mándale el archivo a juan pero antes pregúntale si ya llegó a la oficina
 Corregida: Mándale el archivo a Juan, pero antes pregúntale si ya llegó a la oficina.
 
 Transcripción: que buena idea vamos a la playa
@@ -184,14 +184,27 @@ public func eva_formatter_is_available() -> Bool {
 /// vacío o no respondió a tiempo — un único caso de fallo desde el lado
 /// Rust, que siempre se resuelve degradando a `RuleOnlyFormatter`
 /// (docs/PLAN.md §3.3 punto 5: "el formateador nunca es la única vía").
-private func generate(instructions: String, prompt: String, timeoutSeconds: Double) -> UnsafeMutablePointer<CChar>? {
+///
+/// Decodificación codiciosa (greedy): siempre la continuación más probable.
+/// Un corrector no tiene nada que ganar con el azar, y con el muestreo por
+/// defecto la misma frase salía bien en una corrida y mal en la siguiente.
+/// `maximumResponseTokens` corta a tiempo una respuesta que se desboca
+/// (el modelo "contestando" en vez de corregir): lo que se corta así la
+/// guarda de Rust lo rechaza igual, pero sin esperar a que termine.
+private func generate(
+    instructions: String,
+    prompt: String,
+    maximumResponseTokens: Int,
+    timeoutSeconds: Double
+) -> UnsafeMutablePointer<CChar>? {
     let semaphore = DispatchSemaphore(value: 0)
     let box = ResultBox()
+    let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maximumResponseTokens)
 
     Task {
         do {
             let session = LanguageModelSession(instructions: instructions)
-            let response = try await session.respond(to: prompt)
+            let response = try await session.respond(to: prompt, options: options)
             box.value = response.content
         } catch {
             box.value = nil
@@ -214,6 +227,14 @@ private func generate(instructions: String, prompt: String, timeoutSeconds: Doub
         return nil
     }
     return strdup(output)
+}
+
+/// Tokens de sobra para una respuesta de hasta `allowingGrowth` veces el
+/// largo de `text`: en español un token rinde de 2 a 4 bytes de UTF-8, así
+/// que un token por cada 2 bytes, más un margen fijo para la puntuación y
+/// los signos de apertura, nunca corta una respuesta legítima.
+private func responseBudget(for text: String, allowingGrowth factor: Int) -> Int {
+    return text.utf8.count * factor / 2 + 48
 }
 
 private func string(_ pointer: UnsafePointer<CChar>?) -> String? {
@@ -240,7 +261,11 @@ public func eva_formatter_format(
     // Mismo formato "Transcripción / Corregida" que los ejemplos: un texto
     // suelto se lee como un turno de chat al que contestar; dentro de una
     // plantilla, como un dato a transformar.
-    return generate(instructions: instructions, prompt: "Transcripción: \(text)\nCorregida:", timeoutSeconds: timeoutSeconds)
+    return generate(
+        instructions: instructions,
+        prompt: "Transcripción: \(text)\nCorregida:",
+        maximumResponseTokens: responseBudget(for: text, allowingGrowth: 1),
+        timeoutSeconds: timeoutSeconds)
 }
 
 /// Reescribe `text` siguiendo `instruction` (modo edición). El texto y la
@@ -256,7 +281,11 @@ public func eva_formatter_rewrite(
         return nil
     }
     let prompt = "Instrucción: \(instruction)\nTexto: \(text)\nResultado:"
-    return generate(instructions: rewriteInstructions, prompt: prompt, timeoutSeconds: timeoutSeconds)
+    return generate(
+        instructions: rewriteInstructions,
+        prompt: prompt,
+        maximumResponseTokens: responseBudget(for: text, allowingGrowth: 3),
+        timeoutSeconds: timeoutSeconds)
 }
 
 /// Libera lo que `eva_formatter_format`/`eva_formatter_rewrite`

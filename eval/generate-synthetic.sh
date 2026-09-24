@@ -1,7 +1,8 @@
 #!/bin/sh
 # Genera un corpus SINTÉTICO de arranque en eval/audio/ con las voces en
 # español que trae macOS (`say`): frases cotidianas con ñ, acentos, cifras y
-# nombres, más una referencia por audio. Sirve para medir el modelo y la
+# nombres, una muy corta y un dictado continuo de ~70 s (el caso que más
+# costó: ver eval/README.md), más una referencia por audio. Sirve para medir el modelo y la
 # latencia en ESTE equipo sin grabar nada — no reemplaza tu voz real: el
 # corpus de verdad se cosecha con el uso (eval/README.md). Está en .gitignore
 # (eval/audio/), se regenera cuando quieras.
@@ -30,5 +31,6 @@ tarea_larga|Paulina|El cliente pidió que agreguemos un botón de exportar en la
 pregunta|Mónica|Cuándo vas a llegar a la oficina
 nombres|Paulina|Mándale el archivo a Juan García pero antes pregúntale si ya llegó
 corta|Mónica|Ya voy
+largo_70s|Paulina|Necesito que revises el informe de ventas del tercer trimestre y me digas si los números coinciden con lo que presentó el equipo de finanzas la semana pasada, porque el director quiere tener todo claro antes de la reunión del lunes por la mañana. Si encuentras diferencias, anótalas en un documento aparte y mándamelo por correo antes del viernes al mediodía, por favor. Después quiero que agendes una llamada con el cliente de Guadalajara para hablar del contrato nuevo, porque todavía faltan por definir los plazos de entrega y el precio de las licencias adicionales. Recuérdame también llevar la presentación impresa y una copia del acuerdo anterior, por si hay que compararlos durante la conversación. Por otro lado, el equipo de desarrollo terminó la versión nueva de la aplicación móvil y ya está lista para pruebas, así que te pido que coordines con Marta para que la revisen antes de publicarla en las tiendas. Finalmente, no olvides reservar la sala grande para el jueves en la tarde, porque vienen tres personas de otra oficina y necesitamos espacio para trabajar con calma. Muchas gracias por todo, y avísame si algo no queda claro.
 CORPUS
 echo "Corpus sintético en $OUT ($(ls "$OUT"/*.wav | wc -l | tr -d ' ') audios)"

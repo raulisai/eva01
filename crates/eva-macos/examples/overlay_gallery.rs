@@ -2,7 +2,7 @@
 //! so the layout can be looked at (text that wraps, four-line questions…)
 //! instead of trusted. Run: `cargo run -p eva-macos --example overlay_gallery -- <out dir>`.
 
-use eva_macos::{Overlay, OverlayContent, Tone};
+use eva_macos::{Activity, Overlay, OverlayContent, Tone};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSDate, NSRunLoop};
@@ -16,26 +16,32 @@ fn main() {
     let overlay = Overlay::new(mtm);
 
     let states = [
-        ("escuchando", "● Escuchando…", Tone::Neutral),
-        ("listo", "✓ Listo", Tone::Ok),
+        ("escuchando", "Escuchando", Tone::Neutral, Activity::Listening),
+        ("pensando", "Pensando", Tone::Neutral, Activity::Thinking),
+        ("ejecutando", "Ejecutando", Tone::Neutral, Activity::Executing),
+        ("listo", "✓ Listo", Tone::Ok, Activity::None),
         (
             "error_largo",
             "✗ hay un campo de contraseña activo y macOS no deja pegar aquí; el texto quedó en el portapapeles",
             Tone::Error,
+            Activity::None,
         ),
         (
             "tarea",
             "✓ Tarea lista: actualicé la documentación, corregí tres pruebas que fallaban y abrí la rama eva/3fa9c1d2",
             Tone::Ok,
+            Activity::None,
         ),
         (
             "pregunta",
             "¿Cerrar Spotify?\nlo pide un agente por las herramientas de EVA\n⌘⏎ sí · ⌘⎋ no · 28 s",
             Tone::Ask,
+            Activity::None,
         ),
     ];
-    for (name, text, tone) in states {
-        overlay.show(&OverlayContent { text: text.to_string(), tone });
+    for (name, text, tone, activity) in states {
+        overlay.show(&OverlayContent { text: text.to_string(), tone, activity });
+        overlay.animate(0.6);
         // Let AppKit lay the view out before drawing it.
         NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.25));
         match overlay.snapshot_png() {

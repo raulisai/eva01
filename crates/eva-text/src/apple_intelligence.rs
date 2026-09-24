@@ -13,8 +13,9 @@
 //! any other formatter failure. This struct is never "the only way text
 //! gets formatted."
 
-use crate::faithfulness::{check_format, clean_rewrite, is_plausible_rewrite};
+use crate::faithfulness::{clean_rewrite, is_plausible_rewrite};
 use crate::formatter::{FormatError, Formatter, RuleOnlyFormatter};
+use crate::repair::faithful_formatting;
 use crate::style::Style;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double};
@@ -136,9 +137,7 @@ impl Formatter for AppleIntelligenceFormatter {
             unsafe { eva_formatter_format(c_text.as_ptr(), timeout) }
         })?;
 
-        if let Err(reason) = check_format(text, &result) {
-            return Err(FormatError::InvalidOutput(format!("{reason}: {result:?}")));
-        }
+        let result = faithful_formatting(text, &result).map_err(FormatError::InvalidOutput)?;
 
         // The model is inconsistent about capitalizing the real first
         // letter right after an opening ¿/¡ it just added, even when its
@@ -169,7 +168,7 @@ impl Formatter for AppleIntelligenceFormatter {
         })?;
 
         let cleaned = clean_rewrite(&result);
-        if !is_plausible_rewrite(text, &cleaned) {
+        if !is_plausible_rewrite(text, instruction, &cleaned) {
             return Err(FormatError::InvalidOutput(format!(
                 "la reescritura no se parece a una edición del texto original: {cleaned:?}"
             )));
@@ -223,8 +222,11 @@ mod tests {
     #[ignore = "calls the real on-device Apple Intelligence model; run manually with --ignored"]
     fn real_model_removes_an_ambiguous_filler_and_punctuates() {
         let formatter = AppleIntelligenceFormatter::new().expect("Apple Intelligence must be enabled for this test");
+        // Accented as the speech model writes it: the guard deliberately
+        // refuses an accent added to an ordinary word (llego → llegó changes
+        // the tense), so an unaccented "mandale" would be rejected, not fixed.
         let out = formatter
-            .format("o sea este mandale el archivo a juan pero antes pregúntale si ya llegó a la oficina")
+            .format("o sea este mándale el archivo a juan pero antes pregúntale si ya llegó a la oficina")
             .expect("a real, available model must respond within the timeout");
         assert!(out.ends_with('.') || out.ends_with('?') || out.ends_with('!'), "got: {out:?}");
         assert!(!out.to_lowercase().contains("o sea"), "the ambiguous filler should be gone: {out:?}");

@@ -9,8 +9,9 @@
 //! (`crate::faithfulness`): a larger model is better at following the
 //! instructions, not exempt from being checked.
 
-use crate::faithfulness::{check_format, clean_rewrite, is_plausible_rewrite};
+use crate::faithfulness::{clean_rewrite, is_plausible_rewrite};
 use crate::formatter::{FormatError, Formatter, RuleOnlyFormatter};
+use crate::repair::faithful_formatting;
 use crate::style::Style;
 use serde_json::json;
 use std::sync::Arc;
@@ -108,8 +109,8 @@ impl Formatter for OpenAiCompatibleFormatter {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
-        let result = self.complete(FORMAT_INSTRUCTIONS, text)?;
-        check_format(text, &result).map_err(|reason| FormatError::InvalidOutput(format!("{reason}: {result:?}")))?;
+        let result = faithful_formatting(text, &self.complete(FORMAT_INSTRUCTIONS, text)?)
+            .map_err(FormatError::InvalidOutput)?;
         #[allow(clippy::expect_used)] // RuleOnlyFormatter::format_styled never returns Err
         Ok(RuleOnlyFormatter.format_styled(&result, style).expect("RuleOnlyFormatter never fails"))
     }
@@ -120,7 +121,7 @@ impl Formatter for OpenAiCompatibleFormatter {
         }
         let result =
             clean_rewrite(&self.complete(REWRITE_INSTRUCTIONS, &format!("Instrucción: {instruction}\nTexto: {text}"))?);
-        if is_plausible_rewrite(text, &result) {
+        if is_plausible_rewrite(text, instruction, &result) {
             Ok(result)
         } else {
             Err(FormatError::InvalidOutput(format!(
@@ -275,9 +276,16 @@ mod tests {
 
     #[test]
     fn a_remote_answer_that_changes_the_words_is_rejected_like_an_on_device_one() {
-        let server = serve(200, completion("Llegué en diez minutos."));
+        let server = serve(200, completion("¡Genial! Nos vemos en un rato, avísame cuando estés cerca."));
         let result = client(&server.url, &["format"]).format("llego en diez minutos");
         assert!(matches!(result, Err(FormatError::InvalidOutput(_))), "{result:?}");
+    }
+
+    #[test]
+    fn a_remote_answer_with_one_word_astray_keeps_its_punctuation_and_the_dictated_words() {
+        let server = serve(200, completion("Llegué en diez minutos."));
+        let out = client(&server.url, &["format"]).format("llego en diez minutos").expect("repaired");
+        assert_eq!(out, "Llego en diez minutos.");
     }
 
     #[test]
@@ -355,7 +363,7 @@ mod tests {
 
     #[test]
     fn a_remote_that_answers_badly_also_falls_back() {
-        let server = serve(200, completion("Llegué en diez minutos."));
+        let server = serve(200, completion("¡Genial! Nos vemos en un rato, avísame cuando estés cerca."));
         let layered = RemoteAssisted::new(Arc::new(Local), client(&server.url, &["format"]));
         assert_eq!(layered.format("llego en diez minutos").expect("falls back"), "LOCAL:llego en diez minutos");
     }

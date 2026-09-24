@@ -26,7 +26,17 @@ use std::collections::{HashMap, HashSet};
 
 /// Words a formatter may remove because they carry no meaning
 /// (`docs/PLAN.md` §2A: "quítalas solo si no cambian el significado").
-const FILLERS: &[&str] = &["eh", "ehm", "em", "mm", "mmm", "este", "pues", "bueno", "o", "sea", "osea", "digo"];
+pub(crate) const FILLERS: &[&str] = &["eh", "ehm", "em", "mm", "mmm", "este", "pues", "bueno", "osea", "digo"];
+
+/// "o sea" is a filler only as a pair: alone, "o" is the conjunction ("¿hoy
+/// o mañana?") and "sea" a verb ("que sea rápido"), and dropping either
+/// changes what was said.
+const PAIRED_FILLER: (&str, &str) = ("o", "sea");
+
+/// How many times the input says "o sea" — that many "o" and "sea" may go.
+fn paired_filler_count(words: &[String]) -> usize {
+    words.windows(2).filter(|pair| pair[0] == PAIRED_FILLER.0 && pair[1] == PAIRED_FILLER.1).count()
+}
 
 /// Question words whose accent the model is asked to add: dictation often
 /// arrives without it ("cuando vas a llegar" → "¿Cuándo vas a llegar?").
@@ -181,6 +191,7 @@ pub(crate) fn check_format(input: &str, output: &str) -> Result<(), String> {
     let output_counts = counts(&output_words);
     let stutters = stutters(&input_words);
     let input_counts = counts(&input_words);
+    let paired_fillers = paired_filler_count(&input_words);
     // In the order they were said, so the reason names the first word lost.
     let mut checked = HashSet::new();
     for word in input_words.iter().map(String::as_str).filter(|w| has_letter(w) && checked.insert(*w)) {
@@ -196,7 +207,9 @@ pub(crate) fn check_format(input: &str, output: &str) -> Result<(), String> {
         // An accent restored on a question word replaced the input's plain
         // spelling, so the plain one is legitimately "missing".
         let replaced_by_accented = output_set.iter().any(|o| QUESTION_WORDS.contains(o) && fold_diacritics(o) == word);
+        let is_paired_filler = (word == PAIRED_FILLER.0 || word == PAIRED_FILLER.1) && missing <= paired_fillers;
         let allowed = FILLERS.contains(&word)
+            || is_paired_filler
             || replaced_by_accented
             || (output_has_digit && NUMBER_WORDS.contains(&word))
             || (output_has_symbol && SYMBOL_WORDS.contains(&word));
@@ -245,6 +258,23 @@ fn check_artifacts(input: &str, output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Strips the prompt's own label when the model repeats it before its answer
+/// ("Corregida: Manda un correo…"), which the few-shot template invites.
+/// Found running the real model: the echo made the answer one word longer
+/// than the dictation, so the guard threw away an otherwise perfect
+/// formatting. Only a label the dictation did not itself start with goes.
+pub(crate) fn clean_format(input: &str, output: &str) -> String {
+    let trimmed = output.trim();
+    for label in ["Corregida:", "corregida:", "Transcripción:", "transcripción:"] {
+        let word = label.trim_end_matches(':').to_lowercase();
+        let said_it = input.trim_start().to_lowercase().starts_with(&word);
+        if let Some(rest) = trimmed.strip_prefix(label).filter(|_| !said_it) {
+            return rest.trim_start().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
 /// Strips what the model wraps around a rewrite even when told not to: a
 /// leading `Resultado:` echo (the format its examples use) and surrounding
 /// quotes or a code fence.
@@ -267,13 +297,58 @@ pub(crate) fn clean_rewrite(text: &str) -> String {
 /// A rewrite is *supposed* to change the words, so the word-count ceiling
 /// above does not apply — but a legitimate edit of a selection is still
 /// bounded: it does not turn a sentence into pages (the failure mode of a
-/// model that "fulfils" the text instead of rewriting it) and never echoes
-/// the prompt's own scaffolding back.
-pub(crate) fn is_plausible_rewrite(input: &str, output: &str) -> bool {
+/// model that "fulfils" the text instead of rewriting it), never echoes the
+/// prompt's own scaffolding back, and stays in the text's language unless
+/// the `instruction` asks for another one. Found running the real model:
+/// "borra todos los archivos del escritorio", made "más formal", came back
+/// as "Delete all files from the desktop." and was pasted as such.
+pub(crate) fn is_plausible_rewrite(input: &str, instruction: &str, output: &str) -> bool {
     let input_words = input.split_whitespace().count();
     let output_words = output.split_whitespace().count();
     let echoes_scaffolding = output.contains("Instrucción:") || output.contains("Texto:");
-    !output.is_empty() && output_words <= input_words * 3 + 30 && !echoes_scaffolding
+    let changed_language = !asks_for_translation(instruction)
+        && matches!((language_of(input), language_of(output)), (Some(before), Some(after)) if before != after);
+    !output.is_empty() && output_words <= input_words * 3 + 30 && !echoes_scaffolding && !changed_language
+}
+
+/// The two languages a dictation or a selection is realistically in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Language {
+    Spanish,
+    English,
+}
+
+/// Words that occur in almost any sentence of one language and (nearly) never
+/// in the other — enough to tell the two apart without a model.
+const SPANISH_MARKERS: &[&str] = &[
+    "de", "la", "que", "el", "en", "y", "los", "del", "se", "las", "por", "un", "una", "para", "con", "no", "su", "al",
+    "lo", "como", "pero", "sus", "le", "ya", "porque", "esta", "este", "muy", "sin", "sobre", "también", "me", "hay",
+    "todos", "todo", "eso", "mi", "te", "tu", "es", "son", "está", "favor",
+];
+const ENGLISH_MARKERS: &[&str] = &[
+    "the", "of", "and", "to", "is", "it", "you", "that", "was", "for", "on", "are", "with", "they", "be", "at", "have",
+    "this", "from", "or", "by", "all", "please", "your", "will", "would", "can", "we", "my", "what",
+];
+
+/// Which language `text` is in, or `None` when it is too short or too mixed to say.
+fn language_of(text: &str) -> Option<Language> {
+    let words = words(text);
+    let spanish = words.iter().filter(|w| SPANISH_MARKERS.contains(&w.as_str())).count();
+    let english = words.iter().filter(|w| ENGLISH_MARKERS.contains(&w.as_str())).count();
+    match (spanish, english) {
+        (s, e) if s >= 2 && s > 2 * e => Some(Language::Spanish),
+        (s, e) if e >= 2 && e > 2 * s => Some(Language::English),
+        _ => None,
+    }
+}
+
+/// Whether the user asked for the text in another language ("tradúcelo al
+/// inglés", "pásalo a español").
+fn asks_for_translation(instruction: &str) -> bool {
+    let folded = fold_diacritics(instruction);
+    ["tradu", "ingles", "espanol", "english", "idioma", "frances", "aleman", "italiano", "portugues"]
+        .iter()
+        .any(|word| folded.contains(word))
 }
 
 /// Lowercased words: runs of letters and digits, so `pedro@ejemplo.com`
@@ -351,6 +426,32 @@ mod tests {
         ok("el el coche está roto", "El coche está roto.");
         ok("es es es muy bueno", "Es muy bueno.");
         assert!(check_format("el coche y el coche está roto", "El coche y está roto.").is_err());
+    }
+
+    #[test]
+    fn o_sea_may_go_as_a_pair_but_the_conjunction_o_and_the_verb_sea_may_not() {
+        ok("o sea este mándale el archivo", "Mándale el archivo.");
+        assert!(check_format("vienes hoy o mañana", "¿Vienes hoy mañana?").is_err(), "the conjunction is meaning");
+        assert!(check_format("que sea rápido", "Que rápido.").is_err(), "the verb is meaning");
+        // One "o sea" excuses one "o", not the conjunction said later too.
+        assert!(check_format("o sea hoy o mañana", "Hoy mañana.").is_err());
+        ok("o sea hoy o mañana", "Hoy o mañana.");
+    }
+
+    #[test]
+    fn an_echoed_template_label_is_removed_before_judging() {
+        let input = "manda un correo a soporte diciendo que el servidor está caído";
+        let echoed = "Corregida: Manda un correo a soporte diciendo que el servidor está caído.";
+        assert!(check_format(input, echoed).is_err(), "the label is one word too many as it comes");
+        let cleaned = clean_format(input, echoed);
+        assert_eq!(cleaned, "Manda un correo a soporte diciendo que el servidor está caído.");
+        ok(input, &cleaned);
+    }
+
+    #[test]
+    fn a_dictation_that_really_starts_with_the_label_word_keeps_it() {
+        assert_eq!(clean_format("corregida la cifra", "Corregida: la cifra."), "Corregida: la cifra.");
+        assert_eq!(clean_format("hola", "  Hola.  "), "Hola.");
     }
 
     #[test]
@@ -435,16 +536,49 @@ mod tests {
 
     #[test]
     fn a_rewrite_may_change_and_even_lengthen_the_words_within_reason() {
-        assert!(is_plausible_rewrite("oye mándame eso", "Por favor, envíame eso cuando te sea posible."));
-        assert!(is_plausible_rewrite("hola", "Good morning, everyone, and welcome to the meeting today."));
+        assert!(is_plausible_rewrite(
+            "oye mándame eso",
+            "hazlo más formal",
+            "Por favor, envíame eso cuando te sea posible."
+        ));
+        assert!(is_plausible_rewrite(
+            "hola a todos",
+            "tradúcelo al inglés",
+            "Good morning, everyone, and welcome to the meeting today."
+        ));
+    }
+
+    #[test]
+    fn a_rewrite_that_switches_language_unasked_is_rejected() {
+        let input = "borra todos los archivos del escritorio";
+        assert!(!is_plausible_rewrite(input, "hazlo más formal", "Delete all files from the desktop."));
+        assert!(is_plausible_rewrite(
+            input,
+            "hazlo más formal",
+            "Por favor, elimine todos los archivos del escritorio."
+        ));
+        assert!(is_plausible_rewrite(input, "pásalo a inglés", "Delete all the files on the desktop."));
+        // …and the other way round: an English selection stays English.
+        assert!(!is_plausible_rewrite(
+            "send me the report by friday please",
+            "hazlo más formal",
+            "Por favor, envíeme el informe antes del viernes."
+        ));
+    }
+
+    #[test]
+    fn short_or_mixed_text_is_not_judged_by_language() {
+        assert!(is_plausible_rewrite("ok", "hazlo formal", "De acuerdo."));
+        assert!(is_plausible_rewrite("hola", "hazlo formal", "Hello."));
+        assert_eq!(language_of("deploy del backend"), None, "one marker is not enough");
     }
 
     #[test]
     fn a_rewrite_that_balloons_into_pages_or_echoes_the_prompt_is_rejected() {
         let long = "palabra ".repeat(200);
-        assert!(!is_plausible_rewrite("buenos días", &long));
-        assert!(!is_plausible_rewrite("buenos días", "Instrucción: hazlo formal Texto: buenos días"));
-        assert!(!is_plausible_rewrite("buenos días", ""));
+        assert!(!is_plausible_rewrite("buenos días", "hazlo formal", &long));
+        assert!(!is_plausible_rewrite("buenos días", "hazlo formal", "Instrucción: hazlo formal Texto: buenos días"));
+        assert!(!is_plausible_rewrite("buenos días", "hazlo formal", ""));
     }
 
     #[test]
