@@ -9,8 +9,10 @@
 pub mod apps;
 pub mod calibration;
 pub mod catalog;
+pub mod context;
 pub mod intent;
 pub mod risk;
+pub mod sites;
 pub mod spoken;
 pub mod wake;
 
@@ -78,6 +80,47 @@ pub fn interpret_tolerant(
         return dictation;
     }
     Interpreted { result: InterpretResult::Command(intent), wake: Some((found.how, found.heard)) }
+}
+
+/// Like [`interpret_tolerant`], leaning on what was just done (`recall`, from
+/// [`context::Recall::of`]) while the conversation is open: a search after
+/// "abre YouTube" is YouTube's own, and a plain "ahora busca Naruto" — said
+/// with no wake word — is a command instead of dictation. Whatever it does
+/// not change comes out exactly as [`interpret_tolerant`] gives it.
+pub fn interpret_in_context(
+    raw_text: &str,
+    wake_word: &str,
+    app_index: &AppIndex,
+    custom: &[&str],
+    learned: &[String],
+    recall: Option<&context::Recall>,
+) -> Interpreted {
+    let mut interpreted = interpret_tolerant(raw_text, wake_word, app_index, custom, learned);
+    let Some(recall) = recall else { return interpreted };
+    match &interpreted.result {
+        InterpretResult::Command(Intent::WebSearch { query }) => {
+            if let Some(intent) = recall.search(query) {
+                interpreted.result = InterpretResult::Command(intent);
+            }
+        }
+        InterpretResult::Dictation => {
+            if let Some(intent) = context::follow_up(raw_text, recall) {
+                interpreted = Interpreted { result: InterpretResult::Command(intent), wake: None };
+            }
+        }
+        InterpretResult::Command(_) => {}
+    }
+    interpreted
+}
+
+/// `interpreted` with an app that is not installed but is a website EVA01
+/// knows ("abre YouTube") turned into opening the site. The last step, after
+/// the apps have been looked at again.
+pub fn with_known_sites(mut interpreted: Interpreted) -> Interpreted {
+    if let InterpretResult::Command(intent) = interpreted.result {
+        interpreted.result = InterpretResult::Command(sites::open_by_name(intent));
+    }
+    interpreted
 }
 
 /// Whether `raw_text` is, beyond doubt, a spoken command: the wake word (as
@@ -186,5 +229,55 @@ mod tests {
         assert!(looks_like_command("Adam abre Spotify.", "Adán", &[]));
         assert!(looks_like_command("Adán, abre Brave.", "Adán", &[]));
         assert!(!looks_like_command("Hola, me puedes abrir Spotify.", "Adán", &[]));
+    }
+
+    #[test]
+    fn a_website_is_opened_by_name_when_no_app_has_it_and_the_app_wins_when_there_is_one() {
+        let index = AppIndex::new(vec![AppEntry::new("Spotify")]);
+        let heard = |text: &str| with_known_sites(interpret_tolerant(text, "Adán", &index, &[], &[])).result;
+        assert_eq!(
+            heard("Adán, abre YouTube"),
+            InterpretResult::Command(Intent::OpenUrl { url: "https://www.youtube.com".to_string() })
+        );
+        assert_eq!(
+            heard("Adán, abre Spotify"),
+            InterpretResult::Command(Intent::OpenApp { app: "Spotify".to_string() }),
+            "an installed app is preferred to its website"
+        );
+        assert!(matches!(heard("Adán, abre Photoshop"), InterpretResult::Command(Intent::AppNotFound { .. })));
+    }
+
+    #[test]
+    fn the_youtube_conversation_end_to_end() {
+        let index = AppIndex::new(Vec::new());
+        let opened = match with_known_sites(interpret_tolerant("Adán, abre YouTube", "Adán", &index, &[], &[])).result
+        {
+            InterpretResult::Command(intent) => intent,
+            other => panic!("{other:?}"),
+        };
+        let recall = context::Recall::of(&opened);
+        let naruto = Some(InterpretResult::Command(Intent::OpenUrl {
+            url: "https://www.youtube.com/results?search_query=Naruto".to_string(),
+        }));
+
+        // With the wake word or without it, in the seconds after.
+        for said in ["Adán, busca Naruto", "ahora busca Naruto", "Busca Naruto."] {
+            let got = interpret_in_context(said, "Adán", &index, &[], &[], recall.as_ref());
+            assert_eq!(Some(got.result), naruto, "{said}");
+        }
+        // Outside the conversation the same words are a web search / plain dictation.
+        assert!(matches!(
+            interpret_in_context("Adán, busca Naruto", "Adán", &index, &[], &[], None).result,
+            InterpretResult::Command(Intent::WebSearch { .. })
+        ));
+        assert_eq!(
+            interpret_in_context("ahora busca Naruto", "Adán", &index, &[], &[], None).result,
+            InterpretResult::Dictation
+        );
+        // And ordinary dictation inside the conversation stays dictation.
+        assert_eq!(
+            interpret_in_context("mañana tengo que ir al banco", "Adán", &index, &[], &[], recall.as_ref()).result,
+            InterpretResult::Dictation
+        );
     }
 }

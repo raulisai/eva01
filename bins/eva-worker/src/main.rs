@@ -7,6 +7,7 @@
 mod apps;
 mod calibration;
 mod commands;
+mod conversation;
 mod confirm;
 mod context;
 mod dictation;

@@ -35,6 +35,7 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
         | WorkerToShell::StateChanged { .. }
         | WorkerToShell::ConfirmationRequested { .. }
         | WorkerToShell::ConfirmationClosed { .. }
+        | WorkerToShell::FollowUp { .. }
         | WorkerToShell::Pong { .. } => None,
         WorkerToShell::DictationFlagged { message, .. } | WorkerToShell::Notice { message, .. } => {
             Line::out(message.clone())

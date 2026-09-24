@@ -54,7 +54,7 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
         InterpretResult::Command(intent) => {
             // A misheard command is as worth flagging as a misheard dictation.
             ctx.harvest.remember_dictation(request_id, None, text, None);
-            crate::commands::run_intent(ctx, request_id, intent).await
+            crate::conversation::run(ctx, request_id, intent).await
         }
     }
 }
@@ -62,6 +62,12 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
 /// What `text` is: dictation, or a command (the user's own phrases included).
 /// Does nothing about it.
 fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
+    // The last step: a name no app answers to, even after looking again, may be a website.
+    eva_intent::with_known_sites(classify_apps(ctx, text))
+}
+
+/// [`classify`] up to the apps: looked at again when one is not found.
+fn classify_apps(ctx: &WorkerContext, text: &str) -> Interpreted {
     // A hesitation before the wake word ("eh, Adán, abre Brave") is normal,
     // natural speech, but `strip_wake_word` requires the wake word to be the
     // literal first word — found while testing the recording pipeline end
@@ -75,7 +81,7 @@ fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
     let phrases: Vec<&str> = ctx.config.custom_commands().flat_map(|c| c.phrases()).collect();
     let learned = ctx.store.trusted_wake_variants(TRUSTED_AFTER_HITS).unwrap_or_default();
     let interpret = |apps: &eva_intent::AppIndex| {
-        eva_intent::interpret_tolerant(&gate_input, &ctx.wake_word, apps, &phrases, &learned)
+        crate::conversation::interpret(ctx, &gate_input, apps, &phrases, &learned)
     };
     let result = interpret(&ctx.app_index.current());
     // An app the index does not know may have been installed since it was

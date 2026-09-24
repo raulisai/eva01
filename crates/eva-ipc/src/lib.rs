@@ -267,6 +267,15 @@ pub enum WorkerToShell {
         /// What to tell the user, short.
         message: String,
     },
+    /// A command went well and EVA01 stays "in conversation" for `secs`
+    /// seconds: the island asks "¿Algo más?", and what is said next may lean
+    /// on what was just done ("ahora busca Naruto" after opening YouTube).
+    FollowUp {
+        /// The command that opened the conversation.
+        request_id: uuid::Uuid,
+        /// How long it stays open, from when its result has been shown.
+        secs: u64,
+    },
     /// Response to [`ShellToWorker::FlagLastDictation`] when it worked.
     DictationFlagged {
         /// Correlates with the request.
@@ -486,6 +495,7 @@ mod tests {
             WorkerToShell::ConfirmationClosed { confirmation_id: request_id },
             WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
             WorkerToShell::Notice { request_id, message: "copiado".into() },
+            WorkerToShell::FollowUp { request_id, secs: 5 },
             WorkerToShell::Pong { request_id },
         ];
 

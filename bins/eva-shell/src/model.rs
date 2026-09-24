@@ -228,6 +228,8 @@ pub struct ShellModel {
     recent: Vec<TaskInfo>,
     confirmation: Option<Confirmation>,
     notice: Option<Notice>,
+    /// A command went well and the island asks "¿Algo más?" until this.
+    follow_up: Option<Instant>,
     notifications: Vec<Notification>,
     health_asked: bool,
     /// When the last ping went out, and the one still waiting for its pong.
@@ -249,6 +251,7 @@ impl ShellModel {
             recent: Vec::new(),
             confirmation: None,
             notice: None,
+            follow_up: None,
             notifications: Vec::new(),
             health_asked: false,
             last_ping: None,
@@ -270,6 +273,7 @@ impl ShellModel {
             return Vec::new();
         }
         self.notice = None;
+        self.follow_up = None;
         self.recording = Some(request_id);
         self.track(request_id, Phase::Listening, now);
         vec![Command::StartRecording(request_id)]
@@ -427,6 +431,11 @@ impl ShellModel {
                     until: now + CLIPBOARD_NOTICE,
                 });
             }
+            WorkerToShell::FollowUp { secs, .. } => {
+                // The result ("Spotify abierto") is shown first; the question
+                // gets its full time after it.
+                self.follow_up = Some(now + OK_NOTICE + Duration::from_secs(secs));
+            }
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
@@ -526,6 +535,9 @@ impl ShellModel {
     /// Advances time: expires notices and prompts, and fires the watchdog on
     /// anything stuck. Returns what to send the worker.
     pub fn tick(&mut self, now: Instant) -> Vec<Command> {
+        if self.follow_up.is_some_and(|until| now >= until) {
+            self.follow_up = None;
+        }
         if self.notice.as_ref().is_some_and(|n| now >= n.until) {
             self.notice = None;
         }
@@ -638,6 +650,15 @@ impl ShellModel {
                 }),
                 None => working("Ejecutando", Activity::Executing),
             };
+        }
+        if self.notice.is_none() && self.follow_up.is_some() {
+            return Some(OverlayContent {
+                text: "¿Algo más?".to_string(),
+                tone: Tone::Neutral,
+                activity: Activity::None,
+                icon: Icon::Symbol("mic"),
+                choices: Vec::new(),
+            });
         }
         self.notice.as_ref().map(|n| OverlayContent {
             text: n.text.clone(),
@@ -1514,5 +1535,31 @@ mod tests {
             ("Copiado · pégalo con ⌘V", Tone::Ok, Icon::Symbol("doc.on.clipboard")),
             "the Done that follows must not replace it with a bare ✓ Listo"
         );
+    }
+
+    #[test]
+    fn after_a_command_the_island_asks_for_something_more_and_stops_asking() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(t0, WorkerToShell::FollowUp { request_id: Uuid::new_v4(), secs: 5 });
+        let asking = model.overlay().unwrap();
+        assert_eq!((asking.text.as_str(), asking.icon), ("¿Algo más?", Icon::Symbol("mic")));
+
+        // The result the command left is shown first; the question does not outlast its five seconds.
+        tick(&mut model, t0 + secs(3));
+        assert!(model.overlay().is_some(), "still asking");
+        tick(&mut model, t0 + secs(8));
+        assert_eq!(model.overlay(), None, "and then it stops");
+    }
+
+    #[test]
+    fn a_new_recording_takes_the_island_and_ends_the_question() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(t0, WorkerToShell::FollowUp { request_id: Uuid::new_v4(), secs: 5 });
+        model.press(t0 + secs(1), Uuid::new_v4());
+        assert_ne!(model.overlay().unwrap().text, "¿Algo más?");
+        model.abandon_recording();
+        assert_eq!(model.overlay(), None, "the question does not come back after the user spoke");
     }
 }

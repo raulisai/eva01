@@ -19,6 +19,7 @@ use eva_store::Store;
 use eva_text::Formatter;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -30,13 +31,13 @@ use uuid::Uuid;
 /// task — which is what lets an agent stream its progress for minutes while
 /// the worker keeps taking commands.
 #[derive(Clone)]
-pub struct Events(UnboundedSender<WorkerToShell>);
+pub struct Events(UnboundedSender<WorkerToShell>, Arc<AtomicUsize>);
 
 impl Events {
     /// A new channel: the sender side to hand around, the receiver to drain.
     pub fn channel() -> (Events, UnboundedReceiver<WorkerToShell>) {
         let (tx, rx) = unbounded_channel();
-        (Events(tx), rx)
+        (Events(tx, Arc::new(AtomicUsize::new(0))), rx)
     }
 
     /// Sends `event`. A closed channel means the process is shutting down
@@ -59,8 +60,15 @@ impl Events {
         self.emit(WorkerToShell::Notice { request_id, message: message.into() });
     }
 
+    /// How many problems have been reported so far: what tells whether a
+    /// command went well is that this did not change while it ran.
+    pub fn problems(&self) -> usize {
+        self.1.load(Ordering::SeqCst)
+    }
+
     /// Reports a recoverable problem with `request_id`.
     pub fn error(&self, request_id: Uuid, message: impl Into<String>) {
+        self.1.fetch_add(1, Ordering::SeqCst);
         let message = message.into();
         tracing::warn!(%request_id, %message, "problema con la orden");
         self.emit(WorkerToShell::Error { request_id: Some(request_id), message, recoverable: true });
@@ -155,6 +163,8 @@ pub struct WorkerContext {
     pub config: Config,
     /// Resolves spoken app names to canonical ones.
     pub app_index: AppCatalog,
+    /// What was just opened, for the few seconds a follow-up leans on it.
+    pub conversation: crate::conversation::Conversation,
     /// The configured wake word.
     pub wake_word: String,
     /// The working directory.
@@ -227,6 +237,7 @@ impl WorkerContext {
             store: deps.store,
             config: deps.config,
             app_index: deps.app_index,
+            conversation: Default::default(),
             wake_word: deps.wake_word,
             base_dir: deps.base_dir,
             desktop: deps.desktop,

@@ -48,7 +48,18 @@ pub const BUILTINS: &[Builtin] = &[
         example: "abre Photoshop",
         kind: "app_not_found",
     },
-    Builtin { say: "busca <algo>", does: "busca en la web", example: "busca el clima de mañana", kind: "web_search" },
+    Builtin {
+        say: "abre <sitio>",
+        does: "abre YouTube, GitHub, Gmail, Netflix… si no hay una app con ese nombre",
+        example: "abre YouTube",
+        kind: "open_url",
+    },
+    Builtin {
+        say: "busca <algo>",
+        does: "busca en la web; justo después de abrir YouTube, Spotify, GitHub… busca ahí (5 s, sin decir «Eva»)",
+        example: "busca el clima de mañana",
+        kind: "web_search",
+    },
     Builtin {
         say: "usa Claude / Codex y <tarea>",
         does: "manda la tarea a ese agente, en una rama nueva de git",
@@ -85,7 +96,7 @@ mod tests {
     fn every_example_is_parsed_into_the_kind_the_list_promises() {
         let index = AppIndex::new(vec![AppEntry::new("Spotify"), AppEntry::new("GitHub Desktop")]);
         for builtin in BUILTINS {
-            let intent = crate::intent::parse(builtin.example, &index);
+            let intent = crate::sites::open_by_name(crate::intent::parse(builtin.example, &index));
             let json = serde_json::to_value(&intent).unwrap();
             assert_eq!(json["kind"], builtin.kind, "«{}» ({})", builtin.example, builtin.say);
         }
