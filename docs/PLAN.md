@@ -14,14 +14,14 @@
 
 ---
 
-## Estado de la implementación (v0.2 · 23 sep 2026)
+## Estado de la implementación (v0.2 · 24 sep 2026)
 
 Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prometía. Las fases de abajo
 (§4) se dejan como se escribieron: son el razonamiento; esta sección es el registro.
 
 **Workspace:** 4 binarios (`eva-shell`, `eva-worker`, `eva-cli` → `eva`, `eva-eval`) y 10 crates
 (`eva-audio`, `eva-text`, `eva-intent`, `eva-agents`, `eva-mcp`, `eva-macos`, `eva-store`, `eva-gateway`,
-`eva-config`, `eva-ipc`). 776 pruebas automáticas, `clippy -D warnings` y `rustdoc -D warnings` limpios, más 9
+`eva-config`, `eva-ipc`). 925 pruebas automáticas, `clippy -D warnings` y `rustdoc -D warnings` limpios, más 10
 marcadas `#[ignore]` que necesitan recursos reales (Apple Intelligence, portapapeles, navegador); `eval/e2e-agent.sh`
 prueba la cadena de agentes completa con los binarios reales y un Codex de prueba.
 
@@ -37,6 +37,16 @@ prueba la cadena de agentes completa con los binarios reales y un Codex de prueb
 | 8 Servidor MCP | hecha | 10 herramientas, todas por el gateway, alcanzan al worker por un socket privado |
 | 9 Estilo, contexto, edición | hecha | estilos por app, modo edición sobre la selección, remoto OpenAI-compatible **apagado por defecto** |
 | 10 Manos libres | **diferida a propósito** | su disparador ("te sorprendes buscando la tecla") es del uso, no del calendario |
+
+**Añadido el 24 sep, tras usarlo (todo con pruebas y verificado contra el sistema real donde se pudo):**
+la **isla** (el overlay cambia de tamaño con Core Animation, dice qué hace — «Abriendo Spotify» con el icono de la
+app, «Ejecutando en Codex» — y las preguntas llevan botones Sí / No clicables, cada uno con su atajo); un **panel**
+en la app que reúne Configuración, Doctor y Calibración; las **apps se detectan solas** (una app no instalada se
+dice y se ofrece la App Store; un nombre mal oído pregunta «¿quisiste decir…?» y lo recuerda); órdenes propias
+también en `commands/*.toml` y con frases alternativas (`also`); `eva commands`; la **palabra de activación tolera
+variantes** («Adam», «Ava») y se **calibra a tu voz** (`eva calibrate`); un dictado sin dónde pegar se conserva en
+el portapapeles; **dictados largos transcritos y formateados mientras se habla**; respuestas de una palabra
+repetidas y votadas (hallazgos 16, 20–23).
 
 **Fuera del plan original, añadido porque el uso lo pidió:** CLI `eva` (`doctor`, `model list/install/verify`,
 `startup enable`, `config`, `intent`, `tasks`, `audit`, `dictionary`, `wake-word`, `health`), gestión de modelos con verificación de tamaño y prueba de
@@ -116,9 +126,11 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     cuenta ocurrencias (perdonando solo la repetición inmediata, «el el coche») y un símbolo solo cuenta si va
     *dentro* de una palabra («ejemplo.com», «3,5», «pre-registro»).
 
-16. **Las respuestas de una palabra son el punto débil que sigue abierto**: con clips de 0,2–1,2 s solo 12 de 28
-    salen exactos (el resto se calla o inventa). Se probó más y menos relleno de silencio (0–3 s): no cambia la
-    cifra. Se deja documentado en `eval/README.md` en vez de esconderlo con una heurística sin datos que la respalden.
+16. **Las respuestas de una palabra eran el punto débil**: con clips de 0,2–1,2 s el modelo se calla o inventa
+    («Vale» → «Ballet»); más o menos relleno de silencio no cambiaba la cifra. Lo que sí funcionó: **decir el clip
+    tres veces seguidas en un solo audio y hacer votar las repeticiones** (`eva-audio::short_reply`). Con 28 clips de
+    `say`: 14 exactos con el relleno por defecto (antes 1; con silencio digital, 11), y no depende del relleno ni de
+    la segunda opinión. Sigue siendo sintético: con tu voz hay que confirmarlo (`eval/README.md`).
 
 17. **El «arreglo» de la primera palabra empeoraba el ruido, y solo lo mostró probar con ruido.** El relleno de 300 ms
     de silencio digital que quitaba el error «Hay que → Que» en audio limpio, con ruido de fondo (incluso a 40 dB por
@@ -138,30 +150,46 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     agentes del worker de la app; la base de datos se podía «poner en cuarentena» solo por estar bloqueada; un
     worker colgado nunca se reiniciaba; un agente sobrevivía a la muerte de su worker; las notificaciones del
     worker podían colgarse como las del shell. Todos corregidos, con pruebas, y verificados con los binarios reales.
-
+20. **Codex no podía usar las herramientas de EVA.** Con Codex 0.156.1 real, el modelo decidió usar
+    `eva/get_active_window` (la verificación que el Codex de prueba no podía dar), pero `codex exec` no puede pedir
+    aprobación de un servidor MCP y rechazaba la llamada. Ahora las herramientas van preaprobadas para Codex; el
+    gateway sigue decidiendo cada llamada (auto, confirmar en pantalla o bloquear).
+21. **Una tarea sin proyecto a la vista corría en `/`.** Desde la app el directorio de trabajo del worker es `/`, y
+    ese era el último recurso para elegir dónde trabaja un agente, con sandbox de escritura ahí: la tarea de prueba
+    intentó escribir `/app.txt`. Ahora un directorio demasiado amplio (raíz, carpeta de primer nivel, home) se
+    sustituye por `~/Library/Application Support/EVA01/scratch` y no se reutiliza como «último proyecto».
+22. **Dictados largos: toda la espera venía después de soltar la tecla.** 70 s de habla tardaban 14,9 s en pegarse
+    (voz 6,6 s + formato 8,3 s). Ahora el audio ya grabado se corta en pausas reales (≥ 300 ms, adaptativo a la
+    ganancia del micrófono), cada trozo se transcribe en segundo plano y el texto se formatea por adelantado con un
+    formateador que recuerda sus respuestas; al soltar solo quedan la cola y la última frase: **3,2 s** (voz 1,4 s +
+    formato 1,9 s), con el mismo texto salvo puntuación. `eva-eval --streaming` repite la medición.
+23. **Un empaquetado con certificado propio fallaba de dos maneras** (encontrado al firmar con «EVA01 Local»): el
+    Hardened Runtime impedía cargar la librería de Apple Intelligence (solo vale con un Developer ID real) y el CLI
+    `eva` seguía apuntando a la ruta de compilación (`build-app.sh` solo reapuntaba `eva-worker`).
 ### Lo que falta y por qué
 
-Verificado de verdad en esta revisión (no solo con pruebas unitarias): el `.app` arranca; un `kill -9` o un
-`kill -STOP` al worker se recupera solo; un agente huérfano se detiene; la cadena agente → `eva-mcp` → socket →
-gateway → auditoría funciona de punta a punta (con un Codex de prueba); el modelo de voz y Apple Intelligence con
-audio sintético; órdenes de voz con el índice real de apps de esta Mac. Lo que falta, en orden de importancia:
+Verificado de verdad (no solo con pruebas unitarias): el `.app` firmado con un certificado local arranca y `eva
+doctor` da todo en orden; un `kill -9` o un `kill -STOP` al worker se recupera solo; un agente huérfano se detiene;
+**Codex 0.156.1 real recibe la tarea, decide usar una herramienta de EVA y la ejecuta a través del gateway**; el modelo
+de voz y Apple Intelligence con audio sintético; órdenes de voz con el índice real de apps de esta Mac. Lo que falta,
+en orden de importancia:
 
-1. **Probarlo con tu voz y tu micrófono.** Nada de lo medido usó una voz humana; el micrófono real, la tecla fn y
-   el pegado necesitan permisos (Micrófono, Accesibilidad) que solo tú puedes dar. Es la verificación que falta y
-   la que más puede sorprender: usa EVA01 un día, marca lo que salga mal (⌃⌥⌘M) y corre `eva-eval` sobre eso.
-2. **La espera tras un dictado largo.** Un dictado de 70 s tarda ~14 s en pegarse (voz ~6,5 s + formato ~8 s, todo
-   después de soltar la tecla). Transcribir y formatear por trozos *mientras* se habla (el audio ya se corta en
-   pausas y el texto en frases) dejaría la espera en uno o dos segundos.
-3. **Un agente de verdad.** Codex pide actualizarse y Claude Code tiene la sesión vencida en esta Mac; con uno
-   funcionando, `eva doctor --smoke` y una tarea real cierran la verificación de la fase 6/8 que el Codex de prueba
-   no puede (que el modelo decida usar las herramientas).
-4. **Respuestas de una palabra** («sí», «vale»): ~50 % exactas incluso con la segunda opinión. Medir con tu voz
-   antes de invertir: es el límite del modelo con audio de medio segundo.
-5. **Distribución firmada:** necesita un Apple Developer ID (decisión #7); el workflow de release está escrito pero
+1. **Probarlo con tu voz y tu micrófono.** Nada de lo medido usó una voz humana. Hay que usar EVA01 unos días,
+   correr `eva calibrate`, marcar lo que salga mal (⌃⌥⌘M) y repetir `eva-eval` sobre eso. Es lo que más puede
+   sorprender, y de él salen dos números del plan que solo da el uso: retrabajos por día y comandos ejecutados ≠ pedidos.
+2. **Claude Code: sesión vencida** (`claude auth login`, un flujo de navegador que solo puede hacer quien lo usa).
+   Codex ya responde; con Claude Code también, `eva doctor --smoke` cierra la fase 6 para los dos agentes.
+3. **Respuestas de una palabra: 14 de 28 con voz sintética.** Mejor (antes 1–11), aún no fiable; confirmar con tu voz
+   antes de invertir más (un léxico de respuestas cortas para «corregir» la salida arriesga cambiar palabras reales).
+4. **Distribución firmada:** necesita un Apple Developer ID (decisión #7); el workflow de release está escrito pero
    sin ejecutar. El repositorio tampoco tiene remoto todavía, así que el CI nunca ha corrido en GitHub.
-6. **Memoria:** el worker ocupa ~1,4 GB (casi todo el modelo 1B en el runtime ONNX) y ~1,65 GB con la segunda
-   opinión. Aceptable en una Mac de 16 GB; en una de 8 GB conviene medir.
-7. **Confirmación con clic en el overlay** (hoy ⌘⏎ / ⌘⎋), **Fase 10 y GUI de ajustes:** diferidas (§8, decisión #9).
+5. **Memoria:** el worker ocupa ~1,4 GB (casi todo el modelo 1B en el runtime ONNX) y ~1,65 GB con la segunda
+   opinión. Aceptable en una Mac de 16 GB; en una de 8 GB conviene medir. Transcribir por trozos no lo cambia
+   (un solo modelo cargado), pero la caché del formateador y el audio en memoria sí crecen con el dictado.
+6. **Fase 10 (manos libres):** diferida a propósito (§8): se abre cuando te sorprendas buscando la tecla.
+
+Cerrado desde la revisión anterior: la espera tras un dictado largo, la confirmación con clic en el overlay, la
+interfaz de ajustes (el panel; era la decisión #9) y verificar que el modelo de un agente real usa las herramientas.
 
 ---
 

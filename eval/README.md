@@ -148,12 +148,15 @@ EVA_CANARY_MODEL_DIR=… cargo run --release -p eva-eval -- --corpus <órdenes> 
 
 ## Frases de una o dos palabras
 
-Es el punto débil que sigue abierto. 28 clips de `say` de 0,2–1,2 s («sí», «gracias», «vale», «de acuerdo»…)
-con `canary-1b-flash`: solo 12 de 28 salen exactos; el resto se calla (nada que pegar) o inventa («Vale» →
-«Ballet», «De acuerdo» → «Y ser como, camino a ir»). Más silencio alrededor (0–3 s) no lo arregla: se probó
-y ningún relleno pasa de 14/28, y sin ninguno es peor (10/28), así que se dejó en 300 ms + 200 ms. Es el
-límite del modelo con audio tan corto; con dos o tres palabras ya es fiable (`Un momento`, `Nos vemos mañana`).
-Si dictas muchas respuestas de una palabra, este es el caso a medir con tu propia voz.
+28 clips de `say` de 0,2–1,2 s («sí», «gracias», «vale», «de acuerdo»…) con `canary-1b-flash`. Solos, el
+modelo se calla (nada que pegar) o inventa («Vale» → «Ballet», «De acuerdo» → «Y ser como, camino a ir»): 1 de
+28 exacto con el relleno por defecto, 11 con silencio digital alrededor. Más silencio no lo arregla.
+
+Lo que sí ayuda es **decirlo tres veces seguidas en un solo audio** (con 350 ms de pausa) y dejar votar a las
+repeticiones (`eva-audio::short_reply`, para clips de hasta 1,5 s): 14 de 28 exactos con el relleno por defecto, con
+o sin segunda opinión. Con 2 repeticiones salen 8, con 4 salen 15 y con 5 bajan a 12, así que son 3. El resto sigue
+mal («Balle», «Andirian» por «anterior»); con dos o tres palabras ya era fiable. Sigue siendo audio sintético: si
+dictas muchas respuestas de una palabra, este es el caso a medir con tu propia voz.
 
 ## Dictados largos
 
@@ -177,6 +180,13 @@ modelo de voz ya puso un punto, o en una coma o antes de «porque», «y», «as
 solo se cae a sí mismo. Un dictado de 70 s de párrafos distintos: 6,6 s de voz + 8,3 s de formato,
 WER 0,5 %, con puntuación completa. (El modelo del equipo no formatea trozos en paralelo: se probó y
 no gana tiempo.)
+
+### La espera de después de soltar la tecla
+
+EVA01 no espera a que sueltes la tecla para trabajar: corta lo ya grabado en pausas, transcribe cada trozo y
+formatea el texto por adelantado. `eva-eval --streaming` mide solo lo que queda tras soltar (la cola de audio y la
+última frase). Con el dictado sintético de 70 s y Apple Intelligence: **14,9 s → 3,2 s** (voz 6,6 s → 1,4 s,
+formato 8,3 s → 1,9 s), con el mismo texto salvo puntuación.
 
 ## Cómo cosechar muestras nuevas
 
