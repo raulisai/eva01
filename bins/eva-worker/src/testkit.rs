@@ -205,6 +205,7 @@ impl RigBuilder {
             formatter_name: "reglas".to_string(),
             config_warnings: self.config_warnings,
             harvest_dir: dir.path().join("harvest"),
+            agent_ledger_dir: dir.path().join("agents"),
         });
         Rig { ctx: Arc::new(ctx), desktop, rx, _dir: dir }
     }

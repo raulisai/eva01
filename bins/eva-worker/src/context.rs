@@ -6,6 +6,7 @@
 
 use crate::confirm::ConfirmationBroker;
 use crate::harvest::Harvest;
+use crate::orphans::AgentLedger;
 use crate::tasks::TaskRegistry;
 use eva_agents::{AgentRegistry, McpInjection};
 use eva_audio::{AudioSource, CaptureHandle, SpeechToText};
@@ -115,6 +116,8 @@ pub struct WorkerDeps {
     pub config_warnings: Vec<String>,
     /// Where dictations the user flags as wrong are kept.
     pub harvest_dir: PathBuf,
+    /// Where the running agents' processes are written down.
+    pub agent_ledger_dir: PathBuf,
 }
 
 /// The worker's shared state.
@@ -165,6 +168,8 @@ pub struct WorkerContext {
     pub tasks: TaskRegistry,
     /// The last dictation, held so the user can flag it as wrong.
     pub harvest: Harvest,
+    /// The running agents' processes, for the next worker if this one dies.
+    pub agent_ledger: AgentLedger,
     recording: Mutex<Option<RecordingSession>>,
     jobs: JobTracker,
 }
@@ -213,6 +218,7 @@ impl WorkerContext {
             config_warnings: deps.config_warnings,
             tasks: TaskRegistry::default(),
             harvest: Harvest::new(deps.harvest_dir),
+            agent_ledger: AgentLedger::new(deps.agent_ledger_dir),
             recording: Mutex::new(None),
             jobs: JobTracker::new(),
         }

@@ -354,6 +354,9 @@ async fn run_one(
         Ok(running) => running,
         Err(e) => return Attempt::NotStarted(e.to_string()),
     };
+    if let Some(pid) = running.pid() {
+        ctx.agent_ledger.record(req.request_id, pid).await;
+    }
 
     // Recorded as soon as the provider accepted the task — a "continúa" in
     // this project should find it even if the task itself later fails, the
@@ -387,6 +390,7 @@ async fn run_one(
         }
     };
     let outcome = running.wait_or_cancel(stop).await;
+    ctx.agent_ledger.forget(req.request_id);
     let did_work = forwarder.await.unwrap_or(false);
 
     let timed_out = timed_out.load(Ordering::SeqCst);
@@ -777,6 +781,23 @@ mod tests {
         let (success, summary) = finished(&events).expect("the timeout must end the task");
         assert!(!success);
         assert!(summary.contains("tiempo límite"), "{summary}");
+    }
+
+    #[tokio::test]
+    async fn a_running_agent_is_written_down_until_it_ends() {
+        let slow = Arc::new(MockProvider::never_finishes("codex"));
+        let mut rig = Rig::builder().agents(registry_of(&[&slow])).build();
+        let ledger_dir = rig.ctx.worktrees_dir.parent().unwrap().join("agents");
+        let (task_id, command) = ask("Adán, refactoriza todo");
+        crate::handler::handle(&rig.ctx, command, None);
+        rig.until(|e| matches!(e, WorkerToShell::TaskStarted { .. })).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert_eq!(std::fs::read_dir(&ledger_dir).unwrap().count(), 1, "a worker that dies now leaves a trace");
+
+        crate::handler::handle(&rig.ctx, ShellToWorker::Cancel { request_id: task_id }, None);
+        rig.ctx.wait_idle().await;
+        assert_eq!(std::fs::read_dir(&ledger_dir).unwrap().count(), 0, "an ended agent is crossed off");
     }
 
     #[tokio::test]

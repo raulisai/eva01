@@ -117,6 +117,14 @@ impl RunningAgent {
         RunningAgent { child, output_task }
     }
 
+    /// The agent's process id — also the id of its process group, which the
+    /// CLI leads (`stream::launch`). `None` once it has been reaped. What a
+    /// worker records so that, if it dies, the next one can stop an agent
+    /// that would otherwise keep running with nobody watching it.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     /// Waits for the task to finish on its own and returns its outcome.
     pub async fn wait(self) -> AgentOutcome {
         outcome_of(self.output_task.await)

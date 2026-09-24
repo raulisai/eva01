@@ -11,6 +11,7 @@ mod dictation;
 mod handler;
 mod harvest;
 mod housekeeping;
+mod orphans;
 mod recording;
 mod rpc;
 mod startup;

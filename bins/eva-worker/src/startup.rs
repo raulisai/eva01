@@ -53,6 +53,11 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("no se pudo limpiar el historial: {e}"),
     }
 
+    let stopped = crate::orphans::AgentLedger::new(support.join("run").join("agents")).reap().await;
+    if stopped > 0 {
+        tracing::warn!(stopped, "agentes que seguían corriendo tras la muerte del worker anterior; se detuvieron");
+    }
+
     let wake_word: String = store.get_setting("wake_word")?.unwrap_or_else(|| config.wake_word.0.clone());
     let (events, rx) = Events::channel();
     let (formatter, formatter_name) = load_formatter(&config);
@@ -93,6 +98,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         formatter_name,
         config_warnings: loaded.warnings,
         harvest_dir: support.join("harvest"),
+        agent_ledger_dir: support.join("run").join("agents"),
         config,
     }));
 
