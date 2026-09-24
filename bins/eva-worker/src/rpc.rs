@@ -77,17 +77,32 @@ fn new_token() -> String {
 fn remove_stale_sockets(run_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(run_dir) else { return };
     for entry in entries.filter_map(Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let pid = name
-            .strip_prefix("gateway-")
-            .and_then(|rest| rest.strip_suffix(".sock"))
-            .and_then(|p| p.parse::<i32>().ok());
-        if let Some(pid) = pid {
+        if let Some(pid) = socket_pid(&entry.file_name().to_string_lossy()) {
             if !process_alive(pid) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
+}
+
+/// Whether another worker is running right now — its gateway socket is there
+/// and its process is alive. `preferred_run_dir` is the same directory given
+/// to [`bind`].
+pub fn other_live_workers(preferred_run_dir: &Path) -> bool {
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let run_dir = socket_dir(preferred_run_dir, uid, &std::env::temp_dir());
+    let own = std::process::id() as i32;
+    let Ok(entries) = std::fs::read_dir(run_dir) else { return false };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| socket_pid(&entry.file_name().to_string_lossy()))
+        .any(|pid| pid != own && process_alive(pid))
+}
+
+/// The pid in a `gateway-<pid>.sock` name.
+fn socket_pid(name: &str) -> Option<i32> {
+    name.strip_prefix("gateway-").and_then(|rest| rest.strip_suffix(".sock")).and_then(|pid| pid.parse().ok())
 }
 
 fn process_alive(pid: i32) -> bool {
@@ -146,6 +161,25 @@ mod tests {
         assert!(endpoint.socket.exists());
         assert!(endpoint.socket.as_os_str().len() < SOCKET_PATH_MAX);
         let _ = std::fs::remove_file(&endpoint.socket);
+    }
+
+    #[test]
+    fn another_workers_socket_counts_only_while_its_process_lives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run_dir = dir.path().join("run");
+        std::fs::create_dir_all(&run_dir).expect("mkdir");
+        assert!(!other_live_workers(&run_dir));
+
+        std::fs::write(run_dir.join(format!("gateway-{}.sock", std::process::id())), "").expect("own");
+        assert!(!other_live_workers(&run_dir), "this worker's own socket is not another worker");
+
+        let mut peer = std::process::Command::new("sleep").arg("30").spawn().expect("sleep");
+        std::fs::write(run_dir.join(format!("gateway-{}.sock", peer.id())), "").expect("peer");
+        assert!(other_live_workers(&run_dir));
+
+        peer.kill().expect("kill");
+        peer.wait().expect("wait");
+        assert!(!other_live_workers(&run_dir), "a dead worker's leftover socket does not count");
     }
 
     #[tokio::test]

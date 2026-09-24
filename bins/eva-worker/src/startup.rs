@@ -37,7 +37,13 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     let support = support_dir();
     std::fs::create_dir_all(&support)?;
     let store = eva_store::Store::open(&support.join("eva.sqlite3"))?;
-    match store.mark_unfinished_tasks_as_interrupted("interrumpida: el worker se reinició") {
+    // Another worker still running (the app's, while `eva doctor` starts
+    // this one) may be the one running those tasks: they are only
+    // interrupted if no worker is left to finish them.
+    let peers = rpc::other_live_workers(&support.join("run"));
+    let unfinished =
+        if peers { Ok(0) } else { store.mark_unfinished_tasks_as_interrupted("interrumpida: el worker se reinició") };
+    match unfinished {
         Ok(0) => {}
         Ok(count) => {
             tracing::warn!(count, "tareas que estaban en curso cuando el worker murió; marcadas como interrumpidas")
@@ -53,9 +59,11 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("no se pudo limpiar el historial: {e}"),
     }
 
-    let stopped = crate::orphans::AgentLedger::new(support.join("run").join("agents")).reap().await;
+    let worker_process = crate::orphans::Process::current();
+    let stopped =
+        crate::orphans::AgentLedger::new(support.join("run").join("agents"), worker_process.clone()).reap().await;
     if stopped > 0 {
-        tracing::warn!(stopped, "agentes que seguían corriendo tras la muerte del worker anterior; se detuvieron");
+        tracing::warn!(stopped, "agentes que seguían corriendo tras la muerte de su worker; se detuvieron");
     }
 
     let wake_word: String = store.get_setting("wake_word")?.unwrap_or_else(|| config.wake_word.0.clone());
@@ -99,6 +107,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         config_warnings: loaded.warnings,
         harvest_dir: support.join("harvest"),
         agent_ledger_dir: support.join("run").join("agents"),
+        worker_process,
         config,
     }));
 

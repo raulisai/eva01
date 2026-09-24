@@ -11,6 +11,12 @@
 //! A pid alone could have been reused by an unrelated program by then, so
 //! each entry also keeps the process's start time, and nothing is signalled
 //! unless both still match.
+//!
+//! And "left behind" means *by a worker that is gone*: `eva doctor` and the
+//! other CLI commands start a worker of their own while the app's is
+//! running, and that one must not stop the app's agents. So each entry names
+//! the worker that launched it (its pid and start time too), and an agent is
+//! only stopped when that worker no longer exists.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,29 +26,60 @@ use uuid::Uuid;
 const GRACE: Duration = Duration::from_secs(3);
 
 /// The on-disk list of running agents: one file per task, `<task>.agent`,
-/// holding the pid and its start time.
+/// holding the agent's pid and start time, then its worker's.
 pub struct AgentLedger {
     dir: PathBuf,
+    owner: Process,
 }
 
-/// One recorded agent process.
+/// A process, identified beyond its (reusable) pid.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Entry {
+pub struct Process {
     pid: u32,
     started: String,
 }
 
+impl Process {
+    /// This worker. Asks `ps` once, synchronously: it is called while the
+    /// worker is being built.
+    pub fn current() -> Process {
+        let pid = std::process::id();
+        let started = std::process::Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .unwrap_or_default();
+        Process { pid, started }
+    }
+
+    /// Whether this very process is still running.
+    async fn alive(&self) -> bool {
+        !self.started.is_empty() && start_time(self.pid).await.as_deref() == Some(self.started.as_str())
+    }
+}
+
+/// One recorded agent and the worker that launched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    agent: Process,
+    owner: Process,
+}
+
 impl AgentLedger {
-    /// A ledger kept in `dir` (created on first use).
-    pub fn new(dir: PathBuf) -> AgentLedger {
-        AgentLedger { dir }
+    /// A ledger kept in `dir` (created on first use), for agents launched by `owner`.
+    pub fn new(dir: PathBuf, owner: Process) -> AgentLedger {
+        AgentLedger { dir, owner }
     }
 
     /// Notes that `task` is running as process `pid`.
     pub async fn record(&self, task: Uuid, pid: u32) {
         let Some(started) = start_time(pid).await else { return };
-        let written = std::fs::create_dir_all(&self.dir)
-            .and_then(|()| std::fs::write(self.path(task), format!("{pid}\n{started}\n")));
+        let owner = &self.owner;
+        let written = std::fs::create_dir_all(&self.dir).and_then(|()| {
+            std::fs::write(self.path(task), format!("{pid}\n{started}\n{}\n{}\n", owner.pid, owner.started))
+        });
         if let Err(e) = written {
             tracing::warn!("no se pudo anotar el proceso del agente: {e}");
         }
@@ -53,23 +90,30 @@ impl AgentLedger {
         let _ = std::fs::remove_file(self.path(task));
     }
 
-    /// Stops every agent a previous worker left running and clears the list.
-    /// Returns how many were still alive. The final kill, for one that
-    /// ignores the polite signal, happens in the background after [`GRACE`].
+    /// Stops every agent whose worker is gone and crosses it off. Agents of
+    /// a worker still running are left alone. Returns how many were stopped.
+    /// The final kill, for one that ignores the polite signal, happens in
+    /// the background after [`GRACE`].
     pub async fn reap(&self) -> usize {
         let Ok(files) = std::fs::read_dir(&self.dir) else { return 0 };
         let mut stopped = 0;
         for file in files.filter_map(Result::ok).map(|f| f.path()) {
-            if file.extension().is_some_and(|e| e == "agent") {
-                if let Some(entry) = read_entry(&file) {
-                    if start_time(entry.pid).await.as_deref() == Some(entry.started.as_str()) {
-                        signal_group(entry.pid, libc::SIGTERM);
-                        tokio::spawn(kill_if_still_there(entry));
-                        stopped += 1;
-                    }
-                }
-                let _ = std::fs::remove_file(&file);
+            if file.extension().is_none_or(|e| e != "agent") {
+                continue;
             }
+            let Some(entry) = read_entry(&file) else {
+                let _ = std::fs::remove_file(&file);
+                continue;
+            };
+            if entry.owner.alive().await {
+                continue; // its worker is running and still in charge of it
+            }
+            if entry.agent.alive().await {
+                signal_group(entry.agent.pid, libc::SIGTERM);
+                tokio::spawn(kill_if_still_there(entry.agent));
+                stopped += 1;
+            }
+            let _ = std::fs::remove_file(&file);
         }
         stopped
     }
@@ -81,16 +125,19 @@ impl AgentLedger {
 
 fn read_entry(file: &Path) -> Option<Entry> {
     let text = std::fs::read_to_string(file).ok()?;
-    let mut lines = text.lines();
-    let pid = lines.next()?.trim().parse().ok()?;
-    let started = lines.next()?.trim().to_string();
-    (!started.is_empty()).then_some(Entry { pid, started })
+    let mut lines = text.lines().map(str::trim);
+    let mut process = || -> Option<Process> {
+        let pid = lines.next()?.parse().ok()?;
+        let started = lines.next()?.to_string();
+        (!started.is_empty()).then_some(Process { pid, started })
+    };
+    Some(Entry { agent: process()?, owner: process()? })
 }
 
-async fn kill_if_still_there(entry: Entry) {
+async fn kill_if_still_there(agent: Process) {
     tokio::time::sleep(GRACE).await;
-    if start_time(entry.pid).await.as_deref() == Some(entry.started.as_str()) {
-        signal_group(entry.pid, libc::SIGKILL);
+    if agent.alive().await {
+        signal_group(agent.pid, libc::SIGKILL);
     }
 }
 
@@ -118,61 +165,91 @@ mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
 
-    /// A stand-in for an agent: its own process group, like the real ones.
-    fn agent() -> std::process::Child {
+    /// A stand-in for an agent (or a worker): its own process group, like the real ones.
+    fn process() -> std::process::Child {
         std::process::Command::new("sleep").arg("60").process_group(0).spawn().expect("sleep starts")
     }
 
-    #[tokio::test]
-    async fn an_agent_left_behind_is_stopped_by_the_next_worker() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut orphan = agent();
-        AgentLedger::new(dir.path().to_path_buf()).record(Uuid::new_v4(), orphan.id()).await;
+    async fn identity(child: &std::process::Child) -> Process {
+        Process { pid: child.id(), started: start_time(child.id()).await.expect("running") }
+    }
 
-        // The worker died here. The next one starts:
-        let stopped = AgentLedger::new(dir.path().to_path_buf()).reap().await;
+    fn stopped_by_a_signal(mut child: std::process::Child) -> bool {
+        !child.wait().expect("waits").success()
+    }
+
+    #[tokio::test]
+    async fn an_agent_whose_worker_died_is_stopped_by_the_next_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dead_worker = process();
+        let owner = identity(&dead_worker).await;
+        let orphan = process();
+        AgentLedger::new(dir.path().to_path_buf(), owner).record(Uuid::new_v4(), orphan.id()).await;
+        dead_worker.kill().unwrap();
+        dead_worker.wait().unwrap();
+
+        let stopped = AgentLedger::new(dir.path().to_path_buf(), Process::current()).reap().await;
 
         assert_eq!(stopped, 1);
-        let status = tokio::task::spawn_blocking(move || orphan.wait()).await.unwrap().unwrap();
-        assert!(!status.success(), "it was stopped by a signal, not left to finish");
+        assert!(tokio::task::spawn_blocking(move || stopped_by_a_signal(orphan)).await.unwrap());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "the list is cleared");
+    }
+
+    #[tokio::test]
+    async fn the_agents_of_a_worker_that_is_still_running_are_left_alone() {
+        // `eva doctor` starts a worker of its own while the app's is busy.
+        let dir = tempfile::tempdir().unwrap();
+        let mut app_worker = process();
+        let mut its_agent = process();
+        AgentLedger::new(dir.path().to_path_buf(), identity(&app_worker).await)
+            .record(Uuid::new_v4(), its_agent.id())
+            .await;
+
+        let stopped = AgentLedger::new(dir.path().to_path_buf(), Process::current()).reap().await;
+
+        assert_eq!(stopped, 0);
+        assert!(its_agent.try_wait().unwrap().is_none(), "the app's task keeps running");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "and stays on the list");
+        for child in [&mut its_agent, &mut app_worker] {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
     }
 
     #[tokio::test]
     async fn a_pid_now_used_by_another_program_is_never_signalled() {
         let dir = tempfile::tempdir().unwrap();
-        let mut bystander = agent();
-        std::fs::write(
-            dir.path().join(format!("{}.agent", Uuid::new_v4())),
-            format!("{}\nMon Jan  1 00:00:00 2001\n", bystander.id()),
-        )
-        .unwrap();
+        let mut bystander = process();
+        let entry = format!("{}\nMon Jan  1 00:00:00 2001\n999999\nMon Jan  1 00:00:00 2001\n", bystander.id());
+        std::fs::write(dir.path().join(format!("{}.agent", Uuid::new_v4())), entry).unwrap();
 
-        assert_eq!(AgentLedger::new(dir.path().to_path_buf()).reap().await, 0);
+        assert_eq!(AgentLedger::new(dir.path().to_path_buf(), Process::current()).reap().await, 0);
         assert!(bystander.try_wait().unwrap().is_none(), "a process that is not the recorded one is left alone");
         bystander.kill().unwrap();
+        bystander.wait().unwrap();
     }
 
     #[tokio::test]
-    async fn a_finished_task_leaves_nothing_behind_and_a_stale_entry_is_just_removed() {
+    async fn a_finished_task_leaves_nothing_behind_and_a_malformed_entry_is_just_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let ledger = AgentLedger::new(dir.path().to_path_buf());
+        let ledger = AgentLedger::new(dir.path().to_path_buf(), Process::current());
         let task = Uuid::new_v4();
-        let mut finished = agent();
+        let mut finished = process();
         ledger.record(task, finished.id()).await;
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         ledger.forget(task);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         finished.kill().unwrap();
-        let _ = finished.wait();
+        finished.wait().unwrap();
 
-        std::fs::write(dir.path().join(format!("{}.agent", Uuid::new_v4())), "999999\nMon Jan  1 00:00:00 2001\n")
-            .unwrap();
+        std::fs::write(dir.path().join(format!("{}.agent", Uuid::new_v4())), "no es una entrada").unwrap();
         assert_eq!(ledger.reap().await, 0);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
     async fn a_missing_ledger_is_nothing_to_reap() {
-        assert_eq!(AgentLedger::new(PathBuf::from("/no/existe/agentes")).reap().await, 0);
+        let ledger = AgentLedger::new(PathBuf::from("/no/existe/agentes"), Process::current());
+        assert_eq!(ledger.reap().await, 0);
     }
 }

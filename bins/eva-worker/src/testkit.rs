@@ -206,6 +206,7 @@ impl RigBuilder {
             config_warnings: self.config_warnings,
             harvest_dir: dir.path().join("harvest"),
             agent_ledger_dir: dir.path().join("agents"),
+            worker_process: crate::orphans::Process::current(),
         });
         Rig { ctx: Arc::new(ctx), desktop, rx, _dir: dir }
     }

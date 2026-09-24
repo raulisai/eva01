@@ -567,7 +567,13 @@ pub fn snapshot(ctx: &WorkerContext) -> Vec<TaskInfo> {
             request_id: record.id,
             provider: record.provider_id,
             prompt: record.prompt,
-            state: if record.success == Some(true) { TaskState::Succeeded } else { TaskState::Failed },
+            // No result yet: another worker (the app's, seen from `eva tasks`)
+            // is still running it.
+            state: match record.success {
+                Some(true) => TaskState::Succeeded,
+                Some(false) => TaskState::Failed,
+                None => TaskState::Running,
+            },
             summary: record.summary,
             age_secs: age,
         });

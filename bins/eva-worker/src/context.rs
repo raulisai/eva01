@@ -118,6 +118,8 @@ pub struct WorkerDeps {
     pub harvest_dir: PathBuf,
     /// Where the running agents' processes are written down.
     pub agent_ledger_dir: PathBuf,
+    /// This worker, as the owner of the agents it launches.
+    pub worker_process: crate::orphans::Process,
 }
 
 /// The worker's shared state.
@@ -218,7 +220,7 @@ impl WorkerContext {
             config_warnings: deps.config_warnings,
             tasks: TaskRegistry::default(),
             harvest: Harvest::new(deps.harvest_dir),
-            agent_ledger: AgentLedger::new(deps.agent_ledger_dir),
+            agent_ledger: AgentLedger::new(deps.agent_ledger_dir, deps.worker_process),
             recording: Mutex::new(None),
             jobs: JobTracker::new(),
         }
