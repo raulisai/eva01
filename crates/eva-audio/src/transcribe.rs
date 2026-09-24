@@ -225,12 +225,17 @@ impl SpeechToText for CanarySpeechToText {
         // fed a piece at a time, cut at its pauses (see `crate::segment`).
         let mut texts = Vec::new();
         for piece in crate::segment::split_at_pauses(samples) {
+            // A one-word reply is not heard reliably alone: it is said three
+            // times in one audio and the repetitions vote (`crate::short_reply`).
+            let short = crate::short_reply::is_short_reply(piece);
+            let audio = if short { crate::short_reply::repeated(piece) } else { piece.to_vec() };
             let result = model
-                .transcribe_with(&self.padding.apply(piece), &params)
+                .transcribe_with(&self.padding.apply(&audio), &params)
                 .map_err(|e| TranscribeError::TranscriptionFailed(e.to_string()))?;
-            let text = result.text.trim();
+            let text =
+                if short { crate::short_reply::vote(result.text.trim()) } else { result.text.trim().to_string() };
             if !text.is_empty() {
-                texts.push(text.to_string());
+                texts.push(text);
             }
         }
         Ok(Transcript { text: texts.join(" ") })

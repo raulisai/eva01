@@ -12,6 +12,7 @@ pub mod capture;
 pub mod resample;
 pub mod second_opinion;
 pub mod segment;
+pub mod short_reply;
 pub mod transcribe;
 pub mod vad;
 pub mod wav;
