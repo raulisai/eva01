@@ -5,6 +5,7 @@
 //! the test kit.
 
 use crate::apps::AppCatalog;
+use crate::command_book::CommandBook;
 use crate::confirm::ConfirmationBroker;
 use crate::harvest::Harvest;
 use crate::orphans::AgentLedger;
@@ -151,6 +152,8 @@ pub struct WorkerContext {
     pub store: Store,
     /// `config.toml`.
     pub config: Config,
+    /// The user's own commands, kept fresh from disk (see [`CommandBook`]).
+    pub commands: CommandBook,
     /// Resolves spoken app names to canonical ones.
     pub app_index: AppCatalog,
     /// The configured wake word.
@@ -223,6 +226,7 @@ impl WorkerContext {
 
         WorkerContext {
             store: deps.store,
+            commands: CommandBook::new(deps.config.commands.clone()),
             config: deps.config,
             app_index: deps.app_index,
             wake_word: deps.wake_word,
@@ -286,7 +290,8 @@ impl WorkerContext {
 
     /// Where a voice task should run, and why: the project the focused
     /// window names, else `agents.default_project`, else the project the
-    /// last task ran in, else the working directory.
+    /// last task ran in, else the working directory — unless that is far too
+    /// broad (the app starts with `/`), and then EVA01's own scratch folder.
     pub async fn resolve_project(&self) -> (PathBuf, Resolution) {
         let title = self.active_window_title().await;
         let most_recent = self
@@ -295,11 +300,20 @@ impl WorkerContext {
             .ok()
             .and_then(|tasks| tasks.into_iter().next())
             .map(|t| PathBuf::from(t.project_dir));
+        let fallback = if eva_config::is_too_broad(&self.base_dir) {
+            let scratch = eva_config::support_dir().join("scratch");
+            if let Err(e) = std::fs::create_dir_all(&scratch) {
+                tracing::warn!("no se pudo crear {}: {e}", scratch.display());
+            }
+            scratch
+        } else {
+            self.base_dir.clone()
+        };
         self.projects.index().resolve_active(
             title.as_deref(),
             self.projects.default_project(),
             most_recent.as_deref(),
-            &self.base_dir,
+            &fallback,
         )
     }
 

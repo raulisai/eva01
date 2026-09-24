@@ -22,7 +22,7 @@ mod projects;
 
 pub use paths::{expand_home, support_dir};
 pub use policy::{ActionKind, GatewayConfig, Origin, Policy};
-pub use projects::{Project, ProjectIndex, Resolution};
+pub use projects::{is_too_broad, Project, ProjectIndex, Resolution};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

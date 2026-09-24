@@ -37,6 +37,15 @@ pub enum Resolution {
     WorkingDirectory,
 }
 
+/// Whether `path` is far too broad to be where an agent works: the root of
+/// the disk, a top-level folder (`/Users`, `/tmp`) or the home folder. A task
+/// run there, with a write sandbox rooted at it, could touch anything — as
+/// happened when a task started from the app (whose working directory is
+/// `/`) with no project in view tried to write to `/app.txt`.
+pub fn is_too_broad(path: &Path) -> bool {
+    path.components().count() <= 2 || dirs::home_dir().is_some_and(|home| path == home)
+}
+
 impl ProjectIndex {
     /// An index over these projects (names must be unique enough to match).
     pub fn new(projects: Vec<Project>) -> ProjectIndex {
@@ -95,7 +104,7 @@ impl ProjectIndex {
         if let Some(path) = default_project.filter(|p| p.is_dir()) {
             return (path.to_path_buf(), Resolution::Default);
         }
-        if let Some(path) = most_recent.filter(|p| p.is_dir()) {
+        if let Some(path) = most_recent.filter(|p| p.is_dir() && !is_too_broad(p)) {
             return (path.to_path_buf(), Resolution::MostRecent);
         }
         (fallback.to_path_buf(), Resolution::WorkingDirectory)
@@ -232,5 +241,24 @@ mod tests {
         fn find_in_title_never_panics(title in ".*", name in "[a-zA-Z0-9_.-]{0,12}") {
             let _ = index(&[&name]).find_in_title(&title);
         }
+    }
+
+    #[test]
+    fn the_disk_root_top_level_folders_and_home_are_too_broad_for_an_agent_to_work_in() {
+        for broad in ["/", "/Users", "/tmp", "/Applications"] {
+            assert!(is_too_broad(Path::new(broad)), "{broad}");
+        }
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_too_broad(&home));
+            assert!(!is_too_broad(&home.join("code/eva01")));
+        }
+        assert!(!is_too_broad(Path::new("/repos/iam")));
+    }
+
+    #[test]
+    fn a_most_recent_project_that_is_too_broad_is_not_reused() {
+        let index = ProjectIndex::new(Vec::new());
+        let (path, why) = index.resolve_active(None, None, Some(Path::new("/")), Path::new("/tmp/x/y"));
+        assert_eq!((path, why), (PathBuf::from("/tmp/x/y"), Resolution::WorkingDirectory));
     }
 }

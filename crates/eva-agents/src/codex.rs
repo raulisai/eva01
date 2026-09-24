@@ -96,6 +96,12 @@ fn build_command(task: &AgentTask) -> Command {
 /// as reversible: nothing is written to `~/.codex/config.toml`. Values are
 /// TOML; a JSON string is a valid TOML basic string for every path or token
 /// this can carry.
+///
+/// The tools are pre-approved for Codex because `codex exec` cannot ask: it
+/// answers "this session does not allow approving" to every tool call of an
+/// MCP server, and the agent never gets to use EVA (found running a real
+/// task). Nothing is left unguarded by it — every call goes through EVA's
+/// gateway, which allows, asks the user on screen or refuses per its policy.
 fn mcp_overrides(mcp: &McpInjection) -> Vec<String> {
     let name = McpInjection::SERVER_NAME;
     let args = mcp.args.iter().map(|a| toml_string(a)).collect::<Vec<_>>().join(",");
@@ -104,6 +110,7 @@ fn mcp_overrides(mcp: &McpInjection) -> Vec<String> {
         format!("mcp_servers.{name}.command={}", toml_string(&mcp.command.to_string_lossy())),
         format!("mcp_servers.{name}.args=[{args}]"),
         format!("mcp_servers.{name}.env={{{env}}}"),
+        format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
     ]
 }
 
@@ -300,7 +307,8 @@ mod tests {
         assert_eq!(overrides[2], r#"mcp_servers.eva.env={EVA_GATEWAY_TOKEN="abc"}"#);
 
         let args = args_of(&build_command(&task(None, Some(mcp))));
-        assert_eq!(args.iter().filter(|a| *a == "-c").count(), 3);
+        assert_eq!(overrides[3], r#"mcp_servers.eva.default_tools_approval_mode="approve""#);
+        assert_eq!(args.iter().filter(|a| *a == "-c").count(), 4);
     }
 
     #[test]
