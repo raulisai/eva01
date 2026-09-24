@@ -21,8 +21,9 @@ Lo que sigue es lo que **existe y se probó de verdad**, no lo que el plan prome
 
 **Workspace:** 4 binarios (`eva-shell`, `eva-worker`, `eva-cli` → `eva`, `eva-eval`) y 10 crates
 (`eva-audio`, `eva-text`, `eva-intent`, `eva-agents`, `eva-mcp`, `eva-macos`, `eva-store`, `eva-gateway`,
-`eva-config`, `eva-ipc`). 691 pruebas automáticas, `clippy -D warnings` limpio, más 9 pruebas marcadas
-`#[ignore]` que solo corren con recursos reales (modelo STT, Apple Intelligence, CLIs de agente).
+`eva-config`, `eva-ipc`). 776 pruebas automáticas, `clippy -D warnings` y `rustdoc -D warnings` limpios, más 9
+marcadas `#[ignore]` que necesitan recursos reales (Apple Intelligence, portapapeles, navegador); `eval/e2e-agent.sh`
+prueba la cadena de agentes completa con los binarios reales y un Codex de prueba.
 
 | Fase | Estado | Notas |
 |---|---|---|
@@ -140,22 +141,27 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
 
 ### Lo que falta y por qué
 
-- **Verificar con tu voz y tu micrófono.** Todo lo medido usa voz sintética (`say`) y ruido añadido; lo que sí se
-  ejercitó de verdad es la ruta del paquete (arranque, `kill -9` al worker, apagado, `eva doctor`, el overlay dibujado
-  a PNG, el modelo real con Apple Intelligence). No se pudo: la tecla fn y el pegado (necesitan el permiso de
-  Accesibilidad, que el paquete pide al abrirse) ni capturar del micrófono (pide permiso a quien lo abre). El
-  primer día de uso es la verificación que falta: marca lo que salga mal (⌃⌥⌘M) y repite `eva-eval` con
-  `--padding` sobre eso.
-- **Un agente de verdad.** En esta máquina Codex pide actualizarse y Claude Code tiene la sesión caducada (lo que
-  `eva doctor --smoke` explica), así que el circuito MCP se probó hasta el socket y el arranque del agente, no
-  hasta una llamada de herramienta hecha por el modelo.
-- **Notarización y distribución firmada:** necesita un Apple Developer ID (decisión #7). El script de empaquetado
-  está probado; el workflow de release está escrito pero **sin ejecutar** y espera los secretos
-  (`packaging/README.md`).
-- **Respuestas de una palabra** (hallazgo 16) y **latencia p95 de 1,2 s** con Apple Intelligence (hallazgo 7): los
-  dos números por mejorar.
-- **Confirmación con clic en el overlay:** hoy se responde con ⌘⏎ / ⌘⎋ (o, en el futuro, un botón).
-- **Fase 10 y GUI de ajustes:** diferidas (§8, decisión #9).
+Verificado de verdad en esta revisión (no solo con pruebas unitarias): el `.app` arranca; un `kill -9` o un
+`kill -STOP` al worker se recupera solo; un agente huérfano se detiene; la cadena agente → `eva-mcp` → socket →
+gateway → auditoría funciona de punta a punta (con un Codex de prueba); el modelo de voz y Apple Intelligence con
+audio sintético; órdenes de voz con el índice real de apps de esta Mac. Lo que falta, en orden de importancia:
+
+1. **Probarlo con tu voz y tu micrófono.** Nada de lo medido usó una voz humana; el micrófono real, la tecla fn y
+   el pegado necesitan permisos (Micrófono, Accesibilidad) que solo tú puedes dar. Es la verificación que falta y
+   la que más puede sorprender: usa EVA01 un día, marca lo que salga mal (⌃⌥⌘M) y corre `eva-eval` sobre eso.
+2. **La espera tras un dictado largo.** Un dictado de 70 s tarda ~14 s en pegarse (voz ~6,5 s + formato ~8 s, todo
+   después de soltar la tecla). Transcribir y formatear por trozos *mientras* se habla (el audio ya se corta en
+   pausas y el texto en frases) dejaría la espera en uno o dos segundos.
+3. **Un agente de verdad.** Codex pide actualizarse y Claude Code tiene la sesión vencida en esta Mac; con uno
+   funcionando, `eva doctor --smoke` y una tarea real cierran la verificación de la fase 6/8 que el Codex de prueba
+   no puede (que el modelo decida usar las herramientas).
+4. **Respuestas de una palabra** («sí», «vale»): ~50 % exactas incluso con la segunda opinión. Medir con tu voz
+   antes de invertir: es el límite del modelo con audio de medio segundo.
+5. **Distribución firmada:** necesita un Apple Developer ID (decisión #7); el workflow de release está escrito pero
+   sin ejecutar. El repositorio tampoco tiene remoto todavía, así que el CI nunca ha corrido en GitHub.
+6. **Memoria:** el worker ocupa ~1,4 GB (casi todo el modelo 1B en el runtime ONNX) y ~1,65 GB con la segunda
+   opinión. Aceptable en una Mac de 16 GB; en una de 8 GB conviene medir.
+7. **Confirmación con clic en el overlay** (hoy ⌘⏎ / ⌘⎋), **Fase 10 y GUI de ajustes:** diferidas (§8, decisión #9).
 
 ---
 
