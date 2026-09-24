@@ -53,6 +53,9 @@ enum Command {
         #[arg(long)]
         smoke: bool,
     },
+    /// Calibra EVA01 a tu voz: te pide unas frases, oye cómo salen y aprende cómo
+    /// se escribe tu palabra de activación y tus aplicaciones (no ejecuta nada).
+    Calibrate,
     /// Pide el reporte de salud de eva-worker.
     Health,
     /// Muestra las tareas de agente en curso y las recientes.
@@ -177,6 +180,7 @@ async fn main() {
         Command::Intent { text, run: true } => {
             talk(|request_id| ShellToWorker::RunIntentText { request_id, text }, timeout).await
         }
+        Command::Calibrate => talk(|request_id| ShellToWorker::Calibrate { request_id }, timeout).await,
         Command::Health => talk(|request_id| ShellToWorker::HealthCheck { request_id }, timeout).await,
         Command::Tasks => talk(|request_id| ShellToWorker::ListTasks { request_id }, timeout).await,
         Command::WakeWord { word } => talk(|request_id| ShellToWorker::SetWakeWord { request_id, word }, timeout).await,

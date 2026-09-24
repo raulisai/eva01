@@ -5,6 +5,7 @@
 //! JSON-lines on stdout.
 
 mod apps;
+mod calibration;
 mod commands;
 mod confirm;
 mod context;

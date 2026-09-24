@@ -105,6 +105,15 @@ Acentos, mayúsculas y puntuación no importan, pero tiene que ser **toda** la o
 correo es un desastre» no dispara «mi correo»). Pasan por el mismo gateway que cualquier orden,
 así que `[gateway.voice]` las rige. Compruébalas sin ejecutarlas: `eva intent "Adán, mi correo"`.
 
+## Calibrarlo a tu voz
+
+`eva calibrate` te pide unas diez frases («Eva, abre Spotify», «Eva, cierra Spotify»…, con las apps
+que de verdad tienes), oye cómo salen con tu micrófono y aprende cómo escribe el reconocedor **tu**
+palabra de activación y los nombres de tus apps: si dices «Eva» y siempre sale «Ava», deja de ser
+un fallo. No ejecuta nada de lo que dices. Lo aprendido se guarda en tu base de datos local y se
+aplica al momento, incluso a la app que ya está abierta. Repítelo cuando cambies de micrófono o
+de palabra de activación (`eva wake-word`).
+
 ## Configuración
 
 Todo es opcional. Crea el archivo con ayuda y edítalo:

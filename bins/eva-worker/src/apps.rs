@@ -46,6 +46,18 @@ impl AppCatalog {
         self
     }
 
+    /// Takes in what was learned elsewhere (another worker, a calibration run
+    /// from the CLI) since this one started. `true` if anything was new.
+    pub fn sync_learned(&self, stored: &[(String, String)]) -> bool {
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        let known = self.learned.lock().unwrap().clone();
+        let fresh: Vec<&(String, String)> = stored.iter().filter(|pair| !known.contains(pair)).collect();
+        for (heard, app) in &fresh {
+            self.learn(heard, app);
+        }
+        !fresh.is_empty()
+    }
+
     /// From now on `heard` is an exact name of `app`, through rescans too.
     pub fn learn(&self, heard: &str, app: &str) {
         #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy

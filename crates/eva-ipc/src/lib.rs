@@ -115,6 +115,13 @@ pub enum ShellToWorker {
         /// Correlates this request with its response.
         request_id: uuid::Uuid,
     },
+    /// Guided calibration: the worker asks for a few commands, listens to each
+    /// and learns how this user's speech writes the wake word and app names.
+    /// Prompts and what was heard come back as [`WorkerToShell::Notice`]s.
+    Calibrate {
+        /// Correlates this request with its responses.
+        request_id: uuid::Uuid,
+    },
     /// "Are you still there?" — answered at once by [`WorkerToShell::Pong`]
     /// from the worker's command loop itself, so an answer proves the loop is
     /// not stuck, not merely that the process exists.
@@ -400,6 +407,7 @@ mod tests {
             ShellToWorker::ListTasks { request_id },
             ShellToWorker::ConfirmationResponse { confirmation_id: request_id, approved: true },
             ShellToWorker::FlagLastDictation { request_id },
+            ShellToWorker::Calibrate { request_id },
             ShellToWorker::Ping { request_id },
             ShellToWorker::Shutdown,
         ];

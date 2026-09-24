@@ -15,6 +15,15 @@ pub fn count(conn: &Connection, heard: &str) -> Result<u32, StoreError> {
     Ok(conn.query_row("SELECT hits FROM wake_variants WHERE heard = ?1", params![heard], |row| row.get(0))?)
 }
 
+/// Marks `heard` as certain: counted as at least `hits` times, whatever it was before.
+pub fn trust(conn: &Connection, heard: &str, hits: u32) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO wake_variants (heard, hits) VALUES (?1, ?2) ON CONFLICT(heard) DO UPDATE SET hits = MAX(hits, ?2)",
+        params![heard, hits],
+    )?;
+    Ok(())
+}
+
 /// The spellings counted at least `min_hits` times.
 pub fn trusted(conn: &Connection, min_hits: u32) -> Result<Vec<String>, StoreError> {
     let mut stmt = conn.prepare("SELECT heard FROM wake_variants WHERE hits >= ?1 ORDER BY hits DESC")?;
@@ -35,5 +44,14 @@ mod tests {
         assert_eq!(store.count_wake_variant("adam").unwrap(), 2);
         store.count_wake_variant("agan").unwrap();
         assert_eq!(store.trusted_wake_variants(2).unwrap(), vec!["adam".to_string()]);
+    }
+
+    #[test]
+    fn a_spelling_marked_as_certain_is_trusted_at_once_and_never_lowered() {
+        let store = Store::open_in_memory().unwrap();
+        store.trust_wake_variant("ava", 3).unwrap();
+        assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
+        store.trust_wake_variant("ava", 1).unwrap();
+        assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
     }
 }

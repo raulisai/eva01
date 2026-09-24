@@ -53,6 +53,12 @@ impl Events {
         self.emit(WorkerToShell::StateChanged { state, request_id: Some(request_id) });
     }
 
+    /// Tells the user something about `request_id` that is neither an error
+    /// nor its result.
+    pub fn notice(&self, request_id: Uuid, message: impl Into<String>) {
+        self.emit(WorkerToShell::Notice { request_id, message: message.into() });
+    }
+
     /// Reports a recoverable problem with `request_id`.
     pub fn error(&self, request_id: Uuid, message: impl Into<String>) {
         let message = message.into();

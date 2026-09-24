@@ -7,7 +7,7 @@
 //! `StartRecording` arrive while an agent works or the overlay is asking.
 
 use crate::context::WorkerContext;
-use crate::{dictation, housekeeping, recording};
+use crate::{calibration, dictation, housekeeping, recording};
 use eva_ipc::{ShellToWorker, WorkerState, WorkerToShell};
 use std::sync::Arc;
 
@@ -37,6 +37,7 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
             tracing::info!(cancelled, "tareas canceladas desde la bandeja");
         }
         ShellToWorker::ListTasks { request_id } => housekeeping::list_tasks(ctx, request_id),
+        ShellToWorker::Calibrate { request_id } => calibration::start(ctx, request_id),
         ShellToWorker::FlagLastDictation { request_id } => housekeeping::flag_last_dictation(ctx, request_id),
         // Answered right here, on the command loop: that is what it checks.
         ShellToWorker::Ping { request_id } => ctx.events.emit(WorkerToShell::Pong { request_id }),

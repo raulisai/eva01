@@ -259,6 +259,31 @@ pub mod mock {
         }
     }
 
+    /// Returns the given transcripts one call after another (the last one
+    /// again when they run out), for a conversation of several utterances.
+    pub struct SequenceTranscript {
+        texts: std::sync::Mutex<std::collections::VecDeque<String>>,
+        last: String,
+    }
+
+    impl SequenceTranscript {
+        /// A mock that transcribes to each of `texts` in turn.
+        pub fn new(texts: &[&str]) -> Self {
+            SequenceTranscript {
+                texts: std::sync::Mutex::new(texts.iter().map(|t| (*t).to_string()).collect()),
+                last: texts.last().map(|t| (*t).to_string()).unwrap_or_default(),
+            }
+        }
+    }
+
+    impl SpeechToText for SequenceTranscript {
+        fn transcribe(&self, _samples: &[f32]) -> Result<Transcript, TranscribeError> {
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            let next = self.texts.lock().unwrap().pop_front();
+            Ok(Transcript { text: next.unwrap_or_else(|| self.last.clone()) })
+        }
+    }
+
     /// Always fails, to exercise error-handling paths.
     pub struct AlwaysFails;
 

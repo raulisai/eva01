@@ -157,6 +157,11 @@ impl Store {
         self.with_conn(|c| wake_variants::count(c, heard))
     }
 
+    /// See [`wake_variants::trust`].
+    pub fn trust_wake_variant(&self, heard: &str, hits: u32) -> Result<(), StoreError> {
+        self.with_conn(|c| wake_variants::trust(c, heard, hits))
+    }
+
     /// See [`wake_variants::trusted`].
     pub fn trusted_wake_variants(&self, min_hits: u32) -> Result<Vec<String>, StoreError> {
         self.with_conn(|c| wake_variants::trusted(c, min_hits))
