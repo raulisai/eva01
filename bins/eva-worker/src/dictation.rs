@@ -59,13 +59,6 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
     }
 }
 
-/// The personal dictionary plus what the user taught by reporting mistakes.
-fn learned_dictionary(ctx: &WorkerContext) -> Dictionary {
-    let replacements: Vec<(String, String)> =
-        ctx.store.list_corrections().unwrap_or_default().into_iter().map(|(heard, meant, _)| (heard, meant)).collect();
-    Dictionary::new(ctx.store.list_custom_words().unwrap_or_default()).with_replacements(replacements)
-}
-
 /// What `text` is: dictation, or a command (the user's own phrases included).
 /// Does nothing about it.
 fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
@@ -77,7 +70,7 @@ fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
     // Stripping universal (never-a-real-word) fillers first is always safe
     // — see `eva_text::filler`'s own doc for why — and fixes this without
     // weakening the gate itself.
-    let gate_input = learned_dictionary(ctx).replace_learned(&eva_text::filler::remove_universal_fillers(text));
+    let gate_input = eva_text::filler::remove_universal_fillers(text);
 
     let phrases: Vec<&str> = ctx.config.custom_commands().flat_map(|c| c.phrases()).collect();
     let learned = ctx.store.trusted_wake_variants(TRUSTED_AFTER_HITS).unwrap_or_default();
@@ -130,7 +123,7 @@ pub fn interpret_text_for_test(ctx: &WorkerContext, text: &str) -> serde_json::V
 /// on the on-device model (bounded by its own internal timeout,
 /// `docs/PLAN.md` §3.3 point 3).
 async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
-    let dictionary = learned_dictionary(ctx);
+    let dictionary = Dictionary::new(ctx.store.list_custom_words().unwrap_or_default());
     let style = style_for(ctx, ctx.active_window().await.as_ref().and_then(|w| w.bundle_identifier.clone()).as_deref());
 
     let formatter = Arc::clone(&ctx.formatter);
