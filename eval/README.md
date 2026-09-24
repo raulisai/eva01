@@ -72,15 +72,18 @@ EVA_CANARY_MODEL_DIR=~/Library/Application\ Support/EVA01/models/canary-1b-flash
   cargo run --release -p eva-eval -- --corpus eval/audio --apple-intelligence
 ```
 
-Línea base medida (canary-1b-flash int8, M-series, macOS 26, 12 frases):
+Línea base medida (canary-1b-flash int8 + canary-180m-flash como segunda opinión, MacBook Air
+M-series, macOS 26; 12 frases cortas y un dictado de 70 s):
 
-| | WER | voz p50/p95 | voz+formato p50/p95 |
-|---|---|---|---|
-| solo reglas | 5,6 % | ~245 / ~420 ms | igual (formato < 2 ms) |
-| Apple Intelligence | 5,6 % | ~245 / ~415 ms | ~970 / ~1240 ms |
+| | WER | voz p50/p95 (frases) | voz+formato p50/p95 (frases) | dictado de 70 s |
+|---|---|---|---|---|
+| solo reglas | 5,1 % | 261 / 373 ms | igual (formato < 2 ms) | ~7 s de espera |
+| Apple Intelligence | 5,1 % | ~280 / ~370 ms | 1000 / 1169 ms | 14,2 s de espera |
 
-(Con `--padding silence`, que era el comportamiento anterior, el WER limpio es 4,2 %; ver «Ruido de fondo»
-para por qué ya no es el predeterminado.)
+La segunda opinión corre en paralelo en las frases cortas y les suma ~60 ms de voz; sin ella la voz
+es ~200 ms de p50. Corpus de formato (40 frases, Apple Intelligence, decodificación codiciosa):
+40/40 aceptadas, mediana 706 ms. (Con `--padding silence`, el comportamiento anterior, el WER limpio
+es 4,2 %; ver «Ruido de fondo» para por qué ya no es el predeterminado.)
 
 Lo que enseñó (y quedó corregido o anotado):
 

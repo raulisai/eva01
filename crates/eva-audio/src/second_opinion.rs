@@ -49,30 +49,51 @@ impl SecondOpinion {
         SecondOpinion { primary, second, wanted }
     }
 
-    fn choose(&self, samples: &[f32], first: Transcript) -> Transcript {
+    /// Which of the two transcripts to keep. `other` is the second model's
+    /// answer if it was already asked (in parallel, for a short clip).
+    fn choose(&self, samples: &[f32], first: Transcript, other: Option<Transcript>) -> Transcript {
         let Some(second) = &self.second else { return first };
-        let short = samples.len() as f64 <= SHORT_CLIP.as_secs_f64() * f64::from(TARGET_SAMPLE_RATE);
         let first_loops = has_loop(&first.text);
-        let first_wanted = (self.wanted)(&first.text);
-        if first_wanted || !(short || first_loops) {
+        if (self.wanted)(&first.text) || !(is_short(samples) || first_loops) {
             return first;
         }
-        match second.transcribe(samples) {
-            Ok(other) if (self.wanted)(&other.text) => other,
-            Ok(other) if first_loops && !has_loop(&other.text) => other,
-            Ok(_) => first,
-            Err(e) => {
-                tracing::warn!("el segundo modelo falló; se usa el primero: {e}");
-                first
-            }
+        let other = match other {
+            Some(other) => other,
+            None => match second.transcribe(samples) {
+                Ok(other) => other,
+                Err(e) => {
+                    tracing::warn!("el segundo modelo falló; se usa el primero: {e}");
+                    return first;
+                }
+            },
+        };
+        if (self.wanted)(&other.text) || (first_loops && !has_loop(&other.text)) {
+            other
+        } else {
+            first
         }
     }
 }
 
+fn is_short(samples: &[f32]) -> bool {
+    samples.len() as f64 <= SHORT_CLIP.as_secs_f64() * f64::from(TARGET_SAMPLE_RATE)
+}
+
 impl SpeechToText for SecondOpinion {
+    /// For a short clip both models run at once, on two threads — they are
+    /// independent sessions — so the second opinion costs the wait of the
+    /// slower one, not the sum: measured, asking one after the other added
+    /// ~80 ms to every short dictation.
     fn transcribe(&self, samples: &[f32]) -> Result<Transcript, TranscribeError> {
-        let first = self.primary.transcribe(samples)?;
-        let chosen = self.choose(samples, first);
+        let (first, other) = match &self.second {
+            Some(second) if is_short(samples) => std::thread::scope(|scope| {
+                let other = scope.spawn(|| second.transcribe(samples).ok());
+                let first = self.primary.transcribe(samples);
+                (first, other.join().ok().flatten())
+            }),
+            _ => (self.primary.transcribe(samples), None),
+        };
+        let chosen = self.choose(samples, first?, other);
         Ok(Transcript { text: collapse_loops(&chosen.text) })
     }
 }
@@ -226,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_clip_or_a_command_already_heard_never_asks_twice() {
+    fn a_long_clip_that_does_not_loop_never_asks_the_second_model() {
         let second = counting("Adán, algo.");
         let stt = SecondOpinion::new(
             Arc::new(FixedTranscript::new("Hola a todos.")),
@@ -234,13 +255,17 @@ mod tests {
             starts_with_adan(),
         );
         stt.transcribe(&seconds(10.0)).unwrap();
-        let heard = SecondOpinion::new(
+        assert_eq!(second.asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_short_command_already_heard_keeps_the_main_models_text() {
+        let stt = SecondOpinion::new(
             Arc::new(FixedTranscript::new("Adán, abre Brave.")),
-            Some(second.clone()),
+            Some(counting("Adán, abre breve.")),
             starts_with_adan(),
         );
-        heard.transcribe(&seconds(1.0)).unwrap();
-        assert_eq!(second.asked.load(Ordering::SeqCst), 0);
+        assert_eq!(stt.transcribe(&seconds(1.0)).unwrap().text, "Adán, abre Brave.");
     }
 
     #[test]
