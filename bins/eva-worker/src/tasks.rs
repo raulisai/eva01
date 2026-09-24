@@ -30,20 +30,30 @@ struct Entry {
     prompt: String,
     started: Instant,
     cancel: Option<oneshot::Sender<()>>,
+    /// Set by a cancel, and kept across a fallback to the next agent: a
+    /// cancel that lands between two attempts must stop the second one too.
+    cancelled: bool,
 }
 
 impl TaskRegistry {
     /// Records that `id` is now running on `provider`, returning the signal
     /// that fires if it is cancelled. Registering the same id again (a
     /// fallback to the next agent) replaces the provider and the signal but
-    /// keeps the original start time.
+    /// keeps the original start time — and if the task was cancelled in
+    /// between, the new signal has already fired.
     pub fn register(&self, id: Uuid, provider: &str, prompt: &str) -> oneshot::Receiver<()> {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let mut tasks = self.lock();
-        let started = tasks.get(&id).map_or_else(Instant::now, |e| e.started);
+        let (started, cancelled) = tasks.get(&id).map_or_else(|| (Instant::now(), false), |e| (e.started, e.cancelled));
+        let cancel = if cancelled {
+            let _ = cancel_tx.send(());
+            None
+        } else {
+            Some(cancel_tx)
+        };
         tasks.insert(
             id,
-            Entry { provider: provider.to_string(), prompt: prompt.to_string(), started, cancel: Some(cancel_tx) },
+            Entry { provider: provider.to_string(), prompt: prompt.to_string(), started, cancel, cancelled },
         );
         cancel_rx
     }
@@ -59,16 +69,36 @@ impl TaskRegistry {
         self.lock().contains_key(&id)
     }
 
-    /// Asks the task to stop. `false` if there is no such running task.
+    /// Asks the task to stop. `false` if there is no such running task (or
+    /// it was already asked).
     pub fn cancel(&self, id: Uuid) -> bool {
-        let sender = self.lock().get_mut(&id).and_then(|entry| entry.cancel.take());
-        sender.is_some_and(|tx| tx.send(()).is_ok())
+        let mut tasks = self.lock();
+        match tasks.get_mut(&id) {
+            Some(entry) if !entry.cancelled => {
+                Self::stop(entry);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Asks every running task to stop; returns how many were asked.
     pub fn cancel_all(&self) -> usize {
-        let senders: Vec<_> = self.lock().values_mut().filter_map(|entry| entry.cancel.take()).collect();
-        senders.into_iter().filter_map(|tx| tx.send(()).ok()).count()
+        let mut tasks = self.lock();
+        let pending: Vec<&mut Entry> = tasks.values_mut().filter(|entry| !entry.cancelled).collect();
+        let count = pending.len();
+        pending.into_iter().for_each(Self::stop);
+        count
+    }
+
+    /// Marks `entry` cancelled and fires its signal, if the attempt running
+    /// now still listens (between two attempts nobody does; the next
+    /// [`TaskRegistry::register`] fires it instead).
+    fn stop(entry: &mut Entry) {
+        entry.cancelled = true;
+        if let Some(signal) = entry.cancel.take() {
+            let _ = signal.send(());
+        }
     }
 
     /// The running tasks, oldest first.
@@ -205,6 +235,9 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
     };
 
     let prepared = prepare_workspace(ctx, &req).await;
+    if let Some(unseen) = prepared.worktree.as_ref().map(|w| w.unseen_changes).filter(|n| *n > 0) {
+        emit_notice(ctx, id, &unseen_changes_note(unseen));
+    }
     let project_key = req.project_dir.to_string_lossy().into_owned();
     let work_dir_text = prepared.work_dir.to_string_lossy().into_owned();
     let first = candidates[0];
@@ -238,16 +271,18 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
         });
 
         let attempt = run_one(ctx, *provider, &req, &prepared, &project_key, cancel_rx).await;
-        let (attempt_outcome, did_work) = match attempt {
-            Attempt::NotStarted(message) => (AgentOutcome::Failed { message }, false),
-            Attempt::Ran { outcome, did_work } => (outcome, did_work),
+        let (attempt_outcome, did_work, timed_out) = match attempt {
+            Attempt::NotStarted(message) => (AgentOutcome::Failed { message }, false, false),
+            Attempt::Ran { outcome, did_work, timed_out } => (outcome, did_work, timed_out),
         };
 
         // An agent that failed before doing anything (an outdated CLI, no
         // login, a model it no longer accepts) must not make the command
         // fail while a working one sits unused — but never when the user
-        // named the agent, and never once it has touched the project.
-        let failed_early = matches!(attempt_outcome, AgentOutcome::Failed { .. }) && !did_work;
+        // named the agent, never once it has touched the project, and never
+        // after it used up the whole time limit: that is not a quick failure
+        // to route around, and the next agent would get the same limit again.
+        let failed_early = matches!(attempt_outcome, AgentOutcome::Failed { .. }) && !did_work && !timed_out;
         outcome = attempt_outcome;
         if failed_early && !is_last && forced.is_none() {
             let next = candidates[index + 1].id();
@@ -293,8 +328,9 @@ enum Attempt {
     /// The process could not even be started.
     NotStarted(String),
     /// It ran; `did_work` is whether it touched anything (a tool call or a
-    /// file change) before it ended.
-    Ran { outcome: AgentOutcome, did_work: bool },
+    /// file change) before it ended, `timed_out` whether the time limit
+    /// ended it.
+    Ran { outcome: AgentOutcome, did_work: bool, timed_out: bool },
 }
 
 async fn run_one(
@@ -353,13 +389,25 @@ async fn run_one(
     let outcome = running.wait_or_cancel(stop).await;
     let did_work = forwarder.await.unwrap_or(false);
 
+    let timed_out = timed_out.load(Ordering::SeqCst);
     let outcome = match outcome {
-        AgentOutcome::Cancelled if timed_out.load(Ordering::SeqCst) => {
-            AgentOutcome::Failed { message: format!("se agotó el tiempo límite de {} minutos", limit_secs / 60) }
-        }
+        AgentOutcome::Cancelled if timed_out => AgentOutcome::Failed {
+            message: format!("se agotó el tiempo límite de {}", minutes_or_seconds(limit_secs)),
+        },
         other => other,
     };
-    Attempt::Ran { outcome, did_work }
+    Attempt::Ran { outcome, did_work, timed_out }
+}
+
+/// "30 minutos", or "45 segundos" for a limit under a minute (which read
+/// "0 minutos" before).
+fn minutes_or_seconds(secs: u64) -> String {
+    match secs {
+        60 => "1 minuto".to_string(),
+        s if s >= 60 => format!("{} minutos", s / 60),
+        1 => "1 segundo".to_string(),
+        s => format!("{s} segundos"),
+    }
 }
 
 /// Resolves after `secs`; never, for `0` ("no limit").
@@ -405,6 +453,12 @@ fn save_session(ctx: &WorkerContext, project_key: &str, provider_id: &str, sessi
     }
 }
 
+/// Why the agent may have missed what the user was working on.
+fn unseen_changes_note(count: usize) -> String {
+    let files = if count == 1 { "1 archivo".to_string() } else { format!("{count} archivos") };
+    format!("(Trabajó sobre tu último commit: no vio tus cambios sin commit en {files}.)")
+}
+
 /// A one-off line of progress in the task's event stream ("Codex no pudo
 /// arrancar; pruebo con claude_code").
 fn emit_notice(ctx: &WorkerContext, request_id: Uuid, text: &str) {
@@ -431,6 +485,9 @@ async fn finish(
     if let Some(worktree) = &prepared.worktree {
         if !worktree.remove_if_untouched().await {
             summary = format!("{summary} — cambios en la rama {} ({})", worktree.branch, worktree.root.display());
+        }
+        if worktree.unseen_changes > 0 {
+            summary = format!("{summary} {}", unseen_changes_note(worktree.unseen_changes));
         }
     }
 
@@ -561,6 +618,26 @@ mod tests {
         assert_eq!(registry.cancel_all(), 3);
         assert!(receivers.iter_mut().all(|rx| rx.try_recv().is_ok()));
         assert_eq!(registry.cancel_all(), 0);
+    }
+
+    #[test]
+    fn a_cancel_between_two_attempts_stops_the_next_one_before_it_starts() {
+        let registry = TaskRegistry::default();
+        let id = Uuid::new_v4();
+        drop(registry.register(id, "codex", "x")); // the first attempt ended; nobody listens
+
+        assert!(registry.cancel(id), "the task is still running as far as the user can tell");
+        let mut second = registry.register(id, "claude_code", "x");
+
+        assert!(second.try_recv().is_ok(), "the fallback attempt must see the cancel at once");
+        assert!(!registry.cancel(id), "and a second cancel has nothing new to do");
+    }
+
+    #[test]
+    fn a_time_limit_under_a_minute_reads_in_seconds() {
+        assert_eq!(minutes_or_seconds(1800), "30 minutos");
+        assert_eq!(minutes_or_seconds(60), "1 minuto");
+        assert_eq!(minutes_or_seconds(45), "45 segundos");
     }
 
     #[test]
@@ -700,6 +777,22 @@ mod tests {
         let (success, summary) = finished(&events).expect("the timeout must end the task");
         assert!(!success);
         assert!(summary.contains("tiempo límite"), "{summary}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_used_up_the_time_limit_is_not_handed_over_to_the_next_one() {
+        let slow = Arc::new(MockProvider::never_finishes("codex"));
+        let working = completes("claude_code", "hecho");
+        let mut rig = Rig::builder()
+            .agents(registry_of(&[&slow, &working]))
+            .configure(|c| c.feedback.task_timeout_secs = 1)
+            .build();
+        let (_, command) = ask("Adán, refactoriza todo");
+        let events = rig.run(command).await;
+
+        let (success, summary) = finished(&events).expect("the task ends");
+        assert!(!success && summary.contains("1 segundo"), "{summary}");
+        assert!(working.received_tasks().is_empty(), "a timeout is not a quick failure to route around");
     }
 
     #[tokio::test]
@@ -991,6 +1084,23 @@ mod tests {
         assert!(ran_in.starts_with(&rig.ctx.worktrees_dir));
         assert_eq!(finished(&events), Some((true, "solo respondí".to_string())), "no branch note when nothing changed");
         assert!(!ran_in.exists(), "an untouched worktree is removed");
+    }
+
+    #[tokio::test]
+    async fn the_summary_warns_when_the_agent_could_not_see_the_users_uncommitted_work() {
+        let project = repo().await;
+        std::fs::write(project.path().join("README.md"), "a medio editar").expect("write");
+        let codex = completes("codex", "revisé el README");
+        let mut rig = Rig::builder()
+            .agents(registry_of(&[&codex]))
+            .base_dir(project.path().to_path_buf())
+            .configure(|c| c.agents.worktree = true)
+            .build();
+        let (_, command) = ask("Adán, revisa el README");
+        let events = rig.run(command).await;
+
+        let (_, summary) = finished(&events).expect("finished");
+        assert!(summary.contains("no vio tus cambios sin commit en 1 archivo"), "{summary}");
     }
 
     /// An agent that edits the project it is given.

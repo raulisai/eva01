@@ -45,6 +45,11 @@ pub struct Worktree {
     /// The commit the branch started from, to tell later whether the agent
     /// committed anything.
     pub base_commit: String,
+    /// How many files the user had changed but not committed when the task
+    /// started. The worktree starts from the last commit, so the agent does
+    /// not see those changes — worth telling the user, who may have meant
+    /// exactly the file they were editing.
+    pub unseen_changes: usize,
 }
 
 /// Prepares where the task for `task_id` will run: a new worktree under
@@ -66,6 +71,8 @@ async fn try_prepare(project_dir: &Path, task_id: Uuid, worktrees_dir: &Path) ->
     let base_commit =
         git(&repo_root, &["rev-parse", "HEAD"]).await.map_err(|_| "el repositorio aún no tiene commits".to_string())?;
 
+    let unseen_changes = git(&repo_root, &["status", "--porcelain"]).await.map(|out| out.lines().count()).unwrap_or(0);
+
     let short = &task_id.simple().to_string()[..8];
     let branch = format!("eva/{short}");
     let repo_name = repo_root.file_name().map_or_else(|| "repo".into(), |n| n.to_string_lossy().into_owned());
@@ -85,7 +92,7 @@ async fn try_prepare(project_dir: &Path, task_id: Uuid, worktrees_dir: &Path) ->
         _ => root.clone(),
     };
 
-    Ok(Worktree { work_dir, root, repo_root, branch, base_commit })
+    Ok(Worktree { work_dir, root, repo_root, branch, base_commit, unseen_changes })
 }
 
 impl Worktree {
@@ -178,6 +185,22 @@ mod tests {
         assert_ne!(wt.root, repo.path(), "it must not be the user's own tree");
         let branches = git(repo.path(), &["branch", "--list", &wt.branch]).await.expect("branch");
         assert!(branches.contains(&wt.branch));
+    }
+
+    #[tokio::test]
+    async fn the_users_uncommitted_changes_are_counted_because_the_agent_will_not_see_them() {
+        let repo = Repo::new().await;
+        let worktrees = tempfile::tempdir().expect("tempdir");
+        std::fs::write(repo.path().join("README.md"), "editado sin commit").expect("write");
+        std::fs::write(repo.path().join("borrador.txt"), "nuevo sin commit").expect("write");
+
+        let Workspace::Worktree(wt) = prepare(repo.path(), Uuid::new_v4(), worktrees.path()).await else {
+            panic!("must get a worktree");
+        };
+
+        assert_eq!(wt.unseen_changes, 2);
+        let readme = std::fs::read_to_string(wt.work_dir.join("README.md")).expect("read");
+        assert_eq!(readme, "hola", "the worktree has the last commit, not the edit");
     }
 
     #[tokio::test]
