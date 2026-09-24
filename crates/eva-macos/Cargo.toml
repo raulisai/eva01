@@ -27,6 +27,8 @@ objc2-app-kit = { version = "0.3", features = [
     "NSText",
     "NSParagraphStyle",
     "NSBitmapImageRep",
+    "NSImage",
+    "NSImageView",
     "NSImageRep",
     "block2",
 ] }
@@ -38,7 +40,13 @@ tracing = { workspace = true }
 objc2-application-services = "0.3.2"
 objc2-core-foundation = "0.3.2"
 dirs = "5"
-objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+objc2-quartz-core = { version = "0.3", features = [
+    "CALayer",
+    "CATransaction",
+    "CAMediaTimingFunction",
+    "objc2-core-foundation",
+    "block2",
+] }
 
 [dependencies]
 serde = { workspace = true }

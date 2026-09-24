@@ -1098,10 +1098,12 @@ dependencies = [
  "eva-macos",
  "eva-store",
  "eva-text",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit 0.20.2",
  "transcribe-rs",
  "uuid",
 ]

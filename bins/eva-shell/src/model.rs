@@ -11,7 +11,7 @@
 //! stops being an overlay state and becomes a line in the tray.
 
 use eva_ipc::{TaskInfo, TaskState, WorkerState, WorkerToShell};
-use eva_macos::{Activity, OverlayContent, Tone};
+use eva_macos::{Activity, Icon, OverlayContent, Tone};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -138,7 +138,63 @@ struct Confirmation {
 struct Notice {
     text: String,
     tone: Tone,
+    icon: Icon,
     until: Instant,
+}
+
+/// What a command is doing, in the words and picture of the island: "Abriendo
+/// Spotify" with its icon while it runs, "Spotify abierto" when it is done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Doing {
+    now: String,
+    done: String,
+    icon: Icon,
+}
+
+impl Doing {
+    /// What the command `intent_json` (an `eva_intent::Intent`, as sent by the
+    /// worker) does, if it is something worth saying: dictation, questions and
+    /// the like are not.
+    fn from_intent(intent_json: &serde_json::Value) -> Option<Doing> {
+        let text = |key: &str| intent_json.get(key).and_then(serde_json::Value::as_str).map(str::to_string);
+        let doing = |now: String, done: String, icon: Icon| Some(Doing { now, done, icon });
+        match intent_json.get("kind")?.as_str()? {
+            "open_app" => {
+                let app = text("app")?;
+                doing(format!("Abriendo {app}"), format!("{app} abierto"), Icon::App(app))
+            }
+            "close_app" => {
+                let app = text("app")?;
+                doing(format!("Cerrando {app}"), format!("{app} cerrado"), Icon::App(app))
+            }
+            "open_url" => {
+                let site = site_of(&text("url")?);
+                doing(format!("Abriendo {site}"), format!("{site} abierto"), Icon::Symbol("globe"))
+            }
+            "web_search" => {
+                let query = short(&text("query")?, 32);
+                doing(format!("Buscando {query}"), "Búsqueda lista".to_string(), Icon::Symbol("magnifyingglass"))
+            }
+            "custom" => {
+                let phrase = short(&text("phrase")?, 32);
+                doing(format!("Ejecutando {phrase}"), format!("{phrase} listo"), Icon::Symbol("bolt.fill"))
+            }
+            "edit_selection" => {
+                doing("Reescribiendo".to_string(), "Texto reescrito".to_string(), Icon::Symbol("pencil"))
+            }
+            "agent_task" | "continue_agent_task" => {
+                doing("Enviando al agente".to_string(), "Tarea enviada".to_string(), Icon::Symbol("sparkles"))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The part of `url` worth reading in an island: its host, without `www.`.
+fn site_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    short(host.strip_prefix("www.").unwrap_or(host), 32)
 }
 
 /// The shell's state.
@@ -148,6 +204,8 @@ pub struct ShellModel {
     restarting: bool,
     recording: Option<Uuid>,
     requests: HashMap<Uuid, Tracked>,
+    /// What each command that is running is doing, by request.
+    doing: HashMap<Uuid, Doing>,
     tasks: HashMap<Uuid, (TaskInfo, Instant)>,
     recent: Vec<TaskInfo>,
     confirmation: Option<Confirmation>,
@@ -168,6 +226,7 @@ impl ShellModel {
             restarting: false,
             recording: None,
             requests: HashMap::new(),
+            doing: HashMap::new(),
             tasks: HashMap::new(),
             recent: Vec::new(),
             confirmation: None,
@@ -330,9 +389,13 @@ impl ShellModel {
             }
             // Informational for the overlay: the worker pastes text itself,
             // and these are for logs and the CLI.
+            WorkerToShell::IntentRecognized { request_id, intent_json } => {
+                if let Some(doing) = Doing::from_intent(&intent_json) {
+                    self.doing.insert(request_id, doing);
+                }
+            }
             WorkerToShell::StateChanged { request_id: None, .. }
             | WorkerToShell::Transcript { .. }
-            | WorkerToShell::IntentRecognized { .. }
             | WorkerToShell::AgentEvent { .. }
             | WorkerToShell::CustomWords { .. }
             | WorkerToShell::Ack { .. } => {}
@@ -388,11 +451,15 @@ impl ShellModel {
             WorkerState::Executing => self.track(id, Phase::Executing, now),
             WorkerState::Idle => self.forget(id),
             WorkerState::Done(success) => {
+                let doing = self.doing.remove(&id);
                 self.forget(id);
                 // Never over a message that already says more: an `Error`
                 // (or a task's summary) arrives just before its `Done`.
                 if self.notice.is_none() {
-                    if success {
+                    if let (true, Some(doing)) = (success, doing) {
+                        self.notice =
+                            Some(Notice { text: doing.done, tone: Tone::Ok, icon: doing.icon, until: now + OK_NOTICE });
+                    } else if success {
                         self.set_notice(now, "✓ Listo", Tone::Ok, OK_NOTICE);
                     } else {
                         self.set_notice(now, "✗ Algo falló", Tone::Error, ERROR_NOTICE);
@@ -405,6 +472,7 @@ impl ShellModel {
     /// Stops tracking `id`, including as the recording in progress.
     fn forget(&mut self, id: Uuid) {
         self.requests.remove(&id);
+        self.doing.remove(&id);
         if self.recording == Some(id) {
             self.recording = None;
         }
@@ -458,7 +526,7 @@ impl ShellModel {
     }
 
     fn set_notice(&mut self, now: Instant, text: &str, tone: Tone, lasts: Duration) {
-        self.notice = Some(Notice { text: text.to_string(), tone, until: now + lasts });
+        self.notice = Some(Notice { text: text.to_string(), tone, icon: Icon::None, until: now + lasts });
     }
 
     /// Notifications the shell should show since the last call.
@@ -472,9 +540,12 @@ impl ShellModel {
     /// everything (it is blocking something), then what the user is doing
     /// right now, then how the last thing went.
     pub fn overlay(&self) -> Option<OverlayContent> {
-        let show = |text: &str, tone| Some(OverlayContent { text: text.to_string(), tone, activity: Activity::None });
-        let working =
-            |text: &str, activity| Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity });
+        let show = |text: &str, tone| {
+            Some(OverlayContent { text: text.to_string(), tone, activity: Activity::None, icon: Icon::None })
+        };
+        let working = |text: &str, activity| {
+            Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity, icon: Icon::None })
+        };
 
         if self.restarting {
             return working("Reiniciando EVA", Activity::Thinking);
@@ -495,10 +566,23 @@ impl ShellModel {
         if self.requests.values().any(|t| t.phase == Phase::Thinking) {
             return working("Pensando", Activity::Thinking);
         }
-        if self.requests.values().any(|t| t.phase == Phase::Executing) {
-            return working("Ejecutando", Activity::Executing);
+        if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Executing) {
+            return match self.doing.get(id) {
+                Some(doing) => Some(OverlayContent {
+                    text: doing.now.clone(),
+                    tone: Tone::Neutral,
+                    activity: Activity::Executing,
+                    icon: doing.icon.clone(),
+                }),
+                None => working("Ejecutando", Activity::Executing),
+            };
         }
-        self.notice.as_ref().map(|n| OverlayContent { text: n.text.clone(), tone: n.tone, activity: Activity::None })
+        self.notice.as_ref().map(|n| OverlayContent {
+            text: n.text.clone(),
+            tone: n.tone,
+            activity: Activity::None,
+            icon: n.icon.clone(),
+        })
     }
 
     /// What the tray should show, as of `now` (task ages are relative to it).
@@ -1248,5 +1332,59 @@ mod tests {
         fn short_never_exceeds_the_limit_or_panics(text in ".*", max in 1usize..120) {
             proptest::prop_assert!(short(&text, max).chars().count() <= max);
         }
+    }
+
+    #[test]
+    fn a_command_that_opens_an_app_says_so_with_the_apps_icon_and_then_that_it_is_open() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(
+            t0,
+            WorkerToShell::IntentRecognized {
+                request_id: id,
+                intent_json: serde_json::json!({ "kind": "open_app", "app": "Spotify" }),
+            },
+        );
+        model.worker_event(t0, state(id, WorkerState::Executing));
+
+        let running = model.overlay().unwrap();
+        assert_eq!(
+            (running.text.as_str(), running.activity, running.icon),
+            ("Abriendo Spotify", Activity::Executing, Icon::App("Spotify".to_string()))
+        );
+
+        model.worker_event(t0, state(id, WorkerState::Done(true)));
+        let done = model.overlay().unwrap();
+        assert_eq!(
+            (done.text.as_str(), done.tone, done.icon),
+            ("Spotify abierto", Tone::Ok, Icon::App("Spotify".to_string()))
+        );
+    }
+
+    #[test]
+    fn what_each_kind_of_command_says_it_is_doing() {
+        let says = |json: serde_json::Value| Doing::from_intent(&json).map(|d| (d.now, d.icon));
+        assert_eq!(
+            says(serde_json::json!({ "kind": "open_url", "url": "https://www.github.com/foo?x=1" })),
+            Some(("Abriendo github.com".to_string(), Icon::Symbol("globe")))
+        );
+        assert_eq!(
+            says(serde_json::json!({ "kind": "close_app", "app": "Notes" })),
+            Some(("Cerrando Notes".to_string(), Icon::App("Notes".to_string())))
+        );
+        assert_eq!(says(serde_json::json!({ "kind": "dictation" })), None);
+        assert_eq!(says(serde_json::json!({ "kind": "confirm_app", "app": "Spotify", "heard": "spotifi" })), None);
+    }
+
+    #[test]
+    fn a_command_with_nothing_to_say_still_shows_the_plain_executing_and_listo() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Executing));
+        assert_eq!(model.overlay().unwrap().text, "Ejecutando");
+        model.worker_event(t0, state(id, WorkerState::Done(true)));
+        assert_eq!(model.overlay().unwrap().text, "✓ Listo");
     }
 }

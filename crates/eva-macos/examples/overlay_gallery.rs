@@ -2,7 +2,7 @@
 //! so the layout can be looked at (text that wraps, four-line questions…)
 //! instead of trusted. Run: `cargo run -p eva-macos --example overlay_gallery -- <out dir>`.
 
-use eva_macos::{Activity, Overlay, OverlayContent, Tone};
+use eva_macos::{Activity, Icon, Overlay, OverlayContent, Tone};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSDate, NSRunLoop};
@@ -39,9 +39,29 @@ fn main() {
             Activity::None,
         ),
     ];
-    for (name, text, tone, activity) in states {
-        overlay.show(&OverlayContent { text: text.to_string(), tone, activity });
-        overlay.animate(0.6);
+    let with_icons = [
+        ("abriendo_spotify", "Abriendo Spotify", Icon::App("Spotify".to_string())),
+        ("abriendo_brave", "Abriendo Brave Browser", Icon::App("Brave Browser".to_string())),
+        ("cerrando_finder", "Cerrando Notes", Icon::App("Notes".to_string())),
+        ("abriendo_pagina", "Abriendo github.com", Icon::Symbol("globe")),
+        ("buscando", "Buscando recetas de pasta", Icon::Symbol("magnifyingglass")),
+        ("agente", "Agente trabajando", Icon::Symbol("sparkles")),
+        ("app_abierta", "Spotify abierto", Icon::App("Spotify".to_string())),
+    ];
+    let mut shots: Vec<(&str, OverlayContent)> = states
+        .into_iter()
+        .map(|(name, text, tone, activity)| {
+            (name, OverlayContent { text: text.to_string(), tone, activity, icon: Icon::None })
+        })
+        .collect();
+    shots.extend(with_icons.into_iter().map(|(name, text, icon)| {
+        let tone = if name == "app_abierta" { Tone::Ok } else { Tone::Neutral };
+        let activity = if name == "app_abierta" { Activity::None } else { Activity::Executing };
+        (name, OverlayContent { text: text.to_string(), tone, activity, icon })
+    }));
+    for (name, content) in shots {
+        overlay.show(&content);
+        overlay.settle(0.6);
         // Let AppKit lay the view out before drawing it.
         NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.25));
         match overlay.snapshot_png() {

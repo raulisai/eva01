@@ -102,6 +102,22 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
 /// keep theirs ("/Applications/Adobe Photoshop 2025/Adobe Photoshop
 /// 2025.app"). Finder, which lives apart in CoreServices, is added by hand.
 pub fn installed_apps() -> Vec<String> {
+    let mut names: Vec<String> = app_bundles(&app_roots(), &finder())
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Where the `.app` named `name` (its file name without the extension, as
+/// [`installed_apps`] lists it) is, for showing its icon.
+pub fn app_bundle_path(name: &str) -> Option<PathBuf> {
+    app_bundles(&app_roots(), &finder()).into_iter().find(|p| p.file_stem().is_some_and(|stem| stem == name))
+}
+
+fn app_roots() -> Vec<PathBuf> {
     let mut roots = vec![
         PathBuf::from("/Applications"),
         PathBuf::from("/Applications/Utilities"),
@@ -111,12 +127,17 @@ pub fn installed_apps() -> Vec<String> {
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
     }
-    apps_under(&roots, &[PathBuf::from("/System/Library/CoreServices/Finder.app")])
+    roots
 }
 
-/// The bundle names of the `.app`s directly in `roots`, or one folder below
-/// them, plus each of `extra` that exists.
-fn apps_under(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<String> {
+/// Finder lives apart, in CoreServices.
+fn finder() -> [PathBuf; 1] {
+    [PathBuf::from("/System/Library/CoreServices/Finder.app")]
+}
+
+/// The `.app`s directly in `roots`, or one folder below them, plus each of
+/// `extra` that exists.
+fn app_bundles(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<PathBuf> {
     let is_app = |path: &Path| path.extension().is_some_and(|ext| ext == "app");
     let entries = |dir: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect()
@@ -133,12 +154,7 @@ fn apps_under(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<String> {
         }
     }
     apps.extend(extra.iter().filter(|path| path.exists()).cloned());
-
-    let mut names: Vec<String> =
-        apps.iter().filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string)).collect();
-    names.sort();
-    names.dedup();
-    names
+    apps
 }
 
 /// The name of the app that opens `url` by default — the default browser for
@@ -199,9 +215,19 @@ mod tests {
         std::fs::create_dir_all(root.join("Carpeta sin apps")).unwrap();
         std::fs::write(root.join("README.txt"), "no soy una app").unwrap();
 
-        let names = apps_under(&[root, dir.path().join("no-existe")], &[]);
+        let mut names: Vec<String> = app_bundles(&[root, dir.path().join("no-existe")], &[])
+            .iter()
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+            .collect();
+        names.sort();
 
         assert_eq!(names, vec!["Adobe Photoshop 2025".to_string(), "Spotify".to_string()]);
+    }
+
+    #[test]
+    fn an_installed_app_has_a_path_and_a_missing_one_does_not() {
+        assert!(app_bundle_path("Finder").is_some_and(|p| p.exists()));
+        assert_eq!(app_bundle_path("Esta Aplicacion No Existe 12345"), None);
     }
 
     #[test]
