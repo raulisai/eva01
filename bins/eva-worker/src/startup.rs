@@ -237,6 +237,9 @@ fn scan_applications() -> eva_intent::AppIndex {
         PathBuf::from("/Applications/Utilities"),
         PathBuf::from("/System/Applications"),
         PathBuf::from("/System/Applications/Utilities"),
+        // Finder lives apart from every other app; without it "abre finder"
+        // matched Find My.
+        PathBuf::from("/System/Library/CoreServices/Finder.app"),
     ];
     if let Some(home) = dirs::home_dir() {
         folders.push(home.join("Applications"));
@@ -244,13 +247,32 @@ fn scan_applications() -> eva_intent::AppIndex {
 
     let mut names: Vec<String> = folders
         .iter()
-        .flat_map(|folder| std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok))
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "app"))
-        .filter_map(|entry| entry.path().file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .flat_map(|folder| {
+            if folder.extension().is_some_and(|ext| ext == "app") {
+                vec![folder.clone()]
+            } else {
+                std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect()
+            }
+        })
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app") && path.exists())
+        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_string))
         .collect();
     names.sort();
     names.dedup();
 
     tracing::info!(count = names.len(), "aplicaciones indexadas");
-    eva_intent::AppIndex::new(names.into_iter().map(eva_intent::AppEntry::new).collect())
+    let mut index = eva_intent::AppIndex::new(names.into_iter().map(eva_intent::AppEntry::new).collect());
+    // "El navegador" and "el correo" are whatever this Mac opens links and
+    // mail with, not a guess.
+    for (url, aliases) in [
+        ("https://example.com", &["navegador", "el navegador", "browser", "internet"][..]),
+        ("mailto:alguien@example.com", &["correo", "correo electronico", "email"][..]),
+    ] {
+        if let Some(app) = eva_macos::default_app_for(url) {
+            for alias in aliases {
+                index = index.with_exclusive_alias(&app, alias);
+            }
+        }
+    }
+    index
 }

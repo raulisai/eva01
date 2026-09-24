@@ -93,6 +93,16 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
     }
 }
 
+/// The name of the app that opens `url` by default — the default browser for
+/// `https://`, the mail app for `mailto:` — as its bundle's file name
+/// ("Google Chrome"), or `None` if there is none.
+pub fn default_app_for(url: &str) -> Option<String> {
+    let ns_url = NSURL::URLWithString(&NSString::from_str(url))?;
+    let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&ns_url)?;
+    let path = app.path()?.to_string();
+    std::path::Path::new(&path).file_stem().map(|stem| stem.to_string_lossy().into_owned())
+}
+
 /// Opens `url` in the user's default handler for its scheme (the default
 /// browser for `http(s)://`, Mail for `mailto:`, etc.).
 ///

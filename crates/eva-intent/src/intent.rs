@@ -188,6 +188,40 @@ fn without_closing_punctuation(text: &str) -> &str {
     text.trim().trim_end_matches(['.', ',', ';', ':', '!', '?', '…']).trim_end()
 }
 
+/// Words said before an app's name that are not part of it: "abre **el**
+/// calendario", "cierra **la app de** notas", "abre **mi** correo".
+const NAME_LEADS: &[&str] = &[
+    "la aplicacion de ",
+    "la aplicacion ",
+    "la app de ",
+    "la app ",
+    "el programa de ",
+    "el programa ",
+    "el ",
+    "la ",
+    "los ",
+    "las ",
+    "mi ",
+    "mis ",
+    "un ",
+    "una ",
+];
+
+/// `name` without what [`NAME_LEADS`] lists, compared accent-folded ("la
+/// aplicación de" and "la aplicacion de" alike).
+fn app_name(name: &str) -> &str {
+    let folded = eva_text::fold_diacritics(name);
+    for lead in NAME_LEADS {
+        if folded.starts_with(lead) {
+            // Folding keeps one character per character, so the lead covers
+            // the same number of characters in `name`.
+            let cut = name.char_indices().nth(lead.chars().count()).map_or(name.len(), |(i, _)| i);
+            return name[cut..].trim_start();
+        }
+    }
+    name
+}
+
 fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
     if let Some(url) = crate::spoken::spoken_url(rest) {
@@ -196,7 +230,7 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     if looks_like_url(rest) {
         return Intent::OpenUrl { url: rest.to_string() };
     }
-    match app_index.find(rest) {
+    match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
         Some(app) => Intent::OpenApp { app: app.canonical_name.clone() },
         // No confident app match — hand it to the agent rather than fail
         // silently or open the wrong app. "Adán, abre mi proyecto de X" is
@@ -208,7 +242,7 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
 
 fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
-    match app_index.find(rest) {
+    match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
         Some(app) => Intent::CloseApp { app: app.canonical_name.clone() },
         None => Intent::AgentTask { prompt: format!("cierra {rest}"), provider: None },
     }
@@ -372,6 +406,16 @@ mod tests {
             parse("busca el clima de mañana.", &index),
             Intent::WebSearch { query: "el clima de mañana".to_string() }
         );
+    }
+
+    #[test]
+    fn articles_and_app_de_before_the_name_are_not_part_of_it() {
+        let index = AppIndex::new(vec![AppEntry::new("Calendar"), AppEntry::new("Notes"), AppEntry::new("Calculator")]);
+        assert_eq!(parse("abre el calendario", &index), Intent::OpenApp { app: "Calendar".to_string() });
+        assert_eq!(parse("abre la calculadora.", &index), Intent::OpenApp { app: "Calculator".to_string() });
+        assert_eq!(parse("cierra la aplicación de notas", &index), Intent::CloseApp { app: "Notes".to_string() });
+        assert_eq!(parse("abre las notas", &index), Intent::OpenApp { app: "Notes".to_string() });
+        assert!(matches!(parse("abre el proyecto de facturación", &index), Intent::AgentTask { .. }));
     }
 
     #[test]
