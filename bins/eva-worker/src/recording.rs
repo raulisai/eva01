@@ -2,7 +2,8 @@
 //! stops, transcribes on a blocking thread, and hands the text to the same
 //! pipeline typed text goes through.
 
-use crate::context::{RecordingSession, WorkerContext};
+use crate::context::{Capture, RecordingSession, WorkerContext};
+use eva_audio::CaptureHandle;
 use eva_ipc::WorkerState;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -24,8 +25,12 @@ const SILENCE_PEAK: f32 = 0.01;
 /// Shorter than this (a quarter second at 16 kHz) is a tap, not speech.
 const MIN_SAMPLES: usize = 4_000;
 
-/// Starts capturing, if a model is configured.
-pub fn start(ctx: &WorkerContext, request_id: Uuid) {
+/// Starts capturing, if a model is configured. The microphone is opened on a
+/// blocking thread, not here: CoreAudio can take its time (a Bluetooth headset
+/// switching profiles, the first-run permission prompt), and this runs on the
+/// command loop, which must keep answering — the shell's heartbeat restarts
+/// a worker whose loop stops answering.
+pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
     let Some(audio) = &ctx.audio else {
         // The real, documented "model not loaded" degradation from
         // `docs/PLAN.md` §3.3 point 5 — never a silent no-op.
@@ -43,22 +48,68 @@ pub fn start(ctx: &WorkerContext, request_id: Uuid) {
     }
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
-    let buffer_for_callback = Arc::clone(&buffer);
-    let started = audio.source.start(
-        CAPTURE_CHUNK_SIZE,
-        Box::new(move |chunk| {
-            #[allow(clippy::unwrap_used)]
-            // only poisoned if this same callback panicked, forbidden by workspace policy
-            buffer_for_callback.lock().unwrap().extend(chunk);
-        }),
-    );
+    let capture = Arc::new(Mutex::new(Capture::Opening));
+    *recording = Some(RecordingSession { request_id, capture: Arc::clone(&capture), buffer: Arc::clone(&buffer) });
+    drop(recording);
+    ctx.events.state(request_id, WorkerState::Listening);
 
-    match started {
-        Ok(handle) => {
-            *recording = Some(RecordingSession { request_id, handle, buffer });
-            ctx.events.state(request_id, WorkerState::Listening);
+    let source = Arc::clone(&audio.source);
+    let job_ctx = Arc::clone(ctx);
+    ctx.spawn_job(async move {
+        let opened = tokio::task::spawn_blocking(move || {
+            source.start(
+                CAPTURE_CHUNK_SIZE,
+                Box::new(move |chunk| {
+                    #[allow(clippy::unwrap_used)]
+                    // only poisoned if this same callback panicked, forbidden by workspace policy
+                    buffer.lock().unwrap().extend(chunk);
+                }),
+            )
+        })
+        .await;
+
+        match opened {
+            Ok(Ok(handle)) => {
+                // Kept for the recording, unless it already ended meanwhile.
+                let too_late = {
+                    let mut state = lock(&capture);
+                    if matches!(*state, Capture::Abandoned) {
+                        Some(handle)
+                    } else {
+                        *state = Capture::Open(handle);
+                        None
+                    }
+                };
+                if let Some(handle) = too_late {
+                    let _ = tokio::task::spawn_blocking(move || handle.stop()).await;
+                }
+            }
+            Ok(Err(e)) => fail_to_open(&job_ctx, request_id, e.to_string()),
+            Err(join_error) => {
+                fail_to_open(&job_ctx, request_id, format!("no se pudo abrir el micrófono: {join_error}"))
+            }
         }
-        Err(e) => ctx.events.error(request_id, e.to_string()),
+    });
+}
+
+/// The microphone would not open: the recording is over before it began.
+fn fail_to_open(ctx: &WorkerContext, request_id: Uuid, message: String) {
+    if take_session(ctx, request_id).is_some() {
+        ctx.events.fail(request_id, message);
+    }
+}
+
+fn lock(capture: &Mutex<Capture>) -> std::sync::MutexGuard<'_, Capture> {
+    #[allow(clippy::unwrap_used)] // only poisoned if a prior lock-holder panicked, forbidden by workspace policy
+    capture.lock().unwrap()
+}
+
+/// Closes the recording's stream — or, if it is still being opened, leaves
+/// word to close it the moment it is. Returns the stream to stop, if open.
+fn close(session: &RecordingSession) -> Option<Box<dyn CaptureHandle>> {
+    match std::mem::replace(&mut *lock(&session.capture), Capture::Abandoned) {
+        Capture::Open(handle) => Some(handle),
+        Capture::Opening | Capture::Abandoned => None,
     }
 }
 
@@ -75,10 +126,14 @@ fn take_session(ctx: &WorkerContext, request_id: Uuid) -> Option<RecordingSessio
 }
 
 /// Stops and discards a recording. `false` if there was none with that id.
-pub fn cancel(ctx: &WorkerContext, request_id: Uuid) -> bool {
+pub fn cancel(ctx: &Arc<WorkerContext>, request_id: Uuid) -> bool {
     match take_session(ctx, request_id) {
         Some(session) => {
-            session.handle.stop();
+            if let Some(handle) = close(&session) {
+                ctx.spawn_job(async move {
+                    let _ = tokio::task::spawn_blocking(move || handle.stop()).await;
+                });
+            }
             true
         }
         None => false,
@@ -92,12 +147,23 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         ctx.events.error(request_id, "no había una grabación en curso con ese id");
         return;
     };
-    session.handle.stop();
-
-    #[allow(clippy::unwrap_used)] // only poisoned if the capture callback panicked, forbidden by workspace policy
-    let samples = std::mem::take(&mut *session.buffer.lock().unwrap());
+    let handle = close(&session);
     ctx.events.state(request_id, WorkerState::Thinking);
 
+    let job_ctx = Arc::clone(ctx);
+    ctx.spawn_job(async move {
+        // Closing the stream is a CoreAudio call too, so it goes to a
+        // blocking thread; what it recorded is only read once it is closed.
+        if let Some(handle) = handle {
+            let _ = tokio::task::spawn_blocking(move || handle.stop()).await;
+        }
+        #[allow(clippy::unwrap_used)] // only poisoned if the capture callback panicked, forbidden by workspace policy
+        let samples = std::mem::take(&mut *session.buffer.lock().unwrap());
+        transcribe_and_process(&job_ctx, request_id, samples).await;
+    });
+}
+
+async fn transcribe_and_process(ctx: &Arc<WorkerContext>, request_id: Uuid, samples: Vec<f32>) {
     if is_silence(&samples) {
         tracing::info!(samples = samples.len(), "grabación sin voz; no se transcribe");
         ctx.events.state(request_id, WorkerState::Idle);
@@ -115,21 +181,16 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         return;
     };
 
+    // Whisper/Canary inference is CPU-bound and takes real time; running it
+    // on this async task's thread would hold up everything else on it (an
+    // agent's event streaming, a cancel) for that whole duration.
     let stt = Arc::clone(&audio.stt);
-    let job_ctx = Arc::clone(ctx);
-    ctx.spawn_job(async move {
-        // Whisper/Canary inference is CPU-bound and takes real time; running
-        // it on this async task's thread would hold up everything else on it
-        // (an agent's event streaming, a cancel) for that whole duration.
-        let transcript = tokio::task::spawn_blocking(move || stt.transcribe(&samples)).await;
-        match transcript {
-            Ok(Ok(transcript)) => crate::dictation::process_text(&job_ctx, request_id, &transcript.text).await,
-            Ok(Err(e)) => job_ctx.events.fail(request_id, e.to_string()),
-            Err(join_error) => {
-                job_ctx.events.fail(request_id, format!("la tarea de transcripción falló: {join_error}"))
-            }
-        }
-    });
+    let transcript = tokio::task::spawn_blocking(move || stt.transcribe(&samples)).await;
+    match transcript {
+        Ok(Ok(transcript)) => crate::dictation::process_text(ctx, request_id, &transcript.text).await,
+        Ok(Err(e)) => ctx.events.fail(request_id, e.to_string()),
+        Err(join_error) => ctx.events.fail(request_id, format!("la tarea de transcripción falló: {join_error}")),
+    }
 }
 
 /// Whether a recording holds no speech: too short to be an utterance, or
@@ -305,6 +366,98 @@ mod tests {
 
         assert!(stop.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
         assert!(stop.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+    }
+
+    /// A microphone that takes a while to open and says when it is closed.
+    struct SlowToOpen {
+        delay: std::time::Duration,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct Stream(Arc<std::sync::atomic::AtomicBool>);
+
+    impl eva_audio::CaptureHandle for Stream {
+        fn stop(self: Box<Self>) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl eva_audio::AudioSource for SlowToOpen {
+        fn start(
+            &self,
+            _chunk_size: usize,
+            _on_chunk: Box<dyn FnMut(Vec<f32>) + Send>,
+        ) -> Result<Box<dyn eva_audio::CaptureHandle>, eva_audio::AudioError> {
+            std::thread::sleep(self.delay);
+            Ok(Box::new(Stream(Arc::clone(&self.closed))))
+        }
+    }
+
+    struct NoMicrophone;
+
+    impl eva_audio::AudioSource for NoMicrophone {
+        fn start(
+            &self,
+            _chunk_size: usize,
+            _on_chunk: Box<dyn FnMut(Vec<f32>) + Send>,
+        ) -> Result<Box<dyn eva_audio::CaptureHandle>, eva_audio::AudioError> {
+            Err(eva_audio::AudioError::NoInputDevice)
+        }
+    }
+
+    fn with_source(source: impl eva_audio::AudioSource + 'static) -> AudioContext {
+        AudioContext {
+            source: Arc::new(source),
+            stt: Arc::new(eva_audio::transcribe::mock::FixedTranscript::new("hola")),
+            model_id: "mock-model".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_microphone_never_holds_up_the_command_loop() {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = SlowToOpen { delay: std::time::Duration::from_millis(400), closed: Arc::clone(&closed) };
+        let mut rig = Rig::builder().audio(with_source(source)).build();
+        let request_id = Uuid::new_v4();
+
+        let started = std::time::Instant::now();
+        crate::handler::handle(&rig.ctx, ShellToWorker::StartRecording { request_id }, None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "the loop was held for {:?}",
+            started.elapsed()
+        );
+
+        // The key comes up before the microphone has even opened.
+        crate::handler::handle(&rig.ctx, ShellToWorker::StopRecording { request_id }, None);
+        rig.ctx.wait_idle().await;
+
+        assert!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            "a stream that opened too late is closed, not left recording"
+        );
+        let events = rig.drain();
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Idle, .. })));
+        assert!(rig.desktop.calls().is_empty(), "nothing was heard, nothing is pasted");
+    }
+
+    #[tokio::test]
+    async fn a_microphone_that_will_not_open_ends_the_recording_and_frees_the_next_one() {
+        let mut rig = Rig::builder().audio(with_source(NoMicrophone)).build();
+        let first = Uuid::new_v4();
+        let events = rig.run(ShellToWorker::StartRecording { request_id: first }).await;
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("dispositivo"))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+        let second = rig.run(ShellToWorker::StartRecording { request_id: Uuid::new_v4() }).await;
+        assert!(
+            !second.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("en curso"))),
+            "the failed recording does not block the next one"
+        );
     }
 
     proptest::proptest! {

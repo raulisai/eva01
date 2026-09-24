@@ -75,12 +75,24 @@ pub struct AudioContext {
     pub model_id: String,
 }
 
-/// The buffer and capture handle for a recording in progress, between a
+/// The buffer and capture for a recording in progress, between a
 /// `StartRecording` and its matching `StopRecording`.
 pub(crate) struct RecordingSession {
     pub(crate) request_id: Uuid,
-    pub(crate) handle: Box<dyn CaptureHandle>,
+    pub(crate) capture: Arc<Mutex<Capture>>,
     pub(crate) buffer: Arc<Mutex<Vec<f32>>>,
+}
+
+/// Where the microphone stream of a recording stands. Opening it happens off
+/// the command loop (see `crate::recording`), so the key can come up before
+/// it is open.
+pub(crate) enum Capture {
+    /// Still being opened.
+    Opening,
+    /// Open and recording.
+    Open(Box<dyn CaptureHandle>),
+    /// The recording ended before the stream was open: close it as soon as it is.
+    Abandoned,
 }
 
 /// What [`WorkerContext::new`] is built from.
