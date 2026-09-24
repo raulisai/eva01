@@ -2,6 +2,12 @@
 //! was on the clipboard before — this is what actually lands a cleaned
 //! transcript in whatever app the cursor is in.
 //!
+//! "Whatever was on the clipboard" means all of it: every item, in every
+//! representation it offered — rich text, an image, a copied file — not just
+//! its plain text. Found reviewing this module: it used to save only the
+//! text, so a dictation made right after copying a picture or a file
+//! replaced it for good.
+//!
 //! **Scope, stated plainly:** `docs/PLAN.md` §3 describes a "reliable
 //! paste... con recibo" pattern (waiting for the receiving app to actually
 //! *read* the pasted content, via `NSPasteboard` promises, before restoring
@@ -25,9 +31,59 @@ use std::time::Duration;
 /// [`paste_text`] ran, if nothing else changed it in the meantime.
 pub const DEFAULT_RESTORE_DELAY: Duration = Duration::from_millis(500);
 
+/// The type name plain text is stored under (`NSPasteboardTypeString`).
+pub const PLAIN_TEXT_TYPE: &str = "public.utf8-plain-text";
+
+/// The most a [`ClipboardSnapshot`] copies before settling for the plain text
+/// alone: enough for any screenshot or rich document, not for a clipboard
+/// holding a whole video.
+pub const SNAPSHOT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+/// Everything the clipboard held: each item, with every representation it
+/// offered, as (type, bytes) pairs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClipboardSnapshot {
+    items: Vec<Vec<(String, Vec<u8>)>>,
+}
+
+impl ClipboardSnapshot {
+    /// A snapshot of `items`, each a list of (type, bytes).
+    pub fn new(items: Vec<Vec<(String, Vec<u8>)>>) -> ClipboardSnapshot {
+        ClipboardSnapshot { items: items.into_iter().filter(|item| !item.is_empty()).collect() }
+    }
+
+    /// A clipboard holding just `text`.
+    pub fn text(text: &str) -> ClipboardSnapshot {
+        ClipboardSnapshot::new(vec![vec![(PLAIN_TEXT_TYPE.to_string(), text.as_bytes().to_vec())]])
+    }
+
+    /// Whether the clipboard held nothing.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The items, each a list of (type, bytes).
+    pub fn items(&self) -> &[Vec<(String, Vec<u8>)>] {
+        &self.items
+    }
+
+    /// The first item's plain text, if it has one.
+    pub fn plain_text(&self) -> Option<String> {
+        self.items
+            .iter()
+            .flatten()
+            .find(|(kind, _)| kind == PLAIN_TEXT_TYPE)
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
 /// Read/write access to the system clipboard, narrowed to exactly what
 /// [`paste_text_with`] needs.
 pub trait Pasteboard: Send + Sync {
+    /// Everything on the clipboard, to put back later with [`Pasteboard::restore`].
+    fn snapshot(&self) -> ClipboardSnapshot;
+    /// Replaces the clipboard's contents with `snapshot`.
+    fn restore(&self, snapshot: &ClipboardSnapshot) -> Result<(), MacosError>;
     /// The current plain-text contents, or `None` if the clipboard holds no
     /// text (empty, or holds a non-text type).
     fn read_string(&self) -> Option<String>;
@@ -66,7 +122,7 @@ pub fn paste_text_with(
     text: &str,
     restore_delay: Duration,
 ) -> Result<(), MacosError> {
-    let previous_text = pasteboard.read_string();
+    let previous = pasteboard.snapshot();
 
     pasteboard.write_string(text)?;
     let change_count_after_our_write = pasteboard.change_count();
@@ -76,18 +132,18 @@ pub fn paste_text_with(
         // a keystroke that never landed, but we can at least not leave the
         // clipboard silently mutated on a failure the caller sees as an
         // error — restore it immediately rather than waiting for the timer.
-        if let Some(previous_text) = &previous_text {
-            let _ = pasteboard.write_string(previous_text);
+        if !previous.is_empty() {
+            let _ = pasteboard.restore(&previous);
         }
         return Err(e);
     }
 
-    if let Some(previous_text) = previous_text {
+    if !previous.is_empty() {
         let pasteboard = Arc::clone(&pasteboard);
         std::thread::spawn(move || {
             std::thread::sleep(restore_delay);
             if pasteboard.change_count() == change_count_after_our_write {
-                let _ = pasteboard.write_string(&previous_text);
+                let _ = pasteboard.restore(&previous);
             }
         });
     }
@@ -122,7 +178,7 @@ pub fn copy_selection_with(
     keystroke: &dyn KeystrokeSynthesizer,
     timeout: Duration,
 ) -> Result<Option<String>, MacosError> {
-    let previous_text = pasteboard.read_string();
+    let previous = pasteboard.snapshot();
     let count_before = pasteboard.change_count();
 
     keystroke.synthesize_cmd_c()?;
@@ -136,11 +192,10 @@ pub fn copy_selection_with(
     }
 
     let selected = pasteboard.read_string();
-    match previous_text {
-        Some(previous) => {
-            let _ = pasteboard.write_string(&previous);
-        }
-        None => pasteboard.clear(),
+    if previous.is_empty() {
+        pasteboard.clear();
+    } else {
+        let _ = pasteboard.restore(&previous);
     }
     Ok(selected.filter(|text| !text.is_empty()))
 }
@@ -154,6 +209,14 @@ pub fn copy_selection() -> Result<Option<String>, MacosError> {
 pub struct SystemPasteboard;
 
 impl Pasteboard for SystemPasteboard {
+    fn snapshot(&self) -> ClipboardSnapshot {
+        snapshot_of(&objc2_app_kit::NSPasteboard::generalPasteboard())
+    }
+
+    fn restore(&self, snapshot: &ClipboardSnapshot) -> Result<(), MacosError> {
+        restore_into(&objc2_app_kit::NSPasteboard::generalPasteboard(), snapshot)
+    }
+
     fn read_string(&self) -> Option<String> {
         let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
         let string_type = unsafe { objc2_app_kit::NSPasteboardTypeString };
@@ -180,6 +243,55 @@ impl Pasteboard for SystemPasteboard {
 
     fn clear(&self) {
         objc2_app_kit::NSPasteboard::generalPasteboard().clearContents();
+    }
+}
+
+/// Every item on `pasteboard`, in every type it offers.
+fn snapshot_of(pasteboard: &objc2_app_kit::NSPasteboard) -> ClipboardSnapshot {
+    let mut total = 0usize;
+    let mut items = Vec::new();
+    for item in pasteboard.pasteboardItems().map(|items| items.to_vec()).unwrap_or_default() {
+        let mut representations = Vec::new();
+        for kind in item.types().to_vec() {
+            let Some(data) = item.dataForType(&kind) else { continue };
+            total += data.len();
+            if total > SNAPSHOT_BUDGET_BYTES {
+                tracing::warn!(total, "el portapapeles es demasiado grande para guardarlo entero; se guarda su texto");
+                let text_type = unsafe { objc2_app_kit::NSPasteboardTypeString };
+                return pasteboard
+                    .stringForType(text_type)
+                    .map(|text| ClipboardSnapshot::text(&text.to_string()))
+                    .unwrap_or_default();
+            }
+            representations.push((kind.to_string(), data.to_vec()));
+        }
+        items.push(representations);
+    }
+    ClipboardSnapshot::new(items)
+}
+
+/// Replaces what `pasteboard` holds with `snapshot`, one item per item.
+fn restore_into(pasteboard: &objc2_app_kit::NSPasteboard, snapshot: &ClipboardSnapshot) -> Result<(), MacosError> {
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboardItem, NSPasteboardWriting};
+
+    let writers: Vec<objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>>> = snapshot
+        .items()
+        .iter()
+        .map(|representations| {
+            let item = NSPasteboardItem::new();
+            for (kind, bytes) in representations {
+                let data = objc2_foundation::NSData::with_bytes(bytes);
+                item.setData_forType(&data, &objc2_foundation::NSString::from_str(kind));
+            }
+            ProtocolObject::from_retained(item)
+        })
+        .collect();
+    pasteboard.clearContents();
+    if writers.is_empty() || pasteboard.writeObjects(&objc2_foundation::NSArray::from_retained_slice(&writers)) {
+        Ok(())
+    } else {
+        Err(MacosError::PasteboardWriteFailed)
     }
 }
 
@@ -227,35 +339,56 @@ fn post_cmd_key(keycode: u16) -> Result<(), MacosError> {
 /// per `docs/ENGINEERING.md` #5. Exposed as a normal module (not
 /// `#[cfg(test)]`-only) since `eva-worker`'s own tests will want them too.
 pub mod mock {
-    use super::{KeystrokeSynthesizer, MacosError, Pasteboard};
+    use super::{ClipboardSnapshot, KeystrokeSynthesizer, MacosError, Pasteboard};
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, MutexGuard};
 
     /// An in-memory clipboard: no AppKit, no real system state.
     #[derive(Default)]
     pub struct MockPasteboard {
-        contents: Mutex<Option<String>>,
+        contents: Mutex<ClipboardSnapshot>,
         change_count: AtomicIsize,
     }
 
     impl MockPasteboard {
-        /// Builds a mock clipboard, optionally pre-seeded with `initial` content.
+        /// Builds a mock clipboard, optionally pre-seeded with `initial` text.
         pub fn new(initial: Option<&str>) -> Self {
-            MockPasteboard { contents: Mutex::new(initial.map(str::to_string)), change_count: AtomicIsize::new(0) }
+            MockPasteboard::holding(initial.map(ClipboardSnapshot::text).unwrap_or_default())
+        }
+
+        /// Builds a mock clipboard holding `contents` — an image, a file,
+        /// several items.
+        pub fn holding(contents: ClipboardSnapshot) -> Self {
+            MockPasteboard { contents: Mutex::new(contents), change_count: AtomicIsize::new(0) }
+        }
+
+        fn contents(&self) -> MutexGuard<'_, ClipboardSnapshot> {
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            self.contents.lock().unwrap()
+        }
+
+        fn replace(&self, contents: ClipboardSnapshot) {
+            *self.contents() = contents;
+            self.change_count.fetch_add(1, Ordering::SeqCst);
         }
     }
 
     impl Pasteboard for MockPasteboard {
+        fn snapshot(&self) -> ClipboardSnapshot {
+            self.contents().clone()
+        }
+
+        fn restore(&self, snapshot: &ClipboardSnapshot) -> Result<(), MacosError> {
+            self.replace(snapshot.clone());
+            Ok(())
+        }
+
         fn read_string(&self) -> Option<String> {
-            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
-            self.contents.lock().unwrap().clone()
+            self.contents().plain_text()
         }
 
         fn write_string(&self, text: &str) -> Result<(), MacosError> {
-            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
-            let mut guard = self.contents.lock().unwrap();
-            *guard = Some(text.to_string());
-            self.change_count.fetch_add(1, Ordering::SeqCst);
+            self.replace(ClipboardSnapshot::text(text));
             Ok(())
         }
 
@@ -264,10 +397,7 @@ pub mod mock {
         }
 
         fn clear(&self) {
-            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
-            let mut guard = self.contents.lock().unwrap();
-            *guard = None;
-            self.change_count.fetch_add(1, Ordering::SeqCst);
+            self.replace(ClipboardSnapshot::default());
         }
     }
 
@@ -412,6 +542,54 @@ mod tests {
         );
     }
 
+    /// A clipboard holding a copied picture (no text at all) and, as a
+    /// second item, a copied file.
+    fn picture_and_file() -> ClipboardSnapshot {
+        ClipboardSnapshot::new(vec![
+            vec![("public.png".to_string(), vec![0x89, b'P', b'N', b'G'])],
+            vec![("public.file-url".to_string(), b"file:///Users/x/informe.pdf".to_vec())],
+        ])
+    }
+
+    #[test]
+    fn a_copied_picture_or_file_comes_back_after_the_paste_not_just_text() {
+        let pasteboard = Arc::new(MockPasteboard::holding(picture_and_file()));
+        let keystroke = MockKeystrokeSynthesizer::succeeding();
+
+        paste_text_with(pasteboard.clone(), &keystroke, "dictado", Duration::from_millis(20)).expect("pastes");
+        assert_eq!(pasteboard.read_string(), Some("dictado".to_string()));
+
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(pasteboard.snapshot(), picture_and_file(), "every item, in every type, is back");
+    }
+
+    #[test]
+    fn rich_text_keeps_all_its_representations() {
+        let rich = ClipboardSnapshot::new(vec![vec![
+            ("public.rtf".to_string(), b"{\\rtf1 hola}".to_vec()),
+            ("public.html".to_string(), b"<b>hola</b>".to_vec()),
+            (PLAIN_TEXT_TYPE.to_string(), b"hola".to_vec()),
+        ]]);
+        let pasteboard = Arc::new(MockPasteboard::holding(rich.clone()));
+
+        paste_text_with(pasteboard.clone(), &MockKeystrokeSynthesizer::succeeding(), "x", Duration::from_millis(10))
+            .expect("pastes");
+        std::thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(pasteboard.snapshot(), rich);
+    }
+
+    #[test]
+    fn reading_the_selection_puts_a_copied_picture_back_too() {
+        let pasteboard = Arc::new(MockPasteboard::holding(picture_and_file()));
+        let keystroke = MockKeystrokeSynthesizer::with_selection(pasteboard.clone(), "seleccionado");
+
+        let selected = copy_selection_with(pasteboard.as_ref(), &keystroke, Duration::from_millis(200)).expect("ok");
+
+        assert_eq!(selected, Some("seleccionado".to_string()));
+        assert_eq!(pasteboard.snapshot(), picture_and_file());
+    }
+
     #[test]
     fn copy_selection_returns_the_selected_text_and_restores_the_clipboard() {
         let pasteboard = Arc::new(MockPasteboard::new(Some("lo que el usuario había copiado")));
@@ -471,6 +649,26 @@ mod tests {
     // real clipboard from an unattended `cargo test` risks pasting unknown
     // clipboard content wherever focus happens to be (a multi-line clipboard
     // value ending in a newline would be *executed* if focus is a terminal).
+
+    #[test]
+    fn a_real_pasteboard_round_trips_pictures_files_and_rich_text() {
+        // A private pasteboard of its own: the real AppKit path, without
+        // touching the user's clipboard.
+        let pasteboard = objc2_app_kit::NSPasteboard::pasteboardWithUniqueName();
+        let rich_and_picture = ClipboardSnapshot::new(vec![
+            vec![
+                ("public.html".to_string(), b"<b>hola</b>".to_vec()),
+                (PLAIN_TEXT_TYPE.to_string(), "hola, mañana".as_bytes().to_vec()),
+            ],
+            vec![("public.png".to_string(), vec![0x89, b'P', b'N', b'G', 0, 1, 2, 255])],
+        ]);
+
+        restore_into(&pasteboard, &rich_and_picture).expect("writes");
+        assert_eq!(snapshot_of(&pasteboard), rich_and_picture);
+
+        restore_into(&pasteboard, &ClipboardSnapshot::default()).expect("clears");
+        assert!(snapshot_of(&pasteboard).is_empty());
+    }
 
     #[test]
     #[ignore = "writes to the real system clipboard — run manually with `cargo test -- --ignored`"]
