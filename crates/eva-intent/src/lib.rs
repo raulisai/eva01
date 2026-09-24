@@ -9,6 +9,7 @@
 pub mod apps;
 pub mod intent;
 pub mod risk;
+pub mod spoken;
 pub mod wake;
 
 pub use apps::{AppEntry, AppIndex};

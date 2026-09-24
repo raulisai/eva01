@@ -169,7 +169,9 @@ impl DesktopService for LocalService {
     }
 
     async fn open_url(&self, url: &str) -> Outcome<()> {
-        let url = url.to_string();
+        // Ruled on and opened as the same string: what the user confirms is
+        // what opens.
+        let url = eva_gateway::normalize_url(url);
         self.gated(ActionKind::OpenUrl, &url.clone(), move |d| d.open_url(&url)).await
     }
 

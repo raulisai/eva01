@@ -49,6 +49,41 @@ fn url_floor(url: &str) -> (Policy, Option<&'static str>) {
     }
 }
 
+/// The URL that will actually be opened for `input` — the one the gateway
+/// must rule on, so what the user confirms is what opens. Kept as it is when
+/// it already has a scheme (`mailto:`, `x-apple.systempreferences:` have no
+/// `//`, and prefixing `https://` broke them); `http://` for a local address,
+/// because a dev server on `https://localhost:3000` fails to connect; and
+/// `https://` for everything else.
+pub fn normalize_url(input: &str) -> String {
+    let url = input.trim();
+    if scheme_of(url).is_some() {
+        return url.to_string();
+    }
+    let host_and_port = url.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match host_and_port.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => host_and_port,
+    };
+    let scheme = if is_local_host(host) { "http" } else { "https" };
+    format!("{scheme}://{url}")
+}
+
+/// Loopback, a `.local` name, or a private IPv4 address: the machine itself
+/// or its own network, where development servers run without TLS.
+fn is_local_host(host: &str) -> bool {
+    let host = host.to_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host == "[::1]" {
+        return true;
+    }
+    let octets: Vec<u8> = host.split('.').filter_map(|part| part.parse().ok()).collect();
+    match octets.as_slice() {
+        [127, ..] | [10, ..] | [192, 168, ..] | [0, 0, 0, 0] => octets.len() == 4,
+        [172, second, ..] => octets.len() == 4 && (16..=31).contains(second),
+        _ => false,
+    }
+}
+
 /// The URL's scheme, lowercased, if it has one. `localhost:3000` and
 /// `github.com:443/x` look like `scheme:rest` but are hosts with ports, so
 /// a prefix that is `localhost` or contains a dot, followed by nothing but a
@@ -118,6 +153,37 @@ mod tests {
     fn multiline_text_pasted_for_an_agent_is_confirmed_single_line_is_not() {
         assert_eq!(floor(ActionKind::InsertText, "ls -la\nrm -rf ~"), Policy::Confirm);
         assert_eq!(floor(ActionKind::InsertText, "una sola línea"), Policy::Auto);
+    }
+
+    #[test]
+    fn a_url_is_normalized_to_what_will_really_be_opened() {
+        for (said, opened) in [
+            ("github.com", "https://github.com"),
+            ("www.google.com/search?q=x", "https://www.google.com/search?q=x"),
+            ("localhost", "http://localhost"),
+            ("localhost:3000", "http://localhost:3000"),
+            ("127.0.0.1:8080/api", "http://127.0.0.1:8080/api"),
+            ("192.168.1.20:5000", "http://192.168.1.20:5000"),
+            ("mi-mac.local:8000", "http://mi-mac.local:8000"),
+            ("172.20.0.3", "http://172.20.0.3"),
+            ("172.40.0.3", "https://172.40.0.3"),
+            ("https://github.com/x", "https://github.com/x"),
+            ("http://localhost:3000", "http://localhost:3000"),
+            ("mailto:ana@ejemplo.com", "mailto:ana@ejemplo.com"),
+            (
+                "x-apple.systempreferences:com.apple.preference.security",
+                "x-apple.systempreferences:com.apple.preference.security",
+            ),
+            ("file:///etc/hosts", "file:///etc/hosts"),
+        ] {
+            assert_eq!(normalize_url(said), opened, "{said}");
+        }
+    }
+
+    #[test]
+    fn the_floor_of_a_normalized_local_address_is_still_auto() {
+        assert_eq!(floor(ActionKind::OpenUrl, &normalize_url("localhost:3000")), Policy::Auto);
+        assert_eq!(floor(ActionKind::OpenUrl, &normalize_url("mailto:a@b.co")), Policy::Auto);
     }
 
     #[test]

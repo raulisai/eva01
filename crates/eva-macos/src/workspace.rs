@@ -100,10 +100,12 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
 /// Returns [`MacosError::InvalidUrl`] if `url` cannot be parsed, or
 /// [`MacosError::LaunchFailed`] if AppKit could not open it.
 pub fn open_url(url: &str) -> Result<(), MacosError> {
-    // A bare domain typed by a user ("github.com/foo") is not a valid
-    // absolute URL without a scheme — add one rather than fail on the
-    // common case `eva-intent::intent::looks_like_url` is designed to catch.
-    let with_scheme = if url.contains("://") { url.to_string() } else { format!("https://{url}") };
+    // Callers pass a complete URL (`eva_gateway::normalize_url` decides
+    // http/https for scheme-less input). This only rescues a bare domain
+    // with no colon at all; anything with one — `mailto:`, `tel:`,
+    // `x-apple.systempreferences:` — is a scheme and is left alone, which
+    // prefixing `https://` to everything without `://` used to break.
+    let with_scheme = if url.contains(':') { url.to_string() } else { format!("https://{url}") };
 
     let ns_string = NSString::from_str(&with_scheme);
     let ns_url = NSURL::URLWithString(&ns_string).ok_or_else(|| MacosError::InvalidUrl(url.to_string()))?;

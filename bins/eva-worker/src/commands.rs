@@ -281,6 +281,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spoken_addresses_open_exactly_the_url_the_gateway_ruled_on() {
+        let mut rig = Rig::new();
+        rig.run(typed("Adán, abre localhost tres mil.")).await;
+        rig.run(typed("Adán, abre google punto com punto mx")).await;
+        rig.run(typed("Adán, abre github.com.")).await;
+
+        assert_eq!(
+            rig.desktop.calls(),
+            vec![
+                Call::OpenUrl("http://localhost:3000".to_string()),
+                Call::OpenUrl("https://google.com.mx".to_string()),
+                Call::OpenUrl("https://github.com".to_string()),
+            ]
+        );
+        let audited: Vec<String> = rig
+            .ctx
+            .store
+            .recent_audit(10)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.intent_json["subject"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(audited.contains(&"http://localhost:3000".to_string()), "the audit names what opened: {audited:?}");
+    }
+
+    #[tokio::test]
     async fn a_desktop_failure_ends_the_request_as_failed_with_the_reason() {
         let mut rig = Rig::builder().desktop(MockDesktop::failing()).build();
         let events = rig.run(typed("Adán, abre brave")).await;

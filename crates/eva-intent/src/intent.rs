@@ -181,7 +181,18 @@ fn strip_verb<'a>(text: &'a str, verbs: &[&str]) -> Option<&'a str> {
     None
 }
 
+/// `text` without the full stop (or other closing mark) the speech model puts
+/// at the end of almost every utterance — "abre github.com." must not read as
+/// an app called "github.com.".
+fn without_closing_punctuation(text: &str) -> &str {
+    text.trim().trim_end_matches(['.', ',', ';', ':', '!', '?', '…']).trim_end()
+}
+
 fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
+    let rest = without_closing_punctuation(rest);
+    if let Some(url) = crate::spoken::spoken_url(rest) {
+        return Intent::OpenUrl { url };
+    }
     if looks_like_url(rest) {
         return Intent::OpenUrl { url: rest.to_string() };
     }
@@ -196,6 +207,7 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
 }
 
 fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
+    let rest = without_closing_punctuation(rest);
     match app_index.find(rest) {
         Some(app) => Intent::CloseApp { app: app.canonical_name.clone() },
         None => Intent::AgentTask { prompt: format!("cierra {rest}"), provider: None },
@@ -203,7 +215,7 @@ fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
 }
 
 fn build_search(rest: &str, _app_index: &AppIndex) -> Intent {
-    Intent::WebSearch { query: rest.to_string() }
+    Intent::WebSearch { query: without_closing_punctuation(rest).to_string() }
 }
 
 fn build_continue(rest: &str, _app_index: &AppIndex) -> Intent {
@@ -347,6 +359,31 @@ mod tests {
     fn parses_open_app() {
         let intent = parse("abre brave", &sample_index());
         assert_eq!(intent, Intent::OpenApp { app: "Brave Browser".to_string() });
+    }
+
+    #[test]
+    fn the_closing_full_stop_the_speech_model_adds_does_not_change_the_command() {
+        let index =
+            AppIndex::new(vec![AppEntry::new("GitHub Desktop").with_aliases(["github"]), AppEntry::new("Spotify")]);
+        assert_eq!(parse("abre github.com.", &index), Intent::OpenUrl { url: "github.com".to_string() });
+        assert_eq!(parse("abre www.google.com.", &index), Intent::OpenUrl { url: "www.google.com".to_string() });
+        assert_eq!(parse("cierra Spotify.", &index), Intent::CloseApp { app: "Spotify".to_string() });
+        assert_eq!(
+            parse("busca el clima de mañana.", &index),
+            Intent::WebSearch { query: "el clima de mañana".to_string() }
+        );
+    }
+
+    #[test]
+    fn spoken_addresses_open_the_browser_instead_of_an_app_or_an_agent() {
+        let index = AppIndex::new(vec![AppEntry::new("GitHub Desktop").with_aliases(["github"])]);
+        assert_eq!(parse("abre github punto com", &index), Intent::OpenUrl { url: "github.com".to_string() });
+        assert_eq!(
+            parse("abre google punto com punto mx.", &index),
+            Intent::OpenUrl { url: "google.com.mx".to_string() }
+        );
+        assert_eq!(parse("abre localhost tres mil", &index), Intent::OpenUrl { url: "localhost:3000".to_string() });
+        assert_eq!(parse("abre localhost:5173", &index), Intent::OpenUrl { url: "localhost:5173".to_string() });
     }
 
     #[test]

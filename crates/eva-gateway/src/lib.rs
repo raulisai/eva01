@@ -18,4 +18,4 @@ mod rules;
 pub use action::Action;
 pub use confirmer::{mock, Confirmer, DenyAll};
 pub use gateway::{Gateway, GatewayError, Ticket, Verdict};
-pub use rules::safety_floor;
+pub use rules::{normalize_url, safety_floor};
