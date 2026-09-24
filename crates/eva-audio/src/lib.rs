@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod resample;
+pub mod second_opinion;
 pub mod segment;
 pub mod transcribe;
 pub mod vad;

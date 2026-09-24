@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 eva-audio = { workspace = true }
 eva-text = { workspace = true }
+eva-intent = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 transcribe-rs = { version = "0.3", features = ["whisper-cpp", "onnx"] }
 

@@ -1,18 +1,11 @@
 //! Speech-to-text, behind a small trait so `eva-worker`'s dispatch logic
 //! never has to load a real model to be tested (`docs/ENGINEERING.md` #5).
 //!
-//! **Model choice, stated plainly:** `docs/PLAN.md` §5 names
-//! `canary-1b-flash` (via `transcribe-rs`'s `onnx` feature) as the default
-//! production model, chosen for Spanish. This module's concrete
-//! implementation, [`WhisperSpeechToText`], instead wraps `transcribe-rs`'s
-//! `whisper-cpp` engine. That is a deliberate, narrow choice for *this*
-//! increment, not a change to the model decision: Whisper ships as one
-//! self-contained GGUF file, so it is the one candidate that could actually
-//! be downloaded and run end-to-end for real in the time this session had —
-//! Canary/Parakeet need a directory of ONNX files whose exact layout was not
-//! verified against a real download here. `SpeechToText` does not know or
-//! care which engine backs it, so swapping in the Canary implementation
-//! later is a new `impl`, not a redesign.
+//! Two engines, both through `transcribe-rs`: [`CanarySpeechToText`], the
+//! production default (`canary-1b-flash`, `docs/PLAN.md` §5; its measured
+//! limits and what is done about them are in `crate::segment` and
+//! `crate::second_opinion`), and [`WhisperSpeechToText`], used only when no
+//! Canary model is installed and a Whisper file is.
 
 use std::path::Path;
 use thiserror::Error;

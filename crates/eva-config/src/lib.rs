@@ -110,6 +110,10 @@ pub struct SttConfig {
     pub whisper_path: Option<String>,
     /// The spoken language, as an ISO 639-1 code.
     pub language: String,
+    /// Also load `canary-180m-flash`, when installed next to the main model,
+    /// to double-check short clips the main one misses the wake word in
+    /// (see `eva_audio::second_opinion`). About 250 MB more of memory.
+    pub second_opinion: bool,
     /// What surrounds a recording before Canary hears it: `"auto"` (default:
     /// digital silence only around a clip whose own background is silent),
     /// `"silence"` or `"none"`. See `eval/README.md`: it is worth measuring on
@@ -119,7 +123,13 @@ pub struct SttConfig {
 
 impl Default for SttConfig {
     fn default() -> Self {
-        SttConfig { canary_dir: None, whisper_path: None, language: "es".to_string(), padding: "auto".to_string() }
+        SttConfig {
+            canary_dir: None,
+            whisper_path: None,
+            language: "es".to_string(),
+            second_opinion: true,
+            padding: "auto".to_string(),
+        }
     }
 }
 

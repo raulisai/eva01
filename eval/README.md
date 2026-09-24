@@ -114,6 +114,35 @@ ruido del mismo nivel que la propia grabación: pierde contra no rellenar en tod
 ajuste `[stt] padding` (`auto` / `silence` / `none`) y `eva-eval --padding` permiten repetir la comparación
 con **tus** dictados marcados: el ruido de estas pruebas es sintético y el de tu micrófono no lo es.
 
+## Órdenes cortas y la palabra de activación
+
+Órdenes dichas por `say` («Adán, abre Brave», «Adán, cierra Spotify»…, 1–2,5 s, dos voces) pasadas
+por la compuerta real de EVA01 (`eva intent`):
+
+| | órdenes reconocidas |
+|---|---|
+| solo `canary-1b-flash` | **4 / 22** — «Adán» sale «Y luego…», «Ah, entonces…» |
+| `canary-1b-flash` + `canary-180m-flash` como segunda opinión | **19 / 22** |
+
+El modelo grande, que es el mejor dictando frases (5 % de WER contra 19 % del pequeño, que además
+pierde la ñ: «ma ana», «Espa a»), es el peor en clips de 1–2 s; el pequeño reconoce «Adán» 7 de 8
+veces. `eva_audio::second_opinion` usa el grande y, solo si el clip es corto y su texto no empieza
+con la palabra de activación, le pregunta al pequeño y toma su versión únicamente si *esa* sí empieza
+con ella. El dictado normal no cambia (mismo 5,1 % en el corpus). Cuesta ~250 MB de memoria.
+
+También se probó qué palabra de activación entiende mejor el modelo grande solo (de 8): «Asistente»
+8, «Computadora» 7, «Mercurio» 6, «Eva» 4, «Adán» 2, «Oye Adán» y «Oye Eva» 0. Cambiarla es una
+decisión de producto (`eva wake-word`), no un arreglo: con la segunda opinión «Adán» ya funciona.
+
+En clips cortos el modelo grande además puede entrar en **bucle** («Computa, bueno, bueno, bueno…»
+decenas de veces). Eso nunca se pega: una repetición de 4+ palabras (o 3+ pares) se colapsa, y
+también dispara la segunda opinión.
+
+```bash
+EVA_CANARY_MODEL_DIR=… cargo run --release -p eva-eval -- --corpus <órdenes> --raw \
+  --second-opinion ~/Library/Application\ Support/EVA01/models/canary-180m-flash
+```
+
 ## Frases de una o dos palabras
 
 Es el punto débil que sigue abierto. 28 clips de `say` de 0,2–1,2 s («sí», «gracias», «vale», «de acuerdo»…)

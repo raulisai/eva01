@@ -91,6 +91,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     };
     let gateway_socket = endpoint.as_ref().map(|e| e.socket.clone());
 
+    let audio = load_audio(&config, &support, &wake_word);
     let ctx = Arc::new(WorkerContext::new(WorkerDeps {
         store,
         app_index: scan_applications(),
@@ -98,7 +99,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         base_dir: std::env::current_dir()?,
         desktop: Arc::new(eva_mcp::SystemDesktop::with_voice(config.feedback.voice.clone())),
         agents: eva_agents::registry_with_priority(&config.agents.priority),
-        audio: load_audio(&config, &support),
+        audio,
         formatter,
         events,
         mcp,
@@ -184,19 +185,26 @@ fn load_formatter(config: &Config) -> (Arc<dyn Formatter>, String) {
     (Arc::new(eva_text::RemoteAssisted::new(local, client)), name)
 }
 
-fn load_audio(config: &Config, support: &Path) -> Option<AudioContext> {
+fn load_audio(config: &Config, support: &Path, wake_word: &str) -> Option<AudioContext> {
     let language = config.stt.language.clone();
+    let padding = eva_audio::transcribe::Padding::from_name(&config.stt.padding).unwrap_or_default();
     match eva_config::models::discover(config, support, &|key| std::env::var(key).ok()) {
-        ModelChoice::Canary(path) => match eva_audio::CanarySpeechToText::load(&path, language) {
+        ModelChoice::Canary(path) => match eva_audio::CanarySpeechToText::load(&path, language.clone()) {
             Ok(stt) => {
-                let padding = eva_audio::transcribe::Padding::from_name(&config.stt.padding).unwrap_or_default();
-                let stt = stt.with_padding(padding);
                 tracing::info!(model = %path.display(), "modelo Canary cargado");
-                Some(AudioContext {
-                    source: Arc::new(eva_audio::MicrophoneSource),
-                    stt: Arc::new(stt),
-                    model_id: format!("canary:{}", path.display()),
-                })
+                let second = second_opinion_model(config, support, &path, &language, padding);
+                let model_id = match &second {
+                    Some(_) => format!("canary:{} (+ canary-180m-flash para frases cortas)", path.display()),
+                    None => format!("canary:{}", path.display()),
+                };
+                let wake_word = wake_word.to_string();
+                let wanted = Arc::new(move |text: &str| {
+                    let text = eva_text::filler::remove_universal_fillers(text);
+                    eva_intent::wake::strip_wake_word(&text, &wake_word).is_some()
+                });
+                let stt =
+                    eva_audio::second_opinion::SecondOpinion::new(Arc::new(stt.with_padding(padding)), second, wanted);
+                Some(AudioContext { source: Arc::new(eva_audio::MicrophoneSource), stt: Arc::new(stt), model_id })
             }
             Err(e) => {
                 tracing::error!(model = %path.display(), error = %e, "no se pudo cargar el modelo Canary");
@@ -222,6 +230,32 @@ fn load_audio(config: &Config, support: &Path) -> Option<AudioContext> {
                 "no hay ningún modelo de voz configurado ni en {}/models; `eva doctor` dice cómo instalarlo",
                 support.display()
             );
+            None
+        }
+    }
+}
+
+/// `canary-180m-flash`, to double-check short clips, when the config wants
+/// it, it is installed and it is not already the main model.
+fn second_opinion_model(
+    config: &Config,
+    support: &Path,
+    main: &Path,
+    language: &str,
+    padding: eva_audio::transcribe::Padding,
+) -> Option<Arc<dyn eva_audio::SpeechToText>> {
+    let spec = eva_config::models::find("canary-180m-flash")?;
+    let dir = eva_config::models::model_dir(support, spec.id);
+    if !config.stt.second_opinion || !spec.is_installed(&dir) || dir == main {
+        return None;
+    }
+    match eva_audio::CanarySpeechToText::load(&dir, language) {
+        Ok(stt) => {
+            tracing::info!("canary-180m-flash cargado como segunda opinión para frases cortas");
+            Some(Arc::new(stt.with_padding(padding)))
+        }
+        Err(e) => {
+            tracing::warn!("no se pudo cargar canary-180m-flash como segunda opinión: {e}");
             None
         }
     }

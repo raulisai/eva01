@@ -157,6 +157,30 @@ fn config_file(loaded: &eva_config::Loaded) -> Check {
     }
 }
 
+/// Whether the small model is there to double-check short commands
+/// (`eva_audio::second_opinion`), which the big one alone mostly mishears.
+fn second_opinion(config: &Config, support: &std::path::Path) -> Check {
+    let Some(small) = models::find("canary-180m-flash") else {
+        return Check::ok("Órdenes cortas", "sin segunda opinión");
+    };
+    if !config.stt.second_opinion {
+        return Check::ok("Órdenes cortas", "segunda opinión apagada en la configuración ([stt] second_opinion)");
+    }
+    if small.is_installed(&models::model_dir(support, small.id)) {
+        Check::ok("Órdenes cortas", "canary-180m-flash vuelve a oír las frases cortas")
+    } else {
+        Check::warn(
+            "Órdenes cortas",
+            "el modelo grande entiende mal muchas órdenes cortas («Adán, abre Brave»)",
+            format!(
+                "eva model install {}   (~{} MB): medido, las órdenes reconocidas pasaron de 4/22 a 19/22",
+                small.id,
+                small.total_bytes() / 1_000_000
+            ),
+        )
+    }
+}
+
 fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
     let recommended = crate::model::recommended();
     let install_hint =
@@ -165,7 +189,7 @@ fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
         models::ModelChoice::Canary(dir) => {
             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if name == recommended.id {
-                vec![Check::ok("Modelo de voz", format!("Canary — {}", dir.display()))]
+                vec![Check::ok("Modelo de voz", format!("Canary — {}", dir.display())), second_opinion(config, support)]
             } else {
                 vec![Check::warn(
                     "Modelo de voz",

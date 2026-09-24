@@ -26,6 +26,10 @@
 # canary_dir = "~/Library/Application Support/EVA01/models/canary-1b-flash"
 # whisper_path = "~/Library/Application Support/EVA01/models/ggml-base.bin"
 # language = "es"
+# Con canary-1b-flash, usar también canary-180m-flash (si está instalado) para
+# volver a oír las frases cortas: el grande confunde a menudo la palabra de
+# activación en órdenes de 1-2 s. Unos 250 MB más de memoria.
+# second_opinion = true
 # Qué rodea la grabación antes de que Canary la oiga: "auto" (por defecto: silencio
 # digital solo si el fondo de la propia grabación es silencioso), "silence" o "none".
 # Mídelo con tus propios dictados marcados (eval/README.md, eva-eval --padding).

@@ -69,6 +69,15 @@ struct Cli {
     #[arg(long)]
     apple_intelligence: bool,
 
+    /// Carpeta de un segundo modelo Canary (canary-180m-flash) para volver a oír
+    /// las frases cortas, como hace EVA01 cuando está instalado.
+    #[arg(long)]
+    second_opinion: Option<PathBuf>,
+
+    /// La palabra de activación con la que se decide la segunda opinión.
+    #[arg(long, default_value = "Adán")]
+    wake_word: String,
+
     /// Muestra también lo que devolvió el modelo de voz antes de formatear,
     /// para saber si un error es del oído o del formato.
     #[arg(long)]
@@ -101,6 +110,23 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let second: Option<std::sync::Arc<dyn SpeechToText>> = match &cli.second_opinion {
+        Some(dir) => match eva_audio::CanarySpeechToText::load(dir, "es") {
+            Ok(model) => Some(std::sync::Arc::new(model.with_padding(padding))),
+            Err(e) => {
+                eprintln!("no se pudo cargar la segunda opinión en {}: {e}", dir.display());
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    let wake_word = cli.wake_word.clone();
+    let wanted = std::sync::Arc::new(move |text: &str| {
+        eva_intent::wake::strip_wake_word(&eva_text::filler::remove_universal_fillers(text), &wake_word).is_some()
+    });
+    // What EVA01 itself uses: the main model, the optional second opinion,
+    // and loops collapsed.
+    let stt = eva_audio::second_opinion::SecondOpinion::new(std::sync::Arc::from(stt), second, wanted);
 
     let samples = match corpus::scan(&cli.corpus) {
         Ok(samples) => samples,
@@ -138,7 +164,7 @@ fn main() {
     let dictionary = Dictionary::new(cli.custom_words);
     let results: Vec<SampleResult> = samples
         .iter()
-        .filter_map(|sample| run_one_sample(sample, stt.as_ref(), &dictionary, formatter.as_ref(), cli.strict))
+        .filter_map(|sample| run_one_sample(sample, &stt, &dictionary, formatter.as_ref(), cli.strict))
         .collect();
 
     print_report(&results, cli.strict, cli.apple_intelligence, cli.raw);

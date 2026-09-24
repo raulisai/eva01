@@ -126,6 +126,18 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     `eval/README.md`, «Ruido de fondo»). Se probó también relleno con ruido del mismo nivel: peor que no rellenar.
     Sigue siendo audio sintético: `[stt] padding` y `eva-eval --padding` existen para repetirlo con dictados reales.
 
+18. **El modelo recomendado entendía mal las órdenes de voz.** `canary-1b-flash` es el mejor dictando, pero en
+    órdenes de 1–2 s reconoció la palabra de activación en 4 de 22 casos («Adán» → «Ah, entonces») y a veces entró
+    en bucle («bueno, bueno, bueno…»). `canary-180m-flash`, peor dictando (pierde la ñ), reconoce las órdenes. Ahora
+    el pequeño es segunda opinión para clips cortos: 19 de 22. Los bucles se colapsan siempre. Ver `eval/README.md`.
+19. **Más bugs encontrados probando con el sistema real (esta revisión):** el portapapeles solo guardaba el texto
+    (una imagen copiada se perdía al dictar); «abre chrome» abría Home y «abre finder» Find My; «abre github.com.»
+    (con el punto de Canary) abría la app; «abre localhost tres mil» iba a un agente; el diccionario convertía
+    «gracias» en «García»; `eva intent`, `eva doctor` y demás arrancan su propio worker y habrían detenido los
+    agentes del worker de la app; la base de datos se podía «poner en cuarentena» solo por estar bloqueada; un
+    worker colgado nunca se reiniciaba; un agente sobrevivía a la muerte de su worker; las notificaciones del
+    worker podían colgarse como las del shell. Todos corregidos, con pruebas, y verificados con los binarios reales.
+
 ### Lo que falta y por qué
 
 - **Verificar con tu voz y tu micrófono.** Todo lo medido usa voz sintética (`say`) y ruido añadido; lo que sí se
