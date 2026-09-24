@@ -322,28 +322,13 @@ fn log_worker_event(event: &eva_ipc::WorkerToShell) {
 
 /// The identity EVA01's notifications go out under — the packaged app's
 /// bundle identifier (`packaging/Info.plist`).
-const BUNDLE_ID: &str = "dev.eva01.app";
-
-/// Shows a system notification, never on the event loop's thread.
-///
-/// Found by launching the packaged app for real: left to itself,
-/// `notify-rust` asks AppleScript for a bundle id on its first notification,
-/// and AppleScript answers an unknown application name with a modal "Where is
-/// …?" dialog. On the main thread that froze the whole shell — before it had
-/// even started the worker. Setting the identity explicitly skips that
-/// lookup, and the thread keeps whatever else macOS does with a notification
-/// off the loop.
+/// Shows a system notification, never on the event loop's thread (see
+/// `eva_macos::notification` for what used to freeze it).
 fn notify(title: &str, body: &str) {
-    static IDENTITY: std::sync::Once = std::sync::Once::new();
     let (title, body) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
-        IDENTITY.call_once(|| {
-            if let Err(e) = notify_rust::set_application(BUNDLE_ID) {
-                tracing::warn!("no se pudo fijar la identidad de las notificaciones: {e}");
-            }
-        });
-        if let Err(e) = notify_rust::Notification::new().summary(&title).body(&body).show() {
-            tracing::warn!("no se pudo mostrar la notificación: {e}");
+        if let Err(e) = eva_macos::notification::show(&title, &body) {
+            tracing::warn!("{e}");
         }
     });
 }

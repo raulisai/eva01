@@ -67,7 +67,10 @@ fn render_agent_event(json: &serde_json::Value) -> Option<Line> {
     let text = |key: &str| json.get(key).and_then(serde_json::Value::as_str).unwrap_or_default();
     match json.get("kind").and_then(serde_json::Value::as_str)? {
         "message" => Line::out(format!("  agente: {}", text("text"))),
-        "tool_call" => Line::out(format!("  agente usa {}: {}", text("name"), text("summary"))),
+        "tool_call" => match text("summary") {
+            "" => Line::out(format!("  agente usa {}", text("name"))),
+            summary => Line::out(format!("  agente usa {}: {summary}", text("name"))),
+        },
         "file_changed" => Line::out(format!("  agente cambió {}", text("path"))),
         "approval_required" => Line::out(format!("  agente pide aprobación: {}", text("description"))),
         // `started`, `session_assigned`, `completed`, `failed`: the task
@@ -265,6 +268,13 @@ mod tests {
         );
         assert_eq!(render(&event(serde_json::json!({"kind": "started"}))), None, "the task lines already say it");
         assert_eq!(render(&event(serde_json::json!({"nope": 1}))), None);
+    }
+
+    #[test]
+    fn a_tool_call_without_a_summary_does_not_leave_a_dangling_colon() {
+        let json = serde_json::json!({"kind": "tool_call", "name": "eva/list_projects", "summary": ""});
+        let event = WorkerToShell::AgentEvent { request_id: Uuid::new_v4(), event_json: json };
+        assert_eq!(text_of(&event), "  agente usa eva/list_projects");
     }
 
     #[test]

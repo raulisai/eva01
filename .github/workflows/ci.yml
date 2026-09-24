@@ -40,6 +40,8 @@ jobs:
         # Las pruebas que necesitan una Mac real (Apple Intelligence, el
         # portapapeles, el navegador) están marcadas #[ignore] a propósito.
         run: cargo test --workspace --locked
+      - name: Cadena de agentes de punta a punta (con un Codex de prueba)
+        run: sh eval/e2e-agent.sh
       - name: Paquete EVA01.app
         run: |
           sh packaging/build-app.sh

@@ -15,6 +15,7 @@
 pub mod ax;
 pub mod error;
 pub mod fnkey;
+pub mod notification;
 pub mod overlay;
 pub mod paste;
 pub mod secure_input;

@@ -80,12 +80,7 @@ impl Desktop for SystemDesktop {
     }
 
     fn notify(&self, title: &str, body: &str) -> Result<(), DesktopError> {
-        notify_rust::Notification::new()
-            .summary(title)
-            .body(body)
-            .show()
-            .map(|_handle| ())
-            .map_err(|e| DesktopError::NotifyFailed(e.to_string()))
+        eva_macos::notification::show(title, body).map_err(DesktopError::from)
     }
 
     fn speak(&self, text: &str) -> Result<(), DesktopError> {
@@ -196,7 +191,9 @@ pub mod mock {
             #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
             self.calls.lock().unwrap().push(call);
             if self.should_fail {
-                Err(DesktopError::NotifyFailed("mock configured to fail".to_string()))
+                Err(DesktopError::Macos(eva_macos::MacosError::NotificationFailed(
+                    "mock configured to fail".to_string(),
+                )))
             } else {
                 Ok(())
             }

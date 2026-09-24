@@ -9,10 +9,6 @@ pub enum DesktopError {
     #[error(transparent)]
     Macos(#[from] eva_macos::MacosError),
 
-    /// Showing a system notification failed.
-    #[error("no se pudo mostrar la notificación: {0}")]
-    NotifyFailed(String),
-
     /// Launching `say` for text-to-speech failed.
     #[error("no se pudo iniciar la síntesis de voz: {0}")]
     SpeakFailed(#[from] std::io::Error),

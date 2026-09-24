@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Un `codex` de mentira para probar la cadena de agentes de EVA01 de punta a
+punta sin gastar cuota ni depender de que el Codex real funcione en esta Mac.
+
+Habla lo mismo que el real hacia EVA: `--version`, `login status` y
+`exec --json … -c mcp_servers.eva.* … -- <prompt>` con eventos JSON por línea.
+Lo que hace con la tarea es de verdad: arranca el `eva-mcp` que EVA le
+inyectó, con sus argumentos y su token, y le hace llamadas MCP reales que
+viajan por el socket privado hasta el gateway del worker.
+"""
+import json
+import subprocess
+import sys
+import uuid
+
+
+def emit(event):
+    print(json.dumps(event, ensure_ascii=False), flush=True)
+
+
+def parse_overrides(args):
+    """Los `-c mcp_servers.eva.X=valor` que EVA le pasa (valores TOML)."""
+    server = {}
+    for i, arg in enumerate(args):
+        if arg == "-c" and i + 1 < len(args) and args[i + 1].startswith("mcp_servers.eva."):
+            key, value = args[i + 1][len("mcp_servers.eva."):].split("=", 1)
+            if key == "env":
+                pairs = value.strip("{}")
+                env = {}
+                for pair in filter(None, pairs.split(",")):
+                    k, v = pair.split("=", 1)
+                    env[k.strip()] = json.loads(v)
+                server["env"] = env
+            else:
+                server[key] = json.loads(value)
+    return server
+
+
+class McpClient:
+    def __init__(self, command, args, env):
+        self.process = subprocess.Popen(
+            [command, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True
+        )
+        self.next_id = 0
+
+    def send(self, message):
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def request(self, method, params):
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+        while True:
+            reply = json.loads(self.process.stdout.readline())
+            if reply.get("id") == self.next_id:
+                if "error" in reply:
+                    raise RuntimeError(f"{method}: {reply['error']}")
+                return reply["result"]
+
+    def call(self, tool, arguments=None):
+        result = self.request("tools/call", {"name": tool, "arguments": arguments or {}})
+        text = " ".join(part.get("text", "") for part in result.get("content", []))
+        return text, bool(result.get("isError"))
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=10)
+
+
+def run_task(args):
+    server = parse_overrides(args)
+    emit({"type": "thread.started", "thread_id": str(uuid.uuid4())})
+    emit({"type": "turn.started"})
+    if "command" not in server:
+        emit({"type": "error", "message": "EVA no inyectó su servidor MCP"})
+        emit({"type": "turn.failed", "error": {"message": "sin servidor MCP"}})
+        return 1
+
+    import os
+    env = dict(os.environ, **server.get("env", {}))
+    client = McpClient(server["command"], server.get("args", []), env)
+    client.request("initialize", {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "codex-de-prueba", "version": "0"},
+    })
+    client.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    tools = sorted(tool["name"] for tool in client.request("tools/list", {})["tools"])
+    report = [f"herramientas: {','.join(tools)}"]
+    for tool, arguments in [
+        ("list_projects", {}),
+        ("get_active_window", {}),
+        ("notify", {"title": "EVA01", "body": "Prueba de extremo a extremo de los agentes (puedes ignorarla)."}),
+        ("close_app", {"app_name": "Finder"}),
+    ]:
+        text, is_error = client.call(tool, arguments)
+        emit({"type": "item.completed",
+              "item": {"id": tool, "type": "mcp_tool_call", "server": "eva", "tool": tool,
+                       "status": "failed" if is_error else "completed"}})
+        report.append(f"{tool}={'ERROR' if is_error else 'ok'}: {text}")
+    client.close()
+
+    emit({"type": "item.completed", "item": {"id": "resumen", "type": "agent_message", "text": " | ".join(report)}})
+    emit({"type": "turn.completed", "usage": {}})
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--version"]:
+        print("codex-cli 0.0.0-prueba-eva01")
+        return 0
+    if args[:2] == ["login", "status"]:
+        print("Logged in (prueba)")
+        return 0
+    if args[:1] == ["exec"]:
+        return run_task(args)
+    print(f"codex de prueba: no sé hacer {args}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

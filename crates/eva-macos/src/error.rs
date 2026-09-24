@@ -26,4 +26,8 @@ pub enum MacosError {
     /// Synthesizing the paste keystroke (Cmd+V) failed.
     #[error("no se pudo simular Cmd+V")]
     SynthesizeKeystrokeFailed,
+
+    /// macOS refused to show a notification.
+    #[error("no se pudo mostrar la notificación: {0}")]
+    NotificationFailed(String),
 }
