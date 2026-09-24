@@ -35,6 +35,10 @@ pub struct Wake<'a> {
     pub heard: String,
 }
 
+fn is_vowel(c: char) -> bool {
+    "aeiou".contains(c)
+}
+
 /// How far a heard word may be from the wake word, in single-letter edits:
 /// one for short words, two for long ones. A four-letter word two edits away
 /// is a different word.
@@ -62,11 +66,15 @@ pub fn find_wake_word<'a>(text: &'a str, wake_word: &str, learned: &[String]) ->
         return None;
     }
     let rest = trimmed[end..].trim_start_matches(|c: char| !c.is_alphanumeric());
-    if learned.iter().any(|known| *known == heard) {
+    if learned.contains(&heard) {
         return Some(Wake { rest, how: WakeMatch::Learned, heard });
     }
-    let close = heard.chars().next() == folded_wake.chars().next()
-        && strsim::levenshtein(&heard, &folded_wake) <= tolerated_edits(folded_wake.chars().count());
+    let (first_heard, first_wake) = (heard.chars().next(), folded_wake.chars().next());
+    // Vowels are what speech recognition swaps most ("Eva" → "Ava"); a
+    // different first consonant is a different word.
+    let same_start =
+        first_heard == first_wake || first_heard.zip(first_wake).is_some_and(|(a, b)| is_vowel(a) && is_vowel(b));
+    let close = same_start && strsim::levenshtein(&heard, &folded_wake) <= tolerated_edits(folded_wake.chars().count());
     close.then_some(Wake { rest, how: WakeMatch::Similar, heard })
 }
 
@@ -145,6 +153,16 @@ mod tests {
         assert_eq!(find_wake_word("Adán abre Spotify", "Adán", &[]).unwrap().how, WakeMatch::Exact);
         for far in ["Hola, abre Spotify", "Ah, Dan, abre", "Ana abre Spotify", "Abre Spotify", "Ad abre"] {
             assert_eq!(find_wake_word(far, "Adán", &[]), None, "{far}");
+        }
+    }
+
+    #[test]
+    fn eva_is_also_heard_as_ava_or_eba_but_not_as_a_different_consonant() {
+        for heard in ["Ava, abre Spotify", "Eba abre Spotify", "Eve, abre Spotify"] {
+            assert!(find_wake_word(heard, "Eva", &[]).is_some(), "{heard}");
+        }
+        for other in ["Seva abre", "Ella abre", "Ver abre", "Tres abre Spotify"] {
+            assert_eq!(find_wake_word(other, "Eva", &[]).map(|w| w.how), None, "{other}");
         }
     }
 
