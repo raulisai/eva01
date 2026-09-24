@@ -26,4 +26,4 @@ pub use error::DesktopError;
 pub use projects::ConfiguredProjects;
 pub use remote::{serve as serve_gateway_socket, RemoteService};
 pub use server::EvaMcpServer;
-pub use service::{DesktopService, LocalService, Outcome, ProjectSource, ServiceError};
+pub use service::{app_store_search_url, DesktopService, LocalService, Outcome, ProjectSource, ServiceError};

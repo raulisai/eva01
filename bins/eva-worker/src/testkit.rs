@@ -37,6 +37,7 @@ pub struct RigBuilder {
     config_warnings: Vec<String>,
     base_dir: Option<PathBuf>,
     mcp: Option<McpInjection>,
+    apps: Option<crate::apps::AppCatalog>,
 }
 
 impl Rig {
@@ -64,6 +65,7 @@ impl Rig {
             config_warnings: Vec::new(),
             base_dir: None,
             mcp: None,
+            apps: None,
         }
     }
 
@@ -177,6 +179,13 @@ impl RigBuilder {
         self
     }
 
+    /// The installed apps, instead of the default (only Brave).
+    #[must_use]
+    pub fn apps(mut self, apps: crate::apps::AppCatalog) -> Self {
+        self.apps = Some(apps);
+        self
+    }
+
     /// How agents would reach the gateway.
     #[must_use]
     pub fn mcp(mut self, mcp: McpInjection) -> Self {
@@ -192,7 +201,11 @@ impl RigBuilder {
         let ctx = WorkerContext::new(WorkerDeps {
             store: Store::open_in_memory().expect("in-memory store must open"),
             config: self.config,
-            app_index: AppIndex::new(vec![AppEntry::new("Brave Browser").with_aliases(["brave"])]),
+            app_index: self.apps.unwrap_or_else(|| {
+                crate::apps::AppCatalog::fixed(AppIndex::new(vec![
+                    AppEntry::new("Brave Browser").with_aliases(["brave"])
+                ]))
+            }),
             wake_word: "Adán".to_string(),
             base_dir: self.base_dir.unwrap_or_else(|| dir.path().to_path_buf()),
             desktop: desktop.clone(),

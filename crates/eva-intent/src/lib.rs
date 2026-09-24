@@ -7,6 +7,7 @@
 //! classifies, it never executes).
 
 pub mod apps;
+pub mod catalog;
 pub mod intent;
 pub mod risk;
 pub mod spoken;

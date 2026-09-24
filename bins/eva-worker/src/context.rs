@@ -4,6 +4,7 @@
 //! outgoing event channel. `main.rs` builds one; tests build many through
 //! the test kit.
 
+use crate::apps::AppCatalog;
 use crate::confirm::ConfirmationBroker;
 use crate::harvest::Harvest;
 use crate::orphans::AgentLedger;
@@ -12,7 +13,6 @@ use eva_agents::{AgentRegistry, McpInjection};
 use eva_audio::{AudioSource, CaptureHandle, SpeechToText};
 use eva_config::{Config, ProjectIndex, Resolution};
 use eva_gateway::Gateway;
-use eva_intent::AppIndex;
 use eva_ipc::{WorkerState, WorkerToShell};
 use eva_mcp::{ConfiguredProjects, Desktop, LocalService, ProjectSource};
 use eva_store::Store;
@@ -102,7 +102,7 @@ pub struct WorkerDeps {
     /// `config.toml`, already loaded.
     pub config: Config,
     /// Resolves spoken app names to canonical ones.
-    pub app_index: AppIndex,
+    pub app_index: AppCatalog,
     /// The configured wake word ("Adán" by default).
     pub wake_word: String,
     /// The working directory: where a task runs when nothing says otherwise.
@@ -141,7 +141,7 @@ pub struct WorkerContext {
     /// `config.toml`.
     pub config: Config,
     /// Resolves spoken app names to canonical ones.
-    pub app_index: AppIndex,
+    pub app_index: AppCatalog,
     /// The configured wake word.
     pub wake_word: String,
     /// The working directory.

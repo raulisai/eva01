@@ -1093,6 +1093,7 @@ dependencies = [
  "eva-agents",
  "eva-audio",
  "eva-config",
+ "eva-intent",
  "eva-ipc",
  "eva-macos",
  "eva-store",
@@ -1171,6 +1172,7 @@ name = "eva-macos"
 version = "0.2.0"
 dependencies = [
  "block2",
+ "dirs 5.0.1",
  "notify-rust",
  "objc2",
  "objc2-app-kit",
@@ -1180,6 +1182,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-quartz-core",
  "serde",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
 ]

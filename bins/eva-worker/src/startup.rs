@@ -94,7 +94,7 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     let audio = load_audio(&config, &support, &wake_word);
     let ctx = Arc::new(WorkerContext::new(WorkerDeps {
         store,
-        app_index: scan_applications(),
+        app_index: crate::apps::AppCatalog::new(scan_applications),
         wake_word,
         base_dir: std::env::current_dir()?,
         desktop: Arc::new(eva_mcp::SystemDesktop::with_voice(config.feedback.voice.clone())),
@@ -261,52 +261,10 @@ fn second_opinion_model(
     }
 }
 
-/// The applications EVA can open by name: the `.app` bundles directly inside
-/// the standard application folders. Deliberately simple (one level, no
-/// bundle metadata beyond the file name); the full "índice de apps" from
-/// `docs/PLAN.md` fase 5 can grow this later.
+/// The applications EVA can open by name: everything `eva_macos::installed_apps`
+/// finds, with "el navegador" and "el correo" meaning this Mac's own defaults.
 fn scan_applications() -> eva_intent::AppIndex {
-    let mut folders = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/Applications/Utilities"),
-        PathBuf::from("/System/Applications"),
-        PathBuf::from("/System/Applications/Utilities"),
-        // Finder lives apart from every other app; without it "abre finder"
-        // matched Find My.
-        PathBuf::from("/System/Library/CoreServices/Finder.app"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        folders.push(home.join("Applications"));
-    }
-
-    let mut names: Vec<String> = folders
-        .iter()
-        .flat_map(|folder| {
-            if folder.extension().is_some_and(|ext| ext == "app") {
-                vec![folder.clone()]
-            } else {
-                std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect()
-            }
-        })
-        .filter(|path| path.extension().is_some_and(|ext| ext == "app") && path.exists())
-        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-        .collect();
-    names.sort();
-    names.dedup();
-
+    let names = eva_macos::installed_apps();
     tracing::info!(count = names.len(), "aplicaciones indexadas");
-    let mut index = eva_intent::AppIndex::new(names.into_iter().map(eva_intent::AppEntry::new).collect());
-    // "El navegador" and "el correo" are whatever this Mac opens links and
-    // mail with, not a guess.
-    for (url, aliases) in [
-        ("https://example.com", &["navegador", "el navegador", "browser", "internet"][..]),
-        ("mailto:alguien@example.com", &["correo", "correo electronico", "email"][..]),
-    ] {
-        if let Some(app) = eva_macos::default_app_for(url) {
-            for alias in aliases {
-                index = index.with_exclusive_alias(&app, alias);
-            }
-        }
-    }
-    index
+    eva_intent::AppIndex::for_this_mac(names, eva_macos::default_app_for)
 }

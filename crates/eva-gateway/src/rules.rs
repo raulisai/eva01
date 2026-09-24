@@ -11,8 +11,9 @@ use eva_config::{ActionKind, Policy};
 const PROTECTED_APPS: &[&str] =
     &["finder", "dock", "loginwindow", "systemuiserver", "windowserver", "eva01", "eva-shell"];
 
-/// URL schemes safe to open without asking.
-const SAFE_SCHEMES: &[&str] = &["http", "https", "mailto"];
+/// URL schemes safe to open without asking. `macappstore` only opens the App
+/// Store on a search: what "abre X → no está instalada" offers.
+const SAFE_SCHEMES: &[&str] = &["http", "https", "mailto", "macappstore"];
 
 /// URL schemes that execute code in whatever handles them.
 const DANGEROUS_SCHEMES: &[&str] = &["javascript", "data", "vbscript"];
@@ -170,6 +171,7 @@ mod tests {
             ("https://github.com/x", "https://github.com/x"),
             ("http://localhost:3000", "http://localhost:3000"),
             ("mailto:ana@ejemplo.com", "mailto:ana@ejemplo.com"),
+            ("macappstore://search.itunes.apple.com/x?q=a", "macappstore://search.itunes.apple.com/x?q=a"),
             (
                 "x-apple.systempreferences:com.apple.preference.security",
                 "x-apple.systempreferences:com.apple.preference.security",
@@ -184,6 +186,7 @@ mod tests {
     fn the_floor_of_a_normalized_local_address_is_still_auto() {
         assert_eq!(floor(ActionKind::OpenUrl, &normalize_url("localhost:3000")), Policy::Auto);
         assert_eq!(floor(ActionKind::OpenUrl, &normalize_url("mailto:a@b.co")), Policy::Auto);
+        assert_eq!(floor(ActionKind::OpenUrl, "macappstore://search.itunes.apple.com/x?q=a"), Policy::Auto);
     }
 
     #[test]

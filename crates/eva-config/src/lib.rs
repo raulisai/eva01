@@ -214,12 +214,25 @@ pub struct CommandConfig {
     /// What is said after the wake word, e.g. `"mi correo"`. Accents, case and
     /// punctuation do not matter; the words do (it must match the whole command).
     pub say: String,
+    /// Other ways of saying the same thing, e.g. `["mi mail", "mi email"]`.
+    pub also: Vec<String>,
     /// Text to paste at the cursor.
     pub insert: Option<String>,
     /// Apps (by name) and web addresses to open, in order.
     pub open: Vec<String>,
     /// A task to hand to an agent, exactly as written.
     pub task: Option<String>,
+    /// The file in `commands/` it came from; `None` for `config.toml` itself.
+    #[serde(skip)]
+    pub source: Option<String>,
+}
+
+/// A file in `commands/`: nothing but `[[commands]]`, so commands can be
+/// shared, added and removed one file at a time.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CommandsFile {
+    commands: Vec<CommandConfig>,
 }
 
 /// What a [`CommandConfig`] does.
@@ -234,6 +247,16 @@ pub enum CommandAction<'a> {
 }
 
 impl CommandConfig {
+    /// Every way of saying it: `say` first, then `also`.
+    pub fn phrases(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.say.as_str()).chain(self.also.iter().map(String::as_str))
+    }
+
+    /// Where it is written, for messages: the file, or the main config.
+    pub fn origin(&self) -> &str {
+        self.source.as_deref().unwrap_or("config.toml")
+    }
+
     /// What the command does, or why it cannot do anything.
     ///
     /// # Errors
@@ -327,10 +350,18 @@ pub struct Loaded {
     pub path: PathBuf,
 }
 
+/// The folder, beside `config.toml`, whose `*.toml` files hold more commands.
+const COMMANDS_DIR: &str = "commands";
+
 impl Config {
     /// The default location of the config file.
     pub fn default_path() -> PathBuf {
         support_dir().join("config.toml")
+    }
+
+    /// The folder for commands kept one file each, next to `config.toml`.
+    pub fn commands_dir() -> PathBuf {
+        support_dir().join(COMMANDS_DIR)
     }
 
     /// The commented starting file `Abrir configuración…` creates: every
@@ -379,8 +410,41 @@ impl Config {
                 Config::default()
             }
         };
+        let mut config = config;
+        if let Some(dir) = path.parent() {
+            warnings.extend(config.load_command_files(&dir.join(COMMANDS_DIR)));
+        }
         warnings.extend(config.validate());
         Loaded { config, warnings, path: path.to_path_buf() }
+    }
+
+    /// Adds the commands of every `*.toml` in `dir` (in file-name order, so
+    /// which one wins a repeated phrase never depends on the disk). A file
+    /// that cannot be read or parsed is skipped whole and reported by name;
+    /// the others still load. No folder is not a problem.
+    fn load_command_files(&mut self, dir: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+            .collect();
+        files.sort();
+        let mut warnings = Vec::new();
+        for path in files {
+            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let parsed = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| toml::from_str::<CommandsFile>(&text).map_err(|e| e.to_string()));
+            match parsed {
+                Ok(file) => self.commands.extend(file.commands.into_iter().map(|mut command| {
+                    command.source = Some(format!("{COMMANDS_DIR}/{name}"));
+                    command
+                })),
+                Err(message) => warnings.push(format!("{COMMANDS_DIR}/{name}: {message} — se ignora ese archivo")),
+            }
+        }
+        warnings
     }
 
     /// Parses config text.
@@ -429,10 +493,15 @@ impl Config {
         let mut heard = std::collections::HashSet::new();
         for command in &self.commands {
             let name = command.say.trim();
+            let origin = command.origin();
             if let Err(why) = command.action() {
-                problems.push(format!("commands \"{name}\": {why}"));
-            } else if !heard.insert(name.to_lowercase()) {
-                problems.push(format!("commands \"{name}\": está repetido; solo cuenta el primero"));
+                problems.push(format!("{origin}: la orden \"{name}\": {why}"));
+                continue;
+            }
+            for phrase in command.phrases().map(str::trim).filter(|p| !p.is_empty()) {
+                if !heard.insert(phrase.to_lowercase()) {
+                    problems.push(format!("{origin}: \"{phrase}\" está repetido; solo cuenta el primero"));
+                }
             }
         }
         problems
@@ -650,5 +719,35 @@ mod tests {
         config.agents.default_project = Some("~/code/eva01".to_string());
         let text = toml::to_string(&config).expect("serializes");
         assert_eq!(Config::parse(&text).expect("re-parses"), config);
+    }
+
+    #[test]
+    fn commands_are_loaded_from_the_commands_folder_and_named_when_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("commands");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[[commands]]\nsay = \"mi correo\"\ninsert = \"a@b.c\"")
+            .unwrap();
+        std::fs::write(
+            folder.join("musica.toml"),
+            "[[commands]]\nsay = \"pon música\"\nalso = [\"pon algo de música\"]\nopen = [\"Spotify\"]",
+        )
+        .unwrap();
+        std::fs::write(folder.join("roto.toml"), "[[commands]]\nsay = ").unwrap();
+        std::fs::write(folder.join("otra.toml"), "[[commands]]\nsay = \"mi correo\"\ninsert = \"x\"").unwrap();
+        std::fs::write(folder.join("notas.txt"), "no es un comando").unwrap();
+
+        let loaded = Config::load_from(&dir.path().join("config.toml"));
+
+        let phrases: Vec<_> = loaded.config.custom_commands().flat_map(|c| c.phrases()).collect();
+        assert_eq!(phrases, ["mi correo", "pon música", "pon algo de música", "mi correo"]);
+        assert_eq!(loaded.config.commands[1].origin(), "commands/musica.toml");
+        assert!(loaded.warnings.iter().any(|w| w.starts_with("commands/roto.toml:")), "{:?}", loaded.warnings);
+        assert!(
+            loaded.warnings.iter().any(|w| w.starts_with("commands/otra.toml:") && w.contains("repetido")),
+            "{:?}",
+            loaded.warnings
+        );
+        assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
     }
 }

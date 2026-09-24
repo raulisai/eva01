@@ -214,6 +214,14 @@ impl DesktopService for LocalService {
     }
 }
 
+/// The link that opens the App Store searching for the app `name`.
+pub fn app_store_search_url(name: &str) -> String {
+    format!(
+        "macappstore://search.itunes.apple.com/WebObjects/MZSearch.woa/wa/search?q={}&media=software",
+        percent_encode(name)
+    )
+}
+
 /// Percent-encodes a search query for a URL: everything but unreserved
 /// characters becomes `%XX` per UTF-8 byte.
 fn percent_encode(input: &str) -> String {
@@ -371,6 +379,14 @@ mod tests {
             "{calls:?}"
         );
         assert_eq!(rig.store.recent_audit(1).expect("audit")[0].intent_json["action"], "web_search");
+    }
+
+    #[test]
+    fn the_app_store_link_searches_for_the_name_encoded() {
+        assert_eq!(
+            app_store_search_url("Adobe Premiere Pro"),
+            "macappstore://search.itunes.apple.com/WebObjects/MZSearch.woa/wa/search?q=Adobe%20Premiere%20Pro&media=software"
+        );
     }
 
     #[test]

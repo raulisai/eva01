@@ -40,8 +40,16 @@ fn classify(ctx: &WorkerContext, text: &str) -> InterpretResult {
     // weakening the gate itself.
     let gate_input = eva_text::filler::remove_universal_fillers(text);
 
-    let phrases: Vec<&str> = ctx.config.custom_commands().map(|c| c.say.as_str()).collect();
-    eva_intent::interpret_with(&gate_input, &ctx.wake_word, &ctx.app_index, &phrases)
+    let phrases: Vec<&str> = ctx.config.custom_commands().flat_map(|c| c.phrases()).collect();
+    let interpret =
+        |apps: &eva_intent::AppIndex| eva_intent::interpret_with(&gate_input, &ctx.wake_word, apps, &phrases);
+    let result = interpret(&ctx.app_index.current());
+    // An app the index does not know may have been installed since it was
+    // built: look again before saying it is not there.
+    if matches!(result, InterpretResult::Command(eva_intent::Intent::AppNotFound { .. })) && ctx.app_index.refresh() {
+        return interpret(&ctx.app_index.current());
+    }
+    result
 }
 
 /// Says what `text` would be taken for — `eva intent`'s default — without

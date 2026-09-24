@@ -95,6 +95,8 @@
 # texto, `open` abre apps y/o direcciones web (en orden), `task` se lo da a un agente.
 # Pasan por el mismo gateway que cualquier orden (una `task` pregunta antes si
 # [gateway.voice] agent_task = "confirm"). Acentos, mayúsculas y puntuación no importan.
+# `also` = otras formas de decir lo mismo. También puedes poner órdenes, una por archivo,
+# en la carpeta commands/ junto a este archivo (`eva commands path`; `eva commands` las lista).
 # [[commands]]
 # say = "mi correo"
 # insert = "yo@ejemplo.com"

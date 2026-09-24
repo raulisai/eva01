@@ -90,6 +90,17 @@ say = "revisa los tests"
 task = "corre los tests del proyecto y dime cuáles fallan y por qué"   # para el agente
 ```
 
+`also = ["mi mail"]` añade otras formas de decir lo mismo. Además de `config.toml`, cada archivo
+`*.toml` de `~/Library/Application Support/EVA01/commands/` (con solo `[[commands]]`) se carga al
+iniciar: así se comparten, agregan y quitan órdenes de una en una, y un archivo roto se avisa por
+su nombre sin afectar a los demás. `eva commands path` crea la carpeta con un ejemplo.
+
+**Ver qué entiende:** `eva commands` lista las integradas (con ejemplo), las tuyas y de qué
+archivo vienen; `eva commands apps` lista las aplicaciones detectadas en tu Mac y cómo decir
+cada una. Las apps se detectan solas (no hay que configurarlas): si tienes Spotify, «Adán, abre
+Spotify» funciona; si instalas una nueva se reconoce sin reiniciar. Si pides una que no está
+instalada, EVA01 lo dice y pregunta si la busca en la App Store.
+
 Acentos, mayúsculas y puntuación no importan, pero tiene que ser **toda** la orden («Adán, mi
 correo es un desastre» no dispara «mi correo»). Pasan por el mismo gateway que cualquier orden,
 así que `[gateway.voice]` las rige. Compruébalas sin ejecutarlas: `eva intent "Adán, mi correo"`.

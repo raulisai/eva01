@@ -4,6 +4,7 @@
 //! commands as JSON-lines on stdin, writes [`WorkerToShell`] events as
 //! JSON-lines on stdout.
 
+mod apps;
 mod commands;
 mod confirm;
 mod context;

@@ -142,6 +142,41 @@ impl AppIndex {
         AppIndex { apps }
     }
 
+    /// An index of `names` (the apps installed on this Mac) where "el
+    /// navegador" and "el correo" mean whatever `default_app_for` says opens
+    /// links (`https://…`) and mail (`mailto:…`) — passed in, so this crate
+    /// stays free of macOS.
+    pub fn for_this_mac(names: Vec<String>, default_app_for: impl Fn(&str) -> Option<String>) -> Self {
+        let mut index = AppIndex::new(names.into_iter().map(AppEntry::new).collect());
+        for (url, aliases) in [
+            ("https://example.com", &["navegador", "el navegador", "browser", "internet"][..]),
+            ("mailto:alguien@example.com", &["correo", "correo electronico", "email"][..]),
+        ] {
+            if let Some(app) = default_app_for(url) {
+                for alias in aliases {
+                    index = index.with_exclusive_alias(&app, alias);
+                }
+            }
+        }
+        index
+    }
+
+    /// The canonical names of every app in the index, sorted.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.apps.iter().map(|a| a.canonical_name.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Every way `canonical_name` can be said (its name and aliases).
+    pub fn spoken_names(&self, canonical_name: &str) -> Vec<&str> {
+        self.apps
+            .iter()
+            .find(|a| a.canonical_name == canonical_name)
+            .map(|a| a.match_keys().collect())
+            .unwrap_or_default()
+    }
+
     /// Makes `alias` mean `canonical_name` and no other app — "navegador"
     /// for whichever browser is the default, "correo" for the mail app.
     #[must_use]

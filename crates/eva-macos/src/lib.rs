@@ -27,7 +27,7 @@ pub use fnkey::{FnKeyEvent, FnKeyMonitor};
 pub use overlay::{Activity, Overlay, OverlayContent, Tone};
 pub use paste::{copy_selection, paste_text, DEFAULT_RESTORE_DELAY};
 pub use secure_input::{is_accessibility_trusted, is_secure_input_enabled};
-pub use workspace::{close_app, default_app_for, frontmost_app, open_app, open_url, RunningAppInfo};
+pub use workspace::{close_app, default_app_for, frontmost_app, installed_apps, open_app, open_url, RunningAppInfo};
 
 /// The text selected in the frontmost app: read through Accessibility when
 /// the app exposes it, otherwise by asking the app to copy it

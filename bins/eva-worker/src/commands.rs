@@ -50,6 +50,7 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, voice.web_search(&query).await);
         }
+        Intent::AppNotFound { name, opening } => app_not_found(ctx, request_id, &name, opening, &voice).await,
         Intent::Custom { phrase } => run_custom(ctx, request_id, &phrase, intent_json).await,
         Intent::AgentTask { prompt, provider } => {
             crate::tasks::start_new(ctx, request_id, intent_json, prompt, provider).await;
@@ -63,12 +64,33 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
     }
 }
 
+/// "Abre Photoshop" without Photoshop: says so, and — for opening — offers to
+/// look for it in the App Store. The offer is a question on the overlay
+/// answered with a key, like any other confirmation; only a yes opens the
+/// App Store, and it opens on the search, not on anything to buy.
+async fn app_not_found(ctx: &WorkerContext, request_id: Uuid, name: &str, opening: bool, voice: &impl DesktopService) {
+    if !opening {
+        ctx.events.fail(request_id, format!("no encuentro «{name}» entre tus aplicaciones"));
+        return;
+    }
+    ctx.events.state(request_id, WorkerState::Executing);
+    let wants_store = voice
+        .ask_confirmation(&format!("«{name}» no está instalada"), "¿La busco en la App Store para instalarla?")
+        .await
+        .unwrap_or(false);
+    if !wants_store {
+        ctx.events.fail(request_id, format!("«{name}» no está instalada"));
+        return;
+    }
+    report(ctx, request_id, voice.open_url(&eva_mcp::app_store_search_url(name)).await);
+}
+
 /// Runs one of the user's own `[[commands]]`. Each thing it does goes through
 /// the gateway, so `[gateway.voice]` rules it like any other command.
 async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, intent_json: serde_json::Value) {
     use eva_config::CommandAction;
 
-    let Some(command) = ctx.config.custom_commands().find(|c| c.say == phrase) else {
+    let Some(command) = ctx.config.custom_commands().find(|c| c.phrases().any(|say| say == phrase)) else {
         ctx.events.fail(request_id, format!("la orden «{phrase}» ya no está en la configuración"));
         return;
     };
@@ -100,7 +122,7 @@ async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, in
 /// app aliases, same URL detection — so a custom command cannot understand
 /// a name differently from a spoken one.
 async fn open_target(ctx: &WorkerContext, voice: &impl DesktopService, target: &str) -> Result<(), String> {
-    let outcome = match eva_intent::intent::parse(&format!("abre {target}"), &ctx.app_index) {
+    let outcome = match eva_intent::intent::parse(&format!("abre {target}"), &ctx.app_index.current()) {
         Intent::OpenApp { app } => voice.open_app(&app).await,
         Intent::OpenUrl { url } => voice.open_url(&url).await,
         _ => return Err(format!("no encontré «{target}» entre tus apps ni parece una dirección web")),
@@ -243,6 +265,62 @@ mod tests {
         let mut rig = with_commands("[[commands]]\nsay = \"abre brave\"").build();
         rig.run(typed("Adán, abre brave")).await;
         assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn an_app_that_is_not_installed_says_so_and_offers_the_app_store_only_on_a_yes() {
+        let mut rig = Rig::new();
+        let declined = rig.run_answering(typed("Adán, abre Photoshop"), false).await;
+
+        assert!(declined.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("Photoshop") && title.contains("no está instalada"))), "{declined:?}");
+        assert!(declined
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("no está instalada"))));
+        assert!(rig.desktop.calls().is_empty(), "nothing opens unless they say yes");
+
+        let accepted = rig.run_answering(typed("Adán, abre Photoshop"), true).await;
+        assert!(accepted
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+        assert_eq!(
+            rig.desktop.calls(),
+            vec![Call::OpenUrl(
+                "macappstore://search.itunes.apple.com/WebObjects/MZSearch.woa/wa/search?q=Photoshop&media=software"
+                    .to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_installed_after_startup_is_found_without_restarting() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let installed = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&installed);
+        let catalog = crate::apps::AppCatalog::new(move || {
+            let mut apps = vec![eva_intent::AppEntry::new("Brave Browser")];
+            if flag.load(Ordering::SeqCst) {
+                apps.push(eva_intent::AppEntry::new("Spotify"));
+            }
+            eva_intent::AppIndex::new(apps)
+        });
+        let mut rig = Rig::builder().apps(catalog).build();
+
+        installed.store(true, Ordering::SeqCst); // they installed it from the App Store
+        rig.ctx.app_index.allow_rescan_now();
+        let events = rig.run(typed("Adán, abre Spotify")).await;
+
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Spotify".to_string())]);
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })));
+    }
+
+    #[tokio::test]
+    async fn closing_an_app_that_is_not_there_just_says_so() {
+        let mut rig = Rig::new();
+        let events = rig.run(typed("Adán, cierra Photoshop")).await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("Photoshop"))));
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })));
     }
 
     #[tokio::test]

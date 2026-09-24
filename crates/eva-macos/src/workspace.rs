@@ -7,6 +7,7 @@
 use crate::error::MacosError;
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
+use std::path::{Path, PathBuf};
 
 /// A running application, as far as `eva-intent`'s frontmost-app detection needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +94,53 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
     }
 }
 
+/// The apps installed on this Mac, by the name of their bundle ("Spotify",
+/// "Google Chrome"), sorted and without repeats.
+///
+/// Looks in the folders apps live in — `/Applications`, its `Utilities`, the
+/// system's own, `~/Applications` — and one folder deeper, where some vendors
+/// keep theirs ("/Applications/Adobe Photoshop 2025/Adobe Photoshop
+/// 2025.app"). Finder, which lives apart in CoreServices, is added by hand.
+pub fn installed_apps() -> Vec<String> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/Applications/Utilities"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join("Applications"));
+    }
+    apps_under(&roots, &[PathBuf::from("/System/Library/CoreServices/Finder.app")])
+}
+
+/// The bundle names of the `.app`s directly in `roots`, or one folder below
+/// them, plus each of `extra` that exists.
+fn apps_under(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<String> {
+    let is_app = |path: &Path| path.extension().is_some_and(|ext| ext == "app");
+    let entries = |dir: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect()
+    };
+
+    let mut apps: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        for path in entries(root) {
+            if is_app(&path) {
+                apps.push(path);
+            } else if path.is_dir() {
+                apps.extend(entries(&path).into_iter().filter(|inner| is_app(inner)));
+            }
+        }
+    }
+    apps.extend(extra.iter().filter(|path| path.exists()).cloned());
+
+    let mut names: Vec<String> =
+        apps.iter().filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string)).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// The name of the app that opens `url` by default — the default browser for
 /// `https://`, the mail app for `mailto:` — as its bundle's file name
 /// ("Google Chrome"), or `None` if there is none.
@@ -140,6 +188,30 @@ mod tests {
     // flaky about which specific app happens to be frontmost or running is
     // narrow but real: the calls succeed, return sensible shapes, and error
     // paths behave as documented.
+
+    #[test]
+    fn apps_are_found_directly_and_one_folder_down_but_not_deeper() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Applications");
+        for app in ["Spotify.app", "Adobe Photoshop 2025/Adobe Photoshop 2025.app", "Vendor/Sub/Hidden.app"] {
+            std::fs::create_dir_all(root.join(app)).unwrap();
+        }
+        std::fs::create_dir_all(root.join("Carpeta sin apps")).unwrap();
+        std::fs::write(root.join("README.txt"), "no soy una app").unwrap();
+
+        let names = apps_under(&[root, dir.path().join("no-existe")], &[]);
+
+        assert_eq!(names, vec!["Adobe Photoshop 2025".to_string(), "Spotify".to_string()]);
+    }
+
+    #[test]
+    fn the_installed_apps_of_this_mac_include_finder_and_have_no_repeats() {
+        let names = installed_apps();
+        assert!(names.contains(&"Finder".to_string()));
+        let mut unique = names.clone();
+        unique.dedup();
+        assert_eq!(names, unique);
+    }
 
     #[test]
     fn frontmost_app_returns_something_on_a_real_desktop() {

@@ -77,6 +77,17 @@ pub enum Intent {
         instruction: String,
     },
 
+    /// "Adán, abre Photoshop" when there is no such app on this Mac: not a task
+    /// for an agent (which would spend time and quota looking for it), but a
+    /// plain "it is not installed" — and, for opening, an offer to look for it
+    /// in the App Store.
+    AppNotFound {
+        /// What the user asked for, as said ("photoshop").
+        name: String,
+        /// Whether they wanted it opened (the App Store can help) or closed.
+        opening: bool,
+    },
+
     /// One of the user's own phrases (`[[commands]]` in the config): "Adán,
     /// mi correo". What it does is `eva-worker`'s business — it holds the
     /// config — so this carries only which phrase matched.
@@ -222,6 +233,52 @@ fn app_name(name: &str) -> &str {
     name
 }
 
+/// Words (folded: no accents) that make "abre …" about something in a
+/// project or on disk, not an app: "abre el proyecto de facturación", "abre
+/// mi carpeta de descargas".
+const NOT_AN_APP: &[&str] = &[
+    "proyecto",
+    "proyectos",
+    "archivo",
+    "archivos",
+    "carpeta",
+    "carpetas",
+    "documento",
+    "documentos",
+    "repositorio",
+    "repo",
+    "pestana",
+    "pestanas",
+    "ventana",
+    "ventanas",
+    "pagina",
+    "sitio",
+    "enlace",
+    "link",
+    "rama",
+    "issue",
+    "pr",
+    "codigo",
+    "sesion",
+];
+
+/// The longest name that can still be an app ("Adobe Photoshop 2025", "Final
+/// Cut Pro"); anything longer is a request, not a name.
+const LONGEST_APP_NAME_WORDS: usize = 4;
+
+/// Whether `rest`, which matched no installed app, is nonetheless probably the
+/// name of one: a few words, with none that point at a project or a file.
+fn looks_like_an_app_name(rest: &str) -> bool {
+    let words: Vec<String> = eva_text::fold_diacritics(app_name(rest))
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    !words.is_empty()
+        && words.len() <= LONGEST_APP_NAME_WORDS
+        && !words.iter().any(|w| NOT_AN_APP.contains(&w.as_str()))
+}
+
 fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
     if let Some(url) = crate::spoken::spoken_url(rest) {
@@ -232,10 +289,10 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
     }
     match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
         Some(app) => Intent::OpenApp { app: app.canonical_name.clone() },
-        // No confident app match — hand it to the agent rather than fail
-        // silently or open the wrong app. "Adán, abre mi proyecto de X" is
-        // exactly this case, and an agent with project context is a better
-        // fallback than an intent classifier guessing.
+        // A short name that no installed app answers to: not installed. A
+        // longer or project-shaped request ("abre mi proyecto de X") is what
+        // an agent with project context is for, better than a classifier guessing.
+        None if looks_like_an_app_name(rest) => Intent::AppNotFound { name: app_name(rest).to_string(), opening: true },
         None => Intent::AgentTask { prompt: format!("abre {rest}"), provider: None },
     }
 }
@@ -244,6 +301,9 @@ fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
     let rest = without_closing_punctuation(rest);
     match app_index.find(rest).or_else(|| app_index.find(app_name(rest))) {
         Some(app) => Intent::CloseApp { app: app.canonical_name.clone() },
+        None if looks_like_an_app_name(rest) => {
+            Intent::AppNotFound { name: app_name(rest).to_string(), opening: false }
+        }
         None => Intent::AgentTask { prompt: format!("cierra {rest}"), provider: None },
     }
 }
@@ -416,6 +476,32 @@ mod tests {
         assert_eq!(parse("cierra la aplicación de notas", &index), Intent::CloseApp { app: "Notes".to_string() });
         assert_eq!(parse("abre las notas", &index), Intent::OpenApp { app: "Notes".to_string() });
         assert!(matches!(parse("abre el proyecto de facturación", &index), Intent::AgentTask { .. }));
+    }
+
+    #[test]
+    fn a_short_name_no_installed_app_answers_to_is_reported_not_sent_to_an_agent() {
+        let index = AppIndex::new(vec![AppEntry::new("Spotify")]);
+        assert_eq!(parse("abre photoshop", &index), Intent::AppNotFound { name: "photoshop".into(), opening: true });
+        assert_eq!(
+            parse("abre la aplicación de Adobe Premiere Pro.", &index),
+            Intent::AppNotFound { name: "Adobe Premiere Pro".into(), opening: true }
+        );
+        assert_eq!(parse("cierra notion", &index), Intent::AppNotFound { name: "notion".into(), opening: false });
+    }
+
+    #[test]
+    fn requests_about_projects_files_or_long_sentences_still_go_to_an_agent() {
+        let index = AppIndex::new(vec![AppEntry::new("Spotify")]);
+        for text in [
+            "abre el proyecto de facturación",
+            "abre mi carpeta de descargas",
+            "abre el archivo de configuración",
+            "abre la pestaña de github",
+            "abre la rama de arreglos del login y dime qué falta",
+            "abre el repositorio de eva",
+        ] {
+            assert!(matches!(parse(text, &index), Intent::AgentTask { .. }), "{text}");
+        }
     }
 
     #[test]

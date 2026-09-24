@@ -5,6 +5,7 @@
 //! `startup`), and finding out why something does not work (`doctor`,
 //! `audit`).
 
+mod commands;
 mod doctor;
 mod model;
 mod render;
@@ -40,6 +41,11 @@ enum Command {
         /// Además lo ejecuta de verdad: abre la app, pega el texto, lanza el agente.
         #[arg(long)]
         run: bool,
+    },
+    /// Las órdenes que EVA01 entiende: las integradas, las tuyas y tus aplicaciones.
+    Commands {
+        #[command(subcommand)]
+        action: Option<CommandsAction>,
     },
     /// Revisa que este equipo esté listo para EVA01 y dice cómo arreglar lo que no.
     Doctor {
@@ -91,6 +97,16 @@ enum Command {
         #[command(subcommand)]
         action: StartupAction,
     },
+}
+
+#[derive(Subcommand)]
+enum CommandsAction {
+    /// Las órdenes integradas y las tuyas (es lo que hace `eva commands` a secas).
+    List,
+    /// Las aplicaciones detectadas en este Mac y cómo decir cada una.
+    Apps,
+    /// Dónde poner tus órdenes (carpeta `commands/`); la crea con un ejemplo si no existe.
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -173,6 +189,7 @@ async fn main() {
             }
             DictionaryAction::List => talk(|request_id| ShellToWorker::ListCustomWords { request_id }, timeout).await,
         },
+        Command::Commands { action } => commands::run(action.unwrap_or(CommandsAction::List)),
         Command::Doctor { smoke } => doctor::run(smoke).await,
         Command::Audit { limit } => audit(limit),
         Command::History { limit, flagged } => history(limit, flagged),
