@@ -151,6 +151,10 @@ fn main() {
             }
         }
 
+        // A click on the island's Sí / No is the same answer as its key.
+        if let Some(choice) = overlay.take_choice() {
+            commands.extend(model.choose(choice));
+        }
         commands.extend(model.tick(now));
         for notification in model.take_notifications() {
             notify(&notification.title, &notification.body);

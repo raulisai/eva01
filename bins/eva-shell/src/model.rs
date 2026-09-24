@@ -11,7 +11,7 @@
 //! stops being an overlay state and becomes a line in the tray.
 
 use eva_ipc::{TaskInfo, TaskState, WorkerState, WorkerToShell};
-use eva_macos::{Activity, Icon, OverlayContent, Tone};
+use eva_macos::{Activity, Choice, Icon, OverlayContent, Tone};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -310,6 +310,16 @@ impl ShellModel {
         }
     }
 
+    /// A click on button `index` of the question on the island: the same
+    /// answer as its key (`0` is yes, `1` is no).
+    pub fn choose(&mut self, index: usize) -> Vec<Command> {
+        match index {
+            0 => self.confirm_key(),
+            1 => self.cancel_key(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether the "yes"/"no" keys should be listening right now.
     pub fn wants_confirmation_keys(&self) -> bool {
         self.confirmation.is_some()
@@ -563,25 +573,33 @@ impl ShellModel {
     /// everything (it is blocking something), then what the user is doing
     /// right now, then how the last thing went.
     pub fn overlay(&self) -> Option<OverlayContent> {
-        let show = |text: &str, tone| {
-            Some(OverlayContent { text: text.to_string(), tone, activity: Activity::None, icon: Icon::None })
-        };
         let working = |text: &str, activity| {
-            Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity, icon: Icon::None })
+            Some(OverlayContent {
+                text: text.to_string(),
+                tone: Tone::Neutral,
+                activity,
+                icon: Icon::None,
+                choices: Vec::new(),
+            })
         };
 
         if self.restarting {
             return working("Reiniciando EVA", Activity::Thinking);
         }
         if let Some(confirmation) = &self.confirmation {
-            let text = format!(
-                "{}\n{}\n{} sí  ·  {} no",
-                short(&confirmation.title, 70),
-                short(&confirmation.detail, 70),
-                self.keys.confirm,
-                self.keys.cancel
-            );
-            return show(&text, Tone::Ask);
+            let text = format!("{}\n{}", short(&confirmation.title, 70), short(&confirmation.detail, 70));
+            let choice = |label: &str, shortcut: &str, primary| Choice {
+                label: label.to_string(),
+                shortcut: shortcut.to_string(),
+                primary,
+            };
+            return Some(OverlayContent {
+                text,
+                tone: Tone::Ask,
+                activity: Activity::None,
+                icon: Icon::None,
+                choices: vec![choice("Sí", &self.keys.confirm, true), choice("No", &self.keys.cancel, false)],
+            });
         }
         if self.requests.values().any(|t| t.phase == Phase::Listening) {
             return working("Escuchando", Activity::Listening);
@@ -594,6 +612,7 @@ impl ShellModel {
                     tone: Tone::Neutral,
                     activity: Activity::Thinking,
                     icon: doing.icon.clone(),
+                    choices: Vec::new(),
                 }),
                 None => working("Pensando", Activity::Thinking),
             };
@@ -605,6 +624,7 @@ impl ShellModel {
                     tone: Tone::Neutral,
                     activity: Activity::Executing,
                     icon: doing.icon.clone(),
+                    choices: Vec::new(),
                 }),
                 None => working("Ejecutando", Activity::Executing),
             };
@@ -614,6 +634,7 @@ impl ShellModel {
             tone: n.tone,
             activity: Activity::None,
             icon: n.icon.clone(),
+            choices: Vec::new(),
         })
     }
 
@@ -1233,8 +1254,23 @@ mod tests {
 
         let overlay = model.overlay().unwrap();
         assert_eq!(overlay.tone, Tone::Ask);
-        assert_eq!(overlay.text, "Cerrar la aplicación Spotify\nLo pide un agente\n⌘⏎ sí  ·  ⌘⎋ no");
+        assert_eq!(overlay.text, "Cerrar la aplicación Spotify\nLo pide un agente");
+        let buttons: Vec<_> =
+            overlay.choices.iter().map(|c| (c.label.as_str(), c.shortcut.as_str(), c.primary)).collect();
+        assert_eq!(buttons, vec![("Sí", "⌘⏎", true), ("No", "⌘⎋", false)], "each button shows its shortcut");
         assert!(model.wants_confirmation_keys());
+    }
+
+    #[test]
+    fn clicking_a_button_answers_like_its_key() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let id = ask(&mut model, t0);
+        assert_eq!(model.choose(0), vec![Command::Confirm { id, approved: true }]);
+
+        let id = ask(&mut model, t0);
+        assert_eq!(model.choose(1), vec![Command::Confirm { id, approved: false }]);
+        assert_eq!(model.choose(0), Vec::new(), "nothing left to answer");
     }
 
     #[test]

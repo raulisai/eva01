@@ -24,7 +24,7 @@ pub mod workspace;
 pub use ax::{focused_window_title, prompt_for_accessibility, selected_text};
 pub use error::MacosError;
 pub use fnkey::{FnKeyEvent, FnKeyMonitor};
-pub use overlay::{Activity, Icon, Overlay, OverlayContent, Tone};
+pub use overlay::{Activity, Choice, Icon, Overlay, OverlayContent, Tone};
 pub use paste::{copy_selection, paste_text, DEFAULT_RESTORE_DELAY};
 pub use secure_input::{is_accessibility_trusted, is_secure_input_enabled};
 pub use workspace::{

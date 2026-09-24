@@ -16,14 +16,17 @@
 //! that are not thread-safe.
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSFont, NSImage, NSImageView, NSPanel, NSTextField, NSView, NSWindowStyleMask,
     NSWorkspace,
 };
+use objc2_app_kit::{NSEvent, NSEventMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction};
 use std::cell::Cell;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 /// How the panel looks: a tint that says at a glance whether things are
@@ -77,6 +80,17 @@ pub enum Icon {
     App(String),
 }
 
+/// A button on the island: what it does, and the key that does it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    /// What it says: "Sí", "No".
+    pub label: String,
+    /// The shortcut, shown beside it: "⌘⏎".
+    pub shortcut: String,
+    /// The answer most people will give: drawn as the solid one.
+    pub primary: bool,
+}
+
 /// What the overlay shows: one or more lines of text, their tone, the
 /// activity animation and the icon that go with them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +103,9 @@ pub struct OverlayContent {
     pub activity: Activity,
     /// The picture beside the text, instead of the animation.
     pub icon: Icon,
+    /// Buttons under the text, clickable and each with its shortcut (a
+    /// question's yes and no). Empty for everything else.
+    pub choices: Vec<Choice>,
 }
 
 /// Where things go inside the body, worked out once per content.
@@ -98,6 +115,8 @@ struct Layout {
     compact: bool,
     /// Width of the space for the animation or icon before the text.
     slot: f64,
+    /// Whether there are buttons under the text.
+    buttons: bool,
     /// The text's size.
     text: NSSize,
     /// The body's size.
@@ -121,6 +140,13 @@ pub struct Overlay {
     /// hide finishing after a newer show must not close the panel).
     visible: Cell<bool>,
     generation: Rc<Cell<u64>>,
+    /// The buttons: their backgrounds and labels, where they are in the panel
+    /// (shared with the click monitor), and which one was clicked.
+    button_layers: Vec<Retained<CALayer>>,
+    button_labels: Vec<Retained<NSTextField>>,
+    button_rects: Rc<Cell<[Option<NSRect>; 2]>>,
+    clicked: Rc<Cell<Option<usize>>>,
+    click_monitor: Option<Retained<AnyObject>>,
     /// Seconds (animation clock) at which the current content appeared.
     appeared: Cell<f64>,
     mtm: MainThreadMarker,
@@ -152,6 +178,9 @@ const V_PADDING: f64 = 12.0;
 const MIN_HEIGHT: f64 = 44.0;
 const BOTTOM_MARGIN: f64 = 80.0;
 /// How long the body takes to change size, and when the text follows it.
+/// Buttons: their height and the gap between them.
+const BUTTON_HEIGHT: f64 = 30.0;
+const BUTTON_GAP: f64 = 10.0;
 const MORPH_SECS: f64 = 0.42;
 const HIDE_SECS: f64 = 0.22;
 const CONTENT_DELAY_SECS: f64 = 0.10;
@@ -216,8 +245,49 @@ impl Overlay {
             })
             .collect();
 
+        let mut button_layers = Vec::new();
+        let mut button_labels = Vec::new();
+        for _ in 0..2 {
+            let layer = CALayer::new();
+            layer.setCornerRadius(BUTTON_HEIGHT / 2.0);
+            layer.setHidden(true);
+            body.addSublayer(&layer);
+            button_layers.push(layer);
+            let text = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+            text.setFont(Some(&NSFont::systemFontOfSize_weight(12.5, 0.3)));
+            text.setAlignment(objc2_app_kit::NSTextAlignment::Center);
+            text.setHidden(true);
+            container.addSubview(&text);
+            button_labels.push(text);
+        }
+
+        // A click on a button, seen from inside this app (the panel never
+        // becomes the active window, so nothing else reports it).
+        let button_rects: Rc<Cell<[Option<NSRect>; 2]>> = Rc::new(Cell::new([None, None]));
+        let clicked = Rc::new(Cell::new(None));
+        let click_monitor = {
+            let (rects, clicked, panel) = (Rc::clone(&button_rects), Rc::clone(&clicked), panel.clone());
+            let handler = block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                // SAFETY: AppKit passes a live event for the duration of the call.
+                let event_ref = unsafe { event.as_ref() };
+                if event_ref.windowNumber() == panel.windowNumber() {
+                    if let Some(index) = button_at(&rects.get(), event_ref.locationInWindow()) {
+                        clicked.set(Some(index));
+                    }
+                }
+                event.as_ptr()
+            });
+            // SAFETY: the handler returns the event it was given, which is valid.
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::LeftMouseDown, &handler) }
+        };
+
         Overlay {
             panel,
+            button_layers,
+            button_labels,
+            button_rects,
+            clicked,
+            click_monitor,
             label,
             icon_view,
             body,
@@ -227,6 +297,7 @@ impl Overlay {
             layout: Cell::new(Layout {
                 compact: true,
                 slot: GLYPH_WIDTH,
+                buttons: false,
                 text: NSSize::new(0.0, 0.0),
                 body: NSSize::new(0.0, 0.0),
             }),
@@ -255,7 +326,13 @@ impl Overlay {
 
         let layout = self.measure(content);
         self.layout.set(layout);
+        self.clicked.set(None);
+        self.set_buttons(&content.choices, layout);
         let target = self.body_frame(layout.body);
+        // A card with buttons takes clicks, so its window must be no bigger
+        // than it is: the see-through frame above it must not eat the mouse.
+        let panel_height = if layout.buttons { layout.body.height } else { PANEL_HEIGHT };
+        self.panel.setContentSize(NSSize::new(PANEL_WIDTH, panel_height));
         self.position_panel();
 
         let was_visible = self.visible.replace(true);
@@ -293,6 +370,13 @@ impl Overlay {
 
     /// How big the body must be for `content`, and how it lays out.
     fn measure(&self, content: &OverlayContent) -> Layout {
+        if !content.choices.is_empty() {
+            self.label.setPreferredMaxLayoutWidth(PANEL_WIDTH - 2.0 * H_PADDING);
+            let text = self.label.fittingSize();
+            let text = NSSize::new(PANEL_WIDTH - 2.0 * H_PADDING, text.height.ceil());
+            let height = (V_PADDING + BUTTON_HEIGHT + BUTTON_GAP + text.height + V_PADDING).min(PANEL_HEIGHT);
+            return Layout { compact: false, slot: 0.0, buttons: true, text, body: NSSize::new(PANEL_WIDTH, height) };
+        }
         let compact =
             !content.text.contains('\n') && (content.activity != Activity::None || content.icon != Icon::None);
         if compact {
@@ -302,19 +386,59 @@ impl Overlay {
             // An icon is a square; the animations are wider.
             let slot = if content.icon == Icon::None { GLYPH_WIDTH } else { ICON_SIZE };
             let width = H_PADDING - 2.0 + slot + GLYPH_GAP + text.width + H_PADDING;
-            Layout { compact, slot, text, body: NSSize::new(width, PILL_HEIGHT) }
+            Layout { compact, slot, buttons: false, text, body: NSSize::new(width, PILL_HEIGHT) }
         } else {
             self.label.setPreferredMaxLayoutWidth(PANEL_WIDTH - 2.0 * H_PADDING);
             let text = self.label.fittingSize();
             let text = NSSize::new(PANEL_WIDTH - 2.0 * H_PADDING, text.height.ceil());
             let height = (text.height + 2.0 * V_PADDING).clamp(MIN_HEIGHT, PANEL_HEIGHT);
-            Layout { compact, slot: 0.0, text, body: NSSize::new(PANEL_WIDTH, height) }
+            Layout { compact, slot: 0.0, buttons: false, text, body: NSSize::new(PANEL_WIDTH, height) }
         }
     }
 
     /// The body's frame for a given size: centred, resting on the panel's bottom edge.
     fn body_frame(&self, size: NSSize) -> NSRect {
         NSRect::new(NSPoint::new((PANEL_WIDTH - size.width) / 2.0, 0.0), size)
+    }
+
+    /// Shows `choices` as buttons in a row under the text (or hides them),
+    /// and lets the panel take clicks only while there are any — otherwise
+    /// it is see-through to the mouse.
+    fn set_buttons(&self, choices: &[Choice], layout: Layout) {
+        let mut rects = [None, None];
+        let width = (PANEL_WIDTH - 2.0 * H_PADDING - BUTTON_GAP) / 2.0;
+        for (index, (layer, text)) in self.button_layers.iter().zip(&self.button_labels).enumerate() {
+            let Some(choice) = choices.get(index).filter(|_| layout.buttons) else {
+                layer.setHidden(true);
+                text.setHidden(true);
+                continue;
+            };
+            let rect = NSRect::new(
+                NSPoint::new(H_PADDING + index as f64 * (width + BUTTON_GAP), V_PADDING),
+                NSSize::new(width, BUTTON_HEIGHT),
+            );
+            rects[index] = Some(rect);
+            // The solid one is the likely answer; the other a quiet outline of the tint.
+            let (fill, ink) = if choice.primary { (1.0, 0.08) } else { (0.18, 1.0) };
+            layer.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, fill).CGColor()));
+            layer.setFrame(rect);
+            layer.setHidden(false);
+            text.setStringValue(&NSString::from_str(&format!("{}  {}", choice.label, choice.shortcut)));
+            text.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(ink, ink, ink, 1.0)));
+            text.setFrame(NSRect::new(
+                NSPoint::new(rect.origin.x, rect.origin.y + (BUTTON_HEIGHT - 16.0) / 2.0),
+                NSSize::new(rect.size.width, 16.0),
+            ));
+            text.setHidden(false);
+        }
+        self.button_rects.set(rects);
+        self.panel.setIgnoresMouseEvents(!layout.buttons);
+    }
+
+    /// The button clicked since the last call, as its index in
+    /// [`OverlayContent::choices`].
+    pub fn take_choice(&self) -> Option<usize> {
+        self.clicked.take()
     }
 
     /// Puts the label and icon where the final layout wants them (absolute
@@ -328,6 +452,9 @@ impl Overlay {
                 .setFrame(NSRect::new(NSPoint::new(text_x, (mid - layout.text.height / 2.0).floor()), layout.text));
             self.icon_view
                 .setFrame(NSRect::new(NSPoint::new(left, mid - ICON_SIZE / 2.0), NSSize::new(ICON_SIZE, ICON_SIZE)));
+        } else if layout.buttons {
+            let y = layout.body.height - V_PADDING - layout.text.height;
+            self.label.setFrame(NSRect::new(NSPoint::new((PANEL_WIDTH - layout.text.width) / 2.0, y), layout.text));
         } else {
             self.label.setFrame(NSRect::new(
                 NSPoint::new((PANEL_WIDTH - layout.text.width) / 2.0, mid - layout.text.height / 2.0),
@@ -341,6 +468,10 @@ impl Overlay {
     fn fade_content(&self, alpha: f64) {
         self.label.setAlphaValue(alpha);
         self.icon_view.setAlphaValue(alpha);
+        for (layer, text) in self.button_layers.iter().zip(&self.button_labels) {
+            layer.setOpacity(alpha as f32);
+            text.setAlphaValue(alpha);
+        }
     }
 
     /// Moves the animations to time `t` (seconds) and fades the text in
@@ -495,6 +626,27 @@ impl Overlay {
     }
 }
 
+/// The button under `point` (in the panel's own coordinates), if any.
+fn button_at(rects: &[Option<NSRect>; 2], point: NSPoint) -> Option<usize> {
+    rects.iter().position(|rect| {
+        rect.is_some_and(|r| {
+            point.x >= r.origin.x
+                && point.x <= r.origin.x + r.size.width
+                && point.y >= r.origin.y
+                && point.y <= r.origin.y + r.size.height
+        })
+    })
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        if let Some(monitor) = self.click_monitor.take() {
+            // SAFETY: `monitor` is the token `addLocalMonitor…` returned.
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    }
+}
+
 /// The picture for `icon`, if it has one: an SF Symbol, or an app's own icon
 /// (a generic one if the app cannot be found).
 fn load_icon(icon: &Icon) -> Option<Retained<NSImage>> {
@@ -528,6 +680,18 @@ mod tests {
                 assert_ne!(a, b, "two tones look the same");
             }
         }
+    }
+
+    #[test]
+    fn a_click_lands_on_the_button_under_it_and_nowhere_else() {
+        let yes = NSRect::new(NSPoint::new(18.0, 12.0), NSSize::new(147.0, 30.0));
+        let no = NSRect::new(NSPoint::new(175.0, 12.0), NSSize::new(147.0, 30.0));
+        let rects = [Some(yes), Some(no)];
+        assert_eq!(button_at(&rects, NSPoint::new(30.0, 20.0)), Some(0));
+        assert_eq!(button_at(&rects, NSPoint::new(300.0, 40.0)), Some(1));
+        assert_eq!(button_at(&rects, NSPoint::new(168.0, 20.0)), None, "the gap between them");
+        assert_eq!(button_at(&rects, NSPoint::new(30.0, 80.0)), None, "the text above");
+        assert_eq!(button_at(&[None, None], NSPoint::new(30.0, 20.0)), None);
     }
 
     // Building a real NSPanel needs an actual AppKit application context
