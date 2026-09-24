@@ -17,7 +17,20 @@ use uuid::Uuid;
 /// A real transcript, from either STT or (in `RunIntentText`'s case) typed
 /// text, is either plain dictation or a wake-word-prefixed command.
 pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str) {
-    match classify(ctx, text) {
+    let result = classify(ctx, text);
+    // The line to read when "it didn't do what I said": what was heard, what
+    // the gate made of it, and so whether it was pasted or run.
+    match &result {
+        InterpretResult::Dictation => tracing::info!(
+            %request_id, heard = %text, wake_word = %ctx.wake_word,
+            "enunciado tomado como dictado (no empieza con la palabra de activación)"
+        ),
+        InterpretResult::Command(intent) => tracing::info!(
+            %request_id, heard = %text, intent = %serde_json::to_string(intent).unwrap_or_default(),
+            "enunciado tomado como orden"
+        ),
+    }
+    match result {
         InterpretResult::Dictation => dictate(ctx, request_id, text).await,
         InterpretResult::Command(intent) => {
             // A misheard command is as worth flagging as a misheard dictation.

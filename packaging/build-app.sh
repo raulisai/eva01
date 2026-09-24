@@ -76,14 +76,22 @@ fi
 DYLIB_DEST="$APP_PATH/Contents/Frameworks/libeva_formatter.dylib"
 cp "$DYLIB_SRC" "$DYLIB_DEST"
 
-OLD_DYLIB_PATH="$(otool -L "$APP_PATH/Contents/MacOS/eva-worker" | awk '/libeva_formatter\.dylib/ {print $1}')"
-if [ -z "$OLD_DYLIB_PATH" ]; then
-    echo "eva-worker no referencia libeva_formatter.dylib — ¿se compiló sin el bridge de Apple Intelligence?" >&2
+install_name_tool -id "@executable_path/../Frameworks/libeva_formatter.dylib" "$DYLIB_DEST"
+# Every binary that links the bridge (eva-worker, and the `eva` CLI for its
+# own formatter checks) gets repointed; one left on the build path would load
+# a dylib signed by a different identity and be killed by Library Validation.
+LINKED=0
+for binary in eva-shell eva-worker eva-mcp eva; do
+    OLD_DYLIB_PATH="$(otool -L "$APP_PATH/Contents/MacOS/$binary" | awk '/libeva_formatter\.dylib/ {print $1}')"
+    [ -n "$OLD_DYLIB_PATH" ] || continue
+    install_name_tool -change "$OLD_DYLIB_PATH" "@executable_path/../Frameworks/libeva_formatter.dylib" \
+        "$APP_PATH/Contents/MacOS/$binary"
+    LINKED=$((LINKED + 1))
+done
+if [ "$LINKED" -eq 0 ]; then
+    echo "ningún binario referencia libeva_formatter.dylib — ¿se compiló sin el bridge de Apple Intelligence?" >&2
     exit 1
 fi
-install_name_tool -id "@executable_path/../Frameworks/libeva_formatter.dylib" "$DYLIB_DEST"
-install_name_tool -change "$OLD_DYLIB_PATH" "@executable_path/../Frameworks/libeva_formatter.dylib" \
-    "$APP_PATH/Contents/MacOS/eva-worker"
 
 echo "==> Firmando con identidad: $SIGNING_IDENTITY"
 # El Hardened Runtime (--options runtime) activa Library Validation, que
@@ -97,9 +105,10 @@ echo "==> Firmando con identidad: $SIGNING_IDENTITY"
 # decisión 7) — con firma ad-hoc, que es solo para probar en esta Mac, se
 # omite para que el bridge de Apple Intelligence pueda cargar.
 CODESIGN_EXTRA_OPTS=""
-if [ "$SIGNING_IDENTITY" != "-" ]; then
-    CODESIGN_EXTRA_OPTS="--options runtime"
-fi
+# Lo mismo vale para un certificado local autofirmado ("EVA01 Local"): sin Team ID.
+case "$SIGNING_IDENTITY" in
+    "Developer ID Application"*) CODESIGN_EXTRA_OPTS="--options runtime" ;;
+esac
 # shellcheck disable=SC2086 # word-splitting is intentional here: an empty flag must vanish, not become an empty argument
 codesign --force --deep $CODESIGN_EXTRA_OPTS \
     --identifier "dev.eva01.app" \

@@ -47,12 +47,17 @@ impl Events {
 
     /// Reports the state of `request_id`.
     pub fn state(&self, request_id: Uuid, state: WorkerState) {
+        if let WorkerState::Done(ok) = &state {
+            tracing::info!(%request_id, ok, "orden terminada");
+        }
         self.emit(WorkerToShell::StateChanged { state, request_id: Some(request_id) });
     }
 
     /// Reports a recoverable problem with `request_id`.
     pub fn error(&self, request_id: Uuid, message: impl Into<String>) {
-        self.emit(WorkerToShell::Error { request_id: Some(request_id), message: message.into(), recoverable: true });
+        let message = message.into();
+        tracing::warn!(%request_id, %message, "problema con la orden");
+        self.emit(WorkerToShell::Error { request_id: Some(request_id), message, recoverable: true });
     }
 
     /// Reports a problem and ends the request as failed.

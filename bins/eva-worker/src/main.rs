@@ -143,11 +143,16 @@ fn init_logging() {
     // process has no earlier point to store it that would outlive `main`.
     std::mem::forget(guard);
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_writer(non_blocking)
-        .with_ansi(false)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_filter()).with_writer(non_blocking).with_ansi(false).init();
+}
+
+/// INFO for EVA01's own lines and the transcriptions, WARN for the speech
+/// runtime's per-load chatter (a day of it was 13 MB, burying the few lines
+/// that say what happened). `RUST_LOG` overrides all of it.
+fn log_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,ort=warn,transcribe_rs::onnx::session=warn,transcribe_rs::onnx::canary::vocab=warn")
+    })
 }
 
 async fn write_line<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, msg: &WorkerToShell) -> std::io::Result<()> {
