@@ -190,11 +190,50 @@ fn download(file: &ModelFile, dir: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(&part);
         return Err(format!("llegaron {size} bytes en vez de {}", file.bytes));
     }
+    let sum = sha256_of(&part)?;
+    if sum != file.sha256 {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!(
+            "el archivo llegó dañado o no es el esperado (SHA-256 {sum}, se esperaba {})",
+            file.sha256
+        ));
+    }
     std::fs::rename(&part, dir.join(file.name)).map_err(|e| e.to_string())
+}
+
+/// The SHA-256 of `path`, lowercase hex, computed by macOS's own `shasum`
+/// (the same "use the system's tool" choice as `curl` for the download).
+fn sha256_of(path: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("no se pudo ejecutar shasum: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    match text.split_whitespace().next() {
+        Some(sum) if output.status.success() && sum.len() == 64 => Ok(sum.to_lowercase()),
+        _ => Err(format!("shasum no pudo leer {}", path.display())),
+    }
 }
 
 fn part_path(dir: &Path, file: &ModelFile) -> PathBuf {
     dir.join(format!("{}.part", file.name))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
+mod checksum_tests {
+    use super::*;
+
+    #[test]
+    fn the_checksum_is_the_files_real_sha256() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hola.txt");
+        std::fs::write(&path, "hola").unwrap();
+        // echo -n hola | shasum -a 256
+        assert_eq!(sha256_of(&path).unwrap(), "b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79");
+        assert!(sha256_of(&dir.path().join("no-existe")).is_err());
+    }
 }
 
 /// The fraction of the words in `expected` that appear in `actual`,

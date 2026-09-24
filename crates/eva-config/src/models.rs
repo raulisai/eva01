@@ -3,8 +3,12 @@
 //! catalog, no download manager, just the pinned files and a way to check
 //! they are all there).
 //!
-//! The file lists and sizes were read off the Hugging Face repositories'
-//! own API. `nemo128.onnx`, the mel-spectrogram preprocessor every
+//! The file lists, sizes and SHA-256 sums were read off the Hugging Face
+//! repositories' own API, and every URL names an exact revision, not `main`:
+//! a repository that later changes a file must not break every install (the
+//! size check would reject the new file) or, worse, swap the model for one
+//! nobody measured. The sums were checked against the files installed and
+//! verified on this Mac. `nemo128.onnx`, the mel-spectrogram preprocessor every
 //! NeMo-family model needs, is not in the Canary repositories although
 //! `transcribe-rs` requires it beside them — it ships in the Parakeet one
 //! and is the same file, which is why it is downloaded from there.
@@ -20,8 +24,11 @@ pub struct ModelFile {
     /// Its name inside the model's folder.
     pub name: &'static str,
     /// Its exact size in bytes, used to tell a finished download from a
-    /// partial or corrupt one.
+    /// partial one.
     pub bytes: u64,
+    /// Its SHA-256, lowercase hex: what tells a corrupt or tampered download
+    /// from the real file.
+    pub sha256: &'static str,
 }
 
 /// A model EVA01 can install.
@@ -56,9 +63,10 @@ impl ModelSpec {
 }
 
 const NEMO_PREPROCESSOR: ModelFile = ModelFile {
-    url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/nemo128.onnx",
+    url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/nemo128.onnx",
     name: "nemo128.onnx",
     bytes: 139_764,
+    sha256: "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
 };
 
 /// The models EVA01 can install, best first. `canary-1b-flash` is the
@@ -71,19 +79,22 @@ pub const MODELS: &[ModelSpec] = &[
         description: "Canary 1B Flash (int8) — español nativo, el modelo recomendado (~940 MB)",
         files: &[
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/main/encoder-model.int8.onnx",
+                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/8876c67043cbb9cbcb69995cf3ea005709a51187/encoder-model.int8.onnx",
                 name: "encoder-model.int8.onnx",
                 bytes: 859_379_461,
+                sha256: "0c2e89b23e8a72c789c80ce81ac5c13ee4a5a4c9b7c0ff2ded3a62a31e394f04",
             },
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/main/decoder-model.int8.onnx",
+                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/8876c67043cbb9cbcb69995cf3ea005709a51187/decoder-model.int8.onnx",
                 name: "decoder-model.int8.onnx",
                 bytes: 79_520_498,
+                sha256: "6c2d07674923fd2e1f57b217ed0886d807c60c7b51a3adc984fd14ca56ccbbc2",
             },
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/main/vocab.txt",
+                url: "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/8876c67043cbb9cbcb69995cf3ea005709a51187/vocab.txt",
                 name: "vocab.txt",
                 bytes: 53_566,
+                sha256: "299c1538c63570a5a73fb7fa9ae29927991e8b2e9d179cbfd42d5f683f0273ec",
             },
             NEMO_PREPROCESSOR,
         ],
@@ -93,19 +104,22 @@ pub const MODELS: &[ModelSpec] = &[
         description: "Canary 180M Flash (int8) — la misma familia, más pequeño y rápido (~214 MB)",
         files: &[
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/main/encoder-model.int8.onnx",
+                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/92c2231a4e2b2524277fea759be967d2e6edfc49/encoder-model.int8.onnx",
                 name: "encoder-model.int8.onnx",
                 bytes: 133_710_896,
+                sha256: "996d1c89e6cbc891a7c88bf410884c178ffa474f7b13084522ac74a5e144cc81",
             },
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/main/decoder-model.int8.onnx",
+                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/92c2231a4e2b2524277fea759be967d2e6edfc49/decoder-model.int8.onnx",
                 name: "decoder-model.int8.onnx",
                 bytes: 79_520_211,
+                sha256: "9dd9c447872088c912e916d73751f9621a54085d5bc46788454fe904db51a914",
             },
             ModelFile {
-                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/main/vocab.txt",
+                url: "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/92c2231a4e2b2524277fea759be967d2e6edfc49/vocab.txt",
                 name: "vocab.txt",
                 bytes: 53_555,
+                sha256: "2dae6fc7815f9640645e0c765522b278ee0cef49b482d91f6913e334628d3e77",
             },
             NEMO_PREPROCESSOR,
         ],
@@ -318,6 +332,15 @@ mod tests {
         for file in MODELS.iter().flat_map(|m| m.files) {
             assert!(file.url.starts_with("https://"), "{}", file.url);
             assert!(file.url.ends_with(file.name), "{} does not end with {}", file.url, file.name);
+        }
+    }
+
+    #[test]
+    fn every_file_is_pinned_to_a_revision_and_a_checksum() {
+        for file in MODELS.iter().flat_map(|m| m.files) {
+            assert!(!file.url.contains("/resolve/main/"), "{} follows a branch, not a revision", file.url);
+            assert_eq!(file.sha256.len(), 64, "{}", file.name);
+            assert!(file.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{}", file.name);
         }
     }
 
