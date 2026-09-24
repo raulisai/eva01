@@ -82,8 +82,8 @@ fn core(token: &str) -> String {
     token.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// Whether `text` repeats a word [`LOOP_WORD_RUN`] times in a row, or a pair
-/// of words [`LOOP_PAIR_RUN`] times.
+/// Whether `text` repeats a word 4 times in a row, or a pair of words 3 times
+/// (`LOOP_WORD_RUN`, `LOOP_PAIR_RUN`).
 pub fn has_loop(text: &str) -> bool {
     let words: Vec<String> = text.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
     let word_loop = words.windows(LOOP_WORD_RUN).any(|run| run.iter().all(|w| *w == run[0]));
