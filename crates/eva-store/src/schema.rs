@@ -13,7 +13,7 @@ use std::path::Path;
 /// The schema version this build of `eva-store` expects. Bumped whenever
 /// [`migrate`] gains a new step. Stored in SQLite's own `PRAGMA user_version`,
 /// so no extra table is needed to track it.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Opens (or creates) the database at `path`, verifying its integrity first.
 ///
@@ -146,6 +146,9 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
     if current_version < 3 {
         migrate_to_v3(conn)?;
     }
+    if current_version < 4 {
+        migrate_to_v4(conn)?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -165,11 +168,6 @@ fn migrate_to_v1(conn: &Connection) -> Result<(), StoreError> {
 
         CREATE TABLE IF NOT EXISTS custom_words (
             word TEXT PRIMARY KEY
-        );
-
-        CREATE TABLE IF NOT EXISTS app_aliases (
-            heard TEXT PRIMARY KEY,
-            app   TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -242,6 +240,13 @@ fn migrate_to_v3(conn: &Connection) -> Result<(), StoreError> {
         CREATE INDEX IF NOT EXISTS idx_agent_tasks_started_at ON agent_tasks(started_at);
         ",
     )?;
+    Ok(())
+}
+
+/// v4: `app_aliases`, how the user says the apps they have (a mishearing
+/// confirmed once), so the next one needs no question.
+fn migrate_to_v4(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS app_aliases (heard TEXT PRIMARY KEY, app TEXT NOT NULL);")?;
     Ok(())
 }
 
@@ -373,6 +378,23 @@ mod tests {
         assert_eq!(work_dir, None);
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_v3_database_gains_the_app_aliases_table() {
+        // What the user of the previous release has: user_version 3 and no table.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        drop(open_checked(&path).expect("fresh"));
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch("DROP TABLE app_aliases; PRAGMA user_version = 3;").expect("back to v3");
+        }
+
+        let conn = open_checked(&path).expect("upgrade must succeed");
+
+        conn.execute("INSERT INTO app_aliases (heard, app) VALUES ('spotifi', 'Spotify')", [])
+            .expect("the table must exist after the upgrade");
     }
 
     #[test]
