@@ -167,11 +167,7 @@ impl Overlay {
         self.label.setStringValue(&NSString::from_str(&content.text));
         self.activity.set(content.activity);
 
-        let size = if content.activity == Activity::None {
-            self.layout_message()
-        } else {
-            self.layout_activity()
-        };
+        let size = if content.activity == Activity::None { self.layout_message() } else { self.layout_activity() };
         self.body.setCornerRadius((size.height / 2.0).min(22.0));
         self.panel.setContentSize(size);
         self.position_bottom_center(size);

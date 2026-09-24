@@ -18,9 +18,14 @@ use uuid::Uuid;
 
 /// A recording the key never released (a lost key-up) is stopped after this.
 pub const LISTENING_LIMIT: Duration = Duration::from_secs(120);
-/// Transcription and formatting take a couple of seconds; past this the
-/// request is stuck (`docs/PLAN.md` §3.3 point 4's watchdog).
+/// Transcription and formatting of a short dictation take a couple of
+/// seconds; past this the request is stuck (`docs/PLAN.md` §3.3 point 4's
+/// watchdog). A long one takes longer — measured, a 70 s dictation took
+/// ~15 s — so every second recorded adds [`THINKING_PER_RECORDED`] to it:
+/// a fixed 45 s could cancel a two-minute dictation on a slower Mac and lose it.
 pub const THINKING_LIMIT: Duration = Duration::from_secs(45);
+/// Extra time to think, per second recorded (half a second each).
+const THINKING_PER_RECORDED: f64 = 0.5;
 /// A quick action (open an app, paste) that has not finished by now never will.
 pub const EXECUTING_LIMIT: Duration = Duration::from_secs(90);
 const OK_NOTICE: Duration = Duration::from_millis(1_400);
@@ -107,6 +112,9 @@ enum Phase {
 struct Tracked {
     phase: Phase,
     since: Instant,
+    /// How long the recording behind this request lasted (zero for a request
+    /// that did not start as a recording).
+    recorded: Duration,
 }
 
 struct Confirmation {
@@ -170,14 +178,14 @@ impl ShellModel {
         }
         self.notice = None;
         self.recording = Some(request_id);
-        self.requests.insert(request_id, Tracked { phase: Phase::Listening, since: now });
+        self.track(request_id, Phase::Listening, now);
         vec![Command::StartRecording(request_id)]
     }
 
     /// The dictation key came up. Stops the recording, if one is running.
     pub fn release(&mut self, now: Instant) -> Vec<Command> {
         let Some(id) = self.recording.take() else { return Vec::new() };
-        self.requests.insert(id, Tracked { phase: Phase::Thinking, since: now });
+        self.track(id, Phase::Thinking, now);
         vec![Command::StopRecording(id)]
     }
 
@@ -299,20 +307,25 @@ impl ShellModel {
         Vec::new()
     }
 
+    /// Moves `id` into `phase` as of `now`. Leaving the recording notes how
+    /// long it lasted, which the rest of the request keeps.
+    fn track(&mut self, id: Uuid, phase: Phase, now: Instant) {
+        let recorded = match self.requests.get(&id) {
+            Some(t) if t.phase == Phase::Listening && phase != Phase::Listening => now.duration_since(t.since),
+            Some(t) => t.recorded,
+            None => Duration::ZERO,
+        };
+        self.requests.insert(id, Tracked { phase, since: now, recorded });
+    }
+
     fn state_changed(&mut self, now: Instant, id: Uuid, state: WorkerState) {
         if self.tasks.contains_key(&id) {
             return; // a background task: shown in the tray, not the overlay
         }
         match state {
-            WorkerState::Listening => {
-                self.requests.insert(id, Tracked { phase: Phase::Listening, since: now });
-            }
-            WorkerState::Thinking => {
-                self.requests.insert(id, Tracked { phase: Phase::Thinking, since: now });
-            }
-            WorkerState::Executing => {
-                self.requests.insert(id, Tracked { phase: Phase::Executing, since: now });
-            }
+            WorkerState::Listening => self.track(id, Phase::Listening, now),
+            WorkerState::Thinking => self.track(id, Phase::Thinking, now),
+            WorkerState::Executing => self.track(id, Phase::Executing, now),
             WorkerState::Idle => self.forget(id),
             WorkerState::Done(success) => {
                 self.forget(id);
@@ -353,7 +366,7 @@ impl ShellModel {
         let stuck: Vec<(Uuid, Phase)> = self
             .requests
             .iter()
-            .filter(|(_, t)| now.duration_since(t.since) >= limit_of(t.phase))
+            .filter(|(_, t)| now.duration_since(t.since) >= limit_of(t))
             .map(|(id, t)| (*id, t.phase))
             .collect();
 
@@ -363,7 +376,7 @@ impl ShellModel {
                     // The key-up never arrived. Stop as if it had, so what
                     // was said is not lost.
                     self.recording = None;
-                    self.requests.insert(id, Tracked { phase: Phase::Thinking, since: now });
+                    self.track(id, Phase::Thinking, now);
                     commands.push(Command::StopRecording(id));
                     self.notifications.push(Notification {
                         title: "EVA01".to_string(),
@@ -400,7 +413,8 @@ impl ShellModel {
     /// right now, then how the last thing went.
     pub fn overlay(&self) -> Option<OverlayContent> {
         let show = |text: &str, tone| Some(OverlayContent { text: text.to_string(), tone, activity: Activity::None });
-        let working = |text: &str, activity| Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity });
+        let working =
+            |text: &str, activity| Some(OverlayContent { text: text.to_string(), tone: Tone::Neutral, activity });
 
         if self.restarting {
             return working("Reiniciando EVA", Activity::Thinking);
@@ -463,15 +477,14 @@ impl ShellModel {
     }
 }
 
-fn limit_of(phase: Phase) -> Duration {
-    match phase {
+fn limit_of(tracked: &Tracked) -> Duration {
+    match tracked.phase {
         Phase::Listening => LISTENING_LIMIT,
-        Phase::Thinking => THINKING_LIMIT,
+        Phase::Thinking => THINKING_LIMIT + tracked.recorded.mul_f64(THINKING_PER_RECORDED),
         Phase::Executing => EXECUTING_LIMIT,
     }
 }
 
-/// The overlay line for a finished task.
 /// What is wrong with the worker's setup, in words for the user — empty when
 /// all is well.
 fn startup_problems(report: &eva_ipc::HealthReport) -> Vec<String> {
@@ -490,6 +503,7 @@ fn startup_problems(report: &eva_ipc::HealthReport) -> Vec<String> {
     problems
 }
 
+/// The overlay line for a finished task.
 fn task_notice(success: bool, summary: &str) -> (String, Tone) {
     if summary == "cancelada" {
         ("Tarea cancelada".to_string(), Tone::Neutral)
@@ -558,7 +572,7 @@ mod tests {
         model.press(t0, id);
 
         assert_eq!(model.release(t0 + secs(2)), vec![Command::StopRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("◌ Pensando…"));
+        assert_eq!(text(&model).as_deref(), Some("Pensando"));
 
         model.worker_event(t0 + secs(3), state(id, WorkerState::Done(true)));
         assert_eq!(text(&model).as_deref(), Some("✓ Listo"));
@@ -688,8 +702,39 @@ mod tests {
         model.press(t0, id);
 
         assert_eq!(model.tick(t0 + LISTENING_LIMIT), vec![Command::StopRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("◌ Pensando…"), "what was said is still processed");
+        assert_eq!(text(&model).as_deref(), Some("Pensando"), "what was said is still processed");
         assert_eq!(model.release(t0 + LISTENING_LIMIT + secs(1)), Vec::new(), "the late key-up has nothing left to do");
+    }
+
+    #[test]
+    fn a_long_dictation_gets_longer_to_be_transcribed_before_the_watchdog_gives_up() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let id = Uuid::new_v4();
+        model.press(t0, id);
+        let released = t0 + secs(100);
+        model.release(released);
+        // The worker confirms the phase: the recorded time must survive it.
+        model.worker_event(released, state(id, WorkerState::Thinking));
+
+        assert_eq!(model.tick(released + THINKING_LIMIT + secs(1)), Vec::new(), "100 s of speech needs more than 45 s");
+        assert_eq!(model.tick(released + THINKING_LIMIT + secs(51)), vec![Command::Cancel(id)], "45 s + 50 s");
+    }
+
+    #[test]
+    fn a_recording_stopped_by_the_watchdog_also_gets_the_longer_limit() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let id = Uuid::new_v4();
+        model.press(t0, id);
+        model.tick(t0 + LISTENING_LIMIT);
+
+        assert_eq!(model.tick(t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(30)), Vec::new());
+        assert_eq!(
+            model.tick(t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(61)),
+            vec![Command::Cancel(id)],
+            "45 s + half of the 120 s recorded"
+        );
     }
 
     #[test]
@@ -1006,7 +1051,7 @@ mod tests {
 
         model.worker_restarting();
 
-        assert_eq!(text(&model).as_deref(), Some("↻ Reiniciando EVA…"));
+        assert_eq!(text(&model).as_deref(), Some("Reiniciando EVA"));
         assert!(!model.wants_confirmation_keys(), "the question died with the worker");
         assert!(model.tray(t0).running.is_empty());
         assert_eq!(model.tray(t0).icon, TrayIcon::Attention);
@@ -1041,7 +1086,7 @@ mod tests {
         model.worker_restarting();
         model.press(t0, Uuid::new_v4());
         // The restart banner outranks the notice.
-        assert_eq!(text(&model).as_deref(), Some("↻ Reiniciando EVA…"));
+        assert_eq!(text(&model).as_deref(), Some("Reiniciando EVA"));
     }
 
     #[test]
