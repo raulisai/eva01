@@ -103,6 +103,7 @@ fn main() {
             commands.extend(match event {
                 FnKeyEvent::Pressed => model.press(now, Uuid::new_v4()),
                 FnKeyEvent::Released => model.release(now),
+                FnKeyEvent::Combined => model.abandon_recording(),
             });
         }
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {

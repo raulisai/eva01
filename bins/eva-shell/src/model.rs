@@ -195,11 +195,20 @@ impl ShellModel {
         if let Some(confirmation) = self.confirmation.take() {
             return vec![Command::Confirm { id: confirmation.id, approved: false }];
         }
-        if let Some(id) = self.recording.take() {
-            self.requests.remove(&id);
-            return vec![Command::Cancel(id)];
+        self.abandon_recording()
+    }
+
+    /// Drops the recording in progress without a word — the dictation key
+    /// turned out to be half of a shortcut (fn+Delete, fn+arrow), or the
+    /// user pressed "no".
+    pub fn abandon_recording(&mut self) -> Vec<Command> {
+        match self.recording.take() {
+            Some(id) => {
+                self.requests.remove(&id);
+                vec![Command::Cancel(id)]
+            }
+            None => Vec::new(),
         }
-        Vec::new()
     }
 
     /// The "yes" key: answers a pending confirmation with yes.
@@ -704,6 +713,19 @@ mod tests {
         assert_eq!(model.tick(t0 + LISTENING_LIMIT), vec![Command::StopRecording(id)]);
         assert_eq!(text(&model).as_deref(), Some("Pensando"), "what was said is still processed");
         assert_eq!(model.release(t0 + LISTENING_LIMIT + secs(1)), Vec::new(), "the late key-up has nothing left to do");
+    }
+
+    #[test]
+    fn a_shortcut_with_the_dictation_key_abandons_the_recording_quietly() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let id = Uuid::new_v4();
+        model.press(t0, id);
+
+        assert_eq!(model.abandon_recording(), vec![Command::Cancel(id)]);
+        assert_eq!(model.overlay(), None, "nothing to say: it was fn+Delete");
+        assert_eq!(model.release(t0 + secs(1)), Vec::new(), "the key-up afterwards has nothing to stop");
+        assert_eq!(model.abandon_recording(), Vec::new());
     }
 
     #[test]
