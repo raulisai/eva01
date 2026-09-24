@@ -37,6 +37,8 @@ pub const PING_EVERY: Duration = Duration::from_secs(15);
 pub const PONG_WITHIN: Duration = Duration::from_secs(10);
 const OK_NOTICE: Duration = Duration::from_millis(1_400);
 const ERROR_NOTICE: Duration = Duration::from_millis(4_500);
+/// "Ejecutando en Claude Code" stays this long: the task itself runs on.
+const TASK_START_NOTICE: Duration = Duration::from_millis(2_500);
 const TASK_RESULT_NOTICE: Duration = Duration::from_millis(5_000);
 
 /// Something the shell must send to the worker.
@@ -183,10 +185,24 @@ impl Doing {
                 doing("Reescribiendo".to_string(), "Texto reescrito".to_string(), Icon::Symbol("pencil"))
             }
             "agent_task" | "continue_agent_task" => {
-                doing("Enviando al agente".to_string(), "Tarea enviada".to_string(), Icon::Symbol("sparkles"))
+                let now = match text("provider") {
+                    Some(provider) => format!("Ejecutando en {}", provider_name(&provider)),
+                    None => "Enviando al agente".to_string(),
+                };
+                doing(now, "Tarea enviada".to_string(), Icon::Symbol("sparkles"))
             }
+            "dictation" => doing("Escribiendo".to_string(), "Listo".to_string(), Icon::Symbol("text.cursor")),
             _ => None,
         }
+    }
+}
+
+/// An agent's id as the person knows it.
+fn provider_name(id: &str) -> &str {
+    match id {
+        "codex" => "Codex",
+        "claude_code" | "claude" => "Claude Code",
+        other => other,
     }
 }
 
@@ -352,6 +368,13 @@ impl ShellModel {
             }
             WorkerToShell::TaskStarted { request_id, provider, prompt } => {
                 self.forget(request_id);
+                let text = format!("Ejecutando en {}", provider_name(&provider));
+                self.notice = Some(Notice {
+                    text,
+                    tone: Tone::Neutral,
+                    icon: Icon::Symbol("sparkles"),
+                    until: now + TASK_START_NOTICE,
+                });
                 let info =
                     TaskInfo { request_id, provider, prompt, state: TaskState::Running, summary: None, age_secs: 0 };
                 self.tasks.insert(request_id, (info, now));
@@ -563,8 +586,17 @@ impl ShellModel {
         if self.requests.values().any(|t| t.phase == Phase::Listening) {
             return working("Escuchando", Activity::Listening);
         }
-        if self.requests.values().any(|t| t.phase == Phase::Thinking) {
-            return working("Pensando", Activity::Thinking);
+        if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Thinking) {
+            // Once the words are understood, say what they turned out to be.
+            return match self.doing.get(id) {
+                Some(doing) => Some(OverlayContent {
+                    text: doing.now.clone(),
+                    tone: Tone::Neutral,
+                    activity: Activity::Thinking,
+                    icon: doing.icon.clone(),
+                }),
+                None => working("Pensando", Activity::Thinking),
+            };
         }
         if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Executing) {
             return match self.doing.get(id) {
@@ -1012,7 +1044,10 @@ mod tests {
             t0,
             WorkerToShell::TaskStarted { request_id: task, provider: "codex".into(), prompt: "refactoriza".into() },
         );
-        assert_eq!(model.overlay(), None, "a background task alone shows nothing on the overlay");
+        assert_eq!(text(&model).as_deref(), Some("Ejecutando en Codex"), "it says where the task went…");
+        tick(&mut model, t0 + TASK_START_NOTICE + secs(1));
+        assert_eq!(model.overlay(), None, "…and then a background task alone shows nothing on the overlay");
+        let t0 = t0 + TASK_START_NOTICE + secs(1);
         assert_eq!(model.tray(t0).icon, TrayIcon::Busy);
         assert_eq!(model.tray(t0).status, "1 tarea(s) en curso");
 
@@ -1373,7 +1408,7 @@ mod tests {
             says(serde_json::json!({ "kind": "close_app", "app": "Notes" })),
             Some(("Cerrando Notes".to_string(), Icon::App("Notes".to_string())))
         );
-        assert_eq!(says(serde_json::json!({ "kind": "dictation" })), None);
+        assert_eq!(says(serde_json::json!({ "kind": "hazlo_raro" })), None);
         assert_eq!(says(serde_json::json!({ "kind": "confirm_app", "app": "Spotify", "heard": "spotifi" })), None);
     }
 
@@ -1386,5 +1421,35 @@ mod tests {
         assert_eq!(model.overlay().unwrap().text, "Ejecutando");
         model.worker_event(t0, state(id, WorkerState::Done(true)));
         assert_eq!(model.overlay().unwrap().text, "✓ Listo");
+    }
+
+    #[test]
+    fn a_dictation_says_escribiendo_and_an_agent_task_says_which_agent() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Thinking));
+        assert_eq!(model.overlay().unwrap().text, "Pensando", "before it is understood");
+
+        model.worker_event(
+            t0,
+            WorkerToShell::IntentRecognized { request_id: id, intent_json: serde_json::json!({ "kind": "dictation" }) },
+        );
+        let typing = model.overlay().unwrap();
+        assert_eq!((typing.text.as_str(), typing.icon), ("Escribiendo", Icon::Symbol("text.cursor")));
+
+        model.worker_event(t0, state(id, WorkerState::Done(true)));
+        let task = Uuid::new_v4();
+        model.worker_event(
+            t0,
+            WorkerToShell::TaskStarted { request_id: task, provider: "claude_code".into(), prompt: "x".into() },
+        );
+        assert_eq!(model.overlay().unwrap().text, "Ejecutando en Claude Code");
+        assert_eq!(
+            Doing::from_intent(&serde_json::json!({ "kind": "agent_task", "prompt": "x", "provider": "codex" }))
+                .unwrap()
+                .now,
+            "Ejecutando en Codex"
+        );
     }
 }

@@ -31,7 +31,14 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
         ),
     }
     match result {
-        InterpretResult::Dictation => dictate(ctx, request_id, text).await,
+        InterpretResult::Dictation => {
+            // So the shell can say "Escribiendo" instead of a bare "Pensando".
+            ctx.events.emit(WorkerToShell::IntentRecognized {
+                request_id,
+                intent_json: serde_json::json!({ "kind": "dictation" }),
+            });
+            dictate(ctx, request_id, text).await
+        }
         InterpretResult::Command(intent) => {
             // A misheard command is as worth flagging as a misheard dictation.
             ctx.harvest.remember_dictation(request_id, None, text, None);
