@@ -157,7 +157,10 @@ fn main() {
         }
 
         for command in commands {
-            supervisor.send(to_wire(command));
+            match to_wire(command) {
+                Some(message) => supervisor.send(message),
+                None => supervisor.restart_worker(),
+            }
         }
         confirmation_keys.sync(&hotkey_manager, model.wants_confirmation_keys(), model.wants_cancel_key());
 
@@ -291,8 +294,10 @@ impl ConfirmationKeys {
     }
 }
 
-fn to_wire(command: Command) -> ShellToWorker {
-    match command {
+/// The message a command becomes, or `None` for the one command that is not
+/// a message: restarting a worker that stopped answering.
+fn to_wire(command: Command) -> Option<ShellToWorker> {
+    Some(match command {
         Command::StartRecording(request_id) => ShellToWorker::StartRecording { request_id },
         Command::StopRecording(request_id) => ShellToWorker::StopRecording { request_id },
         Command::Cancel(request_id) => ShellToWorker::Cancel { request_id },
@@ -301,7 +306,9 @@ fn to_wire(command: Command) -> ShellToWorker {
         Command::ListTasks(request_id) => ShellToWorker::ListTasks { request_id },
         Command::FlagLastDictation(request_id) => ShellToWorker::FlagLastDictation { request_id },
         Command::CheckHealth(request_id) => ShellToWorker::HealthCheck { request_id },
-    }
+        Command::Ping(request_id) => ShellToWorker::Ping { request_id },
+        Command::RestartWorker => return None,
+    })
 }
 
 fn log_worker_event(event: &eva_ipc::WorkerToShell) {

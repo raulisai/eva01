@@ -115,6 +115,13 @@ pub enum ShellToWorker {
         /// Correlates this request with its response.
         request_id: uuid::Uuid,
     },
+    /// "Are you still there?" — answered at once by [`WorkerToShell::Pong`]
+    /// from the worker's command loop itself, so an answer proves the loop is
+    /// not stuck, not merely that the process exists.
+    Ping {
+        /// Correlates with the answer.
+        request_id: uuid::Uuid,
+    },
     /// Ask the worker to shut down cleanly before the shell terminates it.
     Shutdown,
 }
@@ -238,6 +245,11 @@ pub enum WorkerToShell {
     ConfirmationClosed {
         /// The confirmation that ended.
         confirmation_id: uuid::Uuid,
+    },
+    /// Response to [`ShellToWorker::Ping`].
+    Pong {
+        /// Correlates with the ping.
+        request_id: uuid::Uuid,
     },
     /// Response to [`ShellToWorker::FlagLastDictation`] when it worked.
     DictationFlagged {
@@ -379,6 +391,7 @@ mod tests {
             ShellToWorker::ListTasks { request_id },
             ShellToWorker::ConfirmationResponse { confirmation_id: request_id, approved: true },
             ShellToWorker::FlagLastDictation { request_id },
+            ShellToWorker::Ping { request_id },
             ShellToWorker::Shutdown,
         ];
 
@@ -455,6 +468,7 @@ mod tests {
             },
             WorkerToShell::ConfirmationClosed { confirmation_id: request_id },
             WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
+            WorkerToShell::Pong { request_id },
         ];
 
         for msg in messages {

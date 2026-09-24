@@ -28,6 +28,13 @@ pub const THINKING_LIMIT: Duration = Duration::from_secs(45);
 const THINKING_PER_RECORDED: f64 = 0.5;
 /// A quick action (open an app, paste) that has not finished by now never will.
 pub const EXECUTING_LIMIT: Duration = Duration::from_secs(90);
+/// How often a ready worker is asked whether its command loop still answers.
+pub const PING_EVERY: Duration = Duration::from_secs(15);
+/// How long an answer may take before the worker counts as stuck. A process
+/// that is alive but whose loop never reads again (a blocking system call
+/// that never returns) is invisible to the supervisor, which only notices
+/// exits; this is what notices it.
+pub const PONG_WITHIN: Duration = Duration::from_secs(10);
 const OK_NOTICE: Duration = Duration::from_millis(1_400);
 const ERROR_NOTICE: Duration = Duration::from_millis(4_500);
 const TASK_RESULT_NOTICE: Duration = Duration::from_millis(5_000);
@@ -56,6 +63,10 @@ pub enum Command {
     FlagLastDictation(Uuid),
     /// Ask the worker how it is doing, to tell the user what is missing.
     CheckHealth(Uuid),
+    /// Check that the worker's command loop still answers.
+    Ping(Uuid),
+    /// The worker stopped answering: kill it, so the supervisor starts a new one.
+    RestartWorker,
 }
 
 /// A system notification the shell should show.
@@ -143,6 +154,9 @@ pub struct ShellModel {
     notice: Option<Notice>,
     notifications: Vec<Notification>,
     health_asked: bool,
+    /// When the last ping went out, and the one still waiting for its pong.
+    last_ping: Option<Instant>,
+    unanswered_ping: Option<(Uuid, Instant)>,
 }
 
 impl ShellModel {
@@ -160,6 +174,8 @@ impl ShellModel {
             notice: None,
             notifications: Vec::new(),
             health_asked: false,
+            last_ping: None,
+            unanswered_ping: None,
         }
     }
 
@@ -243,6 +259,8 @@ impl ShellModel {
         self.tasks.clear();
         self.confirmation = None;
         self.notice = None;
+        self.last_ping = None;
+        self.unanswered_ping = None;
     }
 
     /// An event from the worker. Returns anything to send back.
@@ -251,6 +269,7 @@ impl ShellModel {
             WorkerToShell::Ready => {
                 self.ready = true;
                 self.restarting = false;
+                self.last_ping = Some(now);
                 let mut commands = vec![Command::ListTasks(Uuid::new_v4())];
                 // Once per run: what is missing (no voice model, a typo in
                 // the config) is said now, not discovered at the first dictation.
@@ -301,6 +320,11 @@ impl ShellModel {
                     self.confirmation = None;
                 }
             }
+            WorkerToShell::Pong { request_id } => {
+                if self.unanswered_ping.is_some_and(|(id, _)| id == request_id) {
+                    self.unanswered_ping = None;
+                }
+            }
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
@@ -312,6 +336,33 @@ impl ShellModel {
             | WorkerToShell::AgentEvent { .. }
             | WorkerToShell::CustomWords { .. }
             | WorkerToShell::Ack { .. } => {}
+        }
+        Vec::new()
+    }
+
+    /// Pings a ready worker every [`PING_EVERY`]; one that has not answered
+    /// within [`PONG_WITHIN`] is stuck, and gets restarted.
+    fn heartbeat(&mut self, now: Instant) -> Vec<Command> {
+        if !self.ready {
+            return Vec::new();
+        }
+        if let Some((_, sent)) = self.unanswered_ping {
+            if now.duration_since(sent) < PONG_WITHIN {
+                return Vec::new();
+            }
+            tracing::warn!("eva-worker no respondió al latido; se reinicia");
+            self.worker_restarting();
+            self.notifications.push(Notification {
+                title: "EVA01".to_string(),
+                body: "EVA dejó de responder y la reinicié. Si estabas dictando, vuelve a intentarlo.".to_string(),
+            });
+            return vec![Command::RestartWorker];
+        }
+        if self.last_ping.is_none_or(|last| now.duration_since(last) >= PING_EVERY) {
+            let id = Uuid::new_v4();
+            self.last_ping = Some(now);
+            self.unanswered_ping = Some((id, now));
+            return vec![Command::Ping(id)];
         }
         Vec::new()
     }
@@ -371,7 +422,7 @@ impl ShellModel {
             self.confirmation = None;
         }
 
-        let mut commands = Vec::new();
+        let mut commands = self.heartbeat(now);
         let stuck: Vec<(Uuid, Phase)> = self
             .requests
             .iter()
@@ -548,6 +599,20 @@ mod tests {
         model
     }
 
+    /// `model.tick(now)`, with every ping answered at once, as a healthy
+    /// worker does — for the tests that are about something else.
+    fn tick(model: &mut ShellModel, now: Instant) -> Vec<Command> {
+        let mut commands = model.tick(now);
+        commands.retain(|command| match command {
+            Command::Ping(id) => {
+                model.worker_event(now, WorkerToShell::Pong { request_id: *id });
+                false
+            }
+            _ => true,
+        });
+        commands
+    }
+
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
     }
@@ -597,9 +662,9 @@ mod tests {
         model.release(t0);
         model.worker_event(t0, state(id, WorkerState::Done(true)));
 
-        model.tick(t0 + Duration::from_millis(500));
+        tick(&mut model, t0 + Duration::from_millis(500));
         assert!(model.overlay().is_some());
-        model.tick(t0 + secs(2));
+        tick(&mut model, t0 + secs(2));
         assert_eq!(model.overlay(), None, "✓ Listo must not stay on screen forever");
         assert_eq!(model.tray(t0).icon, TrayIcon::Idle);
     }
@@ -694,12 +759,12 @@ mod tests {
         model.press(t0, id);
         model.release(t0);
 
-        assert_eq!(model.tick(t0 + secs(30)), Vec::new(), "still within the limit");
-        assert_eq!(model.tick(t0 + THINKING_LIMIT), vec![Command::Cancel(id)]);
+        assert_eq!(tick(&mut model, t0 + secs(30)), Vec::new(), "still within the limit");
+        assert_eq!(tick(&mut model, t0 + THINKING_LIMIT), vec![Command::Cancel(id)]);
 
         assert_eq!(text(&model).as_deref(), Some("✗ EVA se quedó trabada; la detuve"));
         assert_eq!(model.take_notifications().len(), 1, "the user must be told, not left guessing");
-        model.tick(t0 + THINKING_LIMIT + secs(10));
+        tick(&mut model, t0 + THINKING_LIMIT + secs(10));
         assert_eq!(model.overlay(), None, "and then it returns to idle");
     }
 
@@ -710,9 +775,61 @@ mod tests {
         let id = Uuid::new_v4();
         model.press(t0, id);
 
-        assert_eq!(model.tick(t0 + LISTENING_LIMIT), vec![Command::StopRecording(id)]);
+        assert_eq!(tick(&mut model, t0 + LISTENING_LIMIT), vec![Command::StopRecording(id)]);
         assert_eq!(text(&model).as_deref(), Some("Pensando"), "what was said is still processed");
         assert_eq!(model.release(t0 + LISTENING_LIMIT + secs(1)), Vec::new(), "the late key-up has nothing left to do");
+    }
+
+    fn ping_in(commands: &[Command]) -> Option<Uuid> {
+        commands.iter().find_map(|c| match c {
+            Command::Ping(id) => Some(*id),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_ready_worker_is_pinged_regularly_and_an_answer_keeps_it() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        assert_eq!(ping_in(&model.tick(t0 + secs(1))), None, "not right after it said it is ready");
+
+        let ping = ping_in(&model.tick(t0 + PING_EVERY)).expect("a ping is due");
+        model.worker_event(t0 + PING_EVERY + secs(1), WorkerToShell::Pong { request_id: ping });
+
+        let later = t0 + PING_EVERY + PONG_WITHIN + secs(1);
+        assert!(!model.tick(later).contains(&Command::RestartWorker), "it answered");
+        assert!(ping_in(&model.tick(t0 + PING_EVERY * 2)).is_some(), "and is asked again later");
+    }
+
+    #[test]
+    fn a_worker_that_stops_answering_is_restarted_and_the_user_is_told() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let id = Uuid::new_v4();
+        model.press(t0 + PING_EVERY, id);
+        assert!(ping_in(&model.tick(t0 + PING_EVERY)).is_some());
+
+        let commands = model.tick(t0 + PING_EVERY + PONG_WITHIN);
+
+        assert!(commands.contains(&Command::RestartWorker), "{commands:?}");
+        assert_eq!(model.take_notifications().len(), 1);
+        assert_eq!(text(&model).as_deref(), Some("Reiniciando EVA"));
+        assert!(!model.wants_cancel_key(), "the recording died with it");
+        assert!(model.tick(t0 + PING_EVERY * 3).is_empty(), "nothing more until the new worker is ready");
+    }
+
+    #[test]
+    fn a_late_or_stray_pong_changes_nothing() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let ping = ping_in(&model.tick(t0 + PING_EVERY)).expect("ping");
+        model.worker_event(t0 + PING_EVERY, WorkerToShell::Pong { request_id: Uuid::new_v4() });
+        assert!(
+            model.tick(t0 + PING_EVERY + PONG_WITHIN).contains(&Command::RestartWorker),
+            "a stray pong is not an answer"
+        );
+        model.worker_event(t0 + PING_EVERY + PONG_WITHIN, WorkerToShell::Pong { request_id: ping });
+        assert!(model.tick(t0 + PING_EVERY * 4).is_empty());
     }
 
     #[test]
@@ -739,8 +856,12 @@ mod tests {
         // The worker confirms the phase: the recorded time must survive it.
         model.worker_event(released, state(id, WorkerState::Thinking));
 
-        assert_eq!(model.tick(released + THINKING_LIMIT + secs(1)), Vec::new(), "100 s of speech needs more than 45 s");
-        assert_eq!(model.tick(released + THINKING_LIMIT + secs(51)), vec![Command::Cancel(id)], "45 s + 50 s");
+        assert_eq!(
+            tick(&mut model, released + THINKING_LIMIT + secs(1)),
+            Vec::new(),
+            "100 s of speech needs more than 45 s"
+        );
+        assert_eq!(tick(&mut model, released + THINKING_LIMIT + secs(51)), vec![Command::Cancel(id)], "45 s + 50 s");
     }
 
     #[test]
@@ -749,11 +870,11 @@ mod tests {
         let mut model = ready_model(t0);
         let id = Uuid::new_v4();
         model.press(t0, id);
-        model.tick(t0 + LISTENING_LIMIT);
+        tick(&mut model, t0 + LISTENING_LIMIT);
 
-        assert_eq!(model.tick(t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(30)), Vec::new());
+        assert_eq!(tick(&mut model, t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(30)), Vec::new());
         assert_eq!(
-            model.tick(t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(61)),
+            tick(&mut model, t0 + LISTENING_LIMIT + THINKING_LIMIT + secs(61)),
             vec![Command::Cancel(id)],
             "45 s + half of the 120 s recorded"
         );
@@ -765,7 +886,7 @@ mod tests {
         let mut model = ready_model(t0);
         let id = Uuid::new_v4();
         model.worker_event(t0, state(id, WorkerState::Executing));
-        assert_eq!(model.tick(t0 + EXECUTING_LIMIT), vec![Command::Cancel(id)]);
+        assert_eq!(tick(&mut model, t0 + EXECUTING_LIMIT), vec![Command::Cancel(id)]);
     }
 
     #[test]
@@ -775,7 +896,11 @@ mod tests {
         let id = Uuid::new_v4();
         model.worker_event(t0, state(id, WorkerState::Thinking));
         model.worker_event(t0 + secs(40), state(id, WorkerState::Executing));
-        assert_eq!(model.tick(t0 + secs(50)), Vec::new(), "progress was made at 40s; 45s from the start is not stuck");
+        assert_eq!(
+            tick(&mut model, t0 + secs(50)),
+            Vec::new(),
+            "progress was made at 40s; 45s from the start is not stuck"
+        );
     }
 
     #[test]
@@ -789,7 +914,7 @@ mod tests {
             WorkerToShell::TaskStarted { request_id: id, provider: "codex".into(), prompt: "x".into() },
         );
 
-        assert_eq!(model.tick(t0 + secs(3_600)), Vec::new(), "an agent may legitimately run for an hour");
+        assert_eq!(tick(&mut model, t0 + secs(3_600)), Vec::new(), "an agent may legitimately run for an hour");
     }
 
     // ---- overlapping work ----
@@ -812,7 +937,7 @@ mod tests {
         assert_eq!(text(&model).as_deref(), Some("Escuchando"));
         model.release(t0);
         model.worker_event(t0, state(dictation, WorkerState::Done(true)));
-        model.tick(t0 + secs(5));
+        tick(&mut model, t0 + secs(5));
         assert_eq!(model.overlay(), None);
         assert_eq!(model.tray(t0).status, "1 tarea(s) en curso", "and the task is still running");
     }
@@ -1021,7 +1146,7 @@ mod tests {
         assert_eq!(model.overlay(), None);
 
         ask(&mut model, t0);
-        model.tick(t0 + secs(31));
+        tick(&mut model, t0 + secs(31));
         assert_eq!(model.overlay(), None, "even if the close event never arrives");
     }
 

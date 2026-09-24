@@ -44,7 +44,14 @@ pub struct Supervisor {
     /// loop would stop restarting it — exactly the silent-death failure
     /// mode `docs/PLAN.md` §3.3 exists to prevent.
     shutdown_requested: Arc<AtomicBool>,
+    /// Set by [`Supervisor::restart_worker`]; the loop kills the current
+    /// child when it sees it, and the ordinary restart path takes over.
+    kill_requested: Arc<AtomicBool>,
 }
+
+/// How often the loop checks on the child while it runs (whether it exited,
+/// whether it must be killed). Waking twenty times a second costs nothing.
+const POLL: Duration = Duration::from_millis(50);
 
 /// How long the worker must stay up before a subsequent crash resets the
 /// backoff counter back to the fastest retry — otherwise a worker that
@@ -65,11 +72,18 @@ impl Supervisor {
         let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel();
         let (from_worker_tx, from_worker_rx) = std::sync::mpsc::channel();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let kill_requested = Arc::new(AtomicBool::new(false));
 
-        let shutdown_flag = Arc::clone(&shutdown_requested);
-        std::thread::spawn(move || supervisor_loop(worker_binary, to_worker_rx, from_worker_tx, shutdown_flag));
+        let flags = Flags { shutdown: Arc::clone(&shutdown_requested), kill: Arc::clone(&kill_requested) };
+        std::thread::spawn(move || supervisor_loop(worker_binary, to_worker_rx, from_worker_tx, flags));
 
-        Supervisor { to_worker: to_worker_tx, from_worker: from_worker_rx, shutdown_requested }
+        Supervisor { to_worker: to_worker_tx, from_worker: from_worker_rx, shutdown_requested, kill_requested }
+    }
+
+    /// Kills the running worker — one that stopped answering — so the loop
+    /// starts a fresh one, exactly as after a crash.
+    pub fn restart_worker(&self) {
+        self.kill_requested.store(true, Ordering::SeqCst);
     }
 
     /// Queues a command to send to the worker. Silently dropped if the
@@ -90,11 +104,17 @@ impl Supervisor {
     }
 }
 
+/// What the loop is told from outside, between two looks at the child.
+struct Flags {
+    shutdown: Arc<AtomicBool>,
+    kill: Arc<AtomicBool>,
+}
+
 fn supervisor_loop(
     binary: PathBuf,
     to_worker_rx: Receiver<ShellToWorker>,
     from_worker_tx: Sender<SupervisorEvent>,
-    shutdown_requested: Arc<AtomicBool>,
+    flags: Flags,
 ) {
     let current_stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
 
@@ -127,7 +147,8 @@ fn supervisor_loop(
         install_stdin(&current_stdin, child.stdin.take());
         let reader_handle = child.stdout.take().map(|stdout| spawn_reader_thread(stdout, from_worker_tx.clone()));
 
-        let exit_status = child.wait();
+        flags.kill.store(false, Ordering::SeqCst);
+        let exit_status = wait_or_kill(&mut child, &flags.kill);
         if let Some(handle) = reader_handle {
             let _ = handle.join();
         }
@@ -138,7 +159,7 @@ fn supervisor_loop(
             Err(e) => tracing::warn!("no se pudo esperar a eva-worker: {e}"),
         }
 
-        if shutdown_requested.load(Ordering::SeqCst) {
+        if flags.shutdown.load(Ordering::SeqCst) {
             tracing::info!("apagado solicitado; no se reinicia eva-worker");
             return;
         }
@@ -147,6 +168,20 @@ fn supervisor_loop(
             attempt = 0;
         }
         report_restart_and_wait(&from_worker_tx, &mut attempt);
+    }
+}
+
+/// Waits for `child` to exit, killing it first if `kill` is raised meanwhile.
+fn wait_or_kill(child: &mut std::process::Child, kill: &AtomicBool) -> std::io::Result<std::process::ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if kill.swap(false, Ordering::SeqCst) {
+            tracing::warn!("se mata eva-worker: dejó de responder");
+            let _ = child.kill();
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -251,6 +286,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(restarts >= 2, "an unprompted clean exit must be restarted, not treated as a deliberate shutdown");
+    }
+
+    #[test]
+    fn a_worker_that_hangs_is_killed_on_request_and_started_again() {
+        // `sleep` stands in for a worker whose loop is stuck: alive, silent.
+        let script = std::env::temp_dir().join(format!("eva-worker-colgado-{}", std::process::id()));
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&script).status().unwrap();
+        let supervisor = Supervisor::spawn(script.clone());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(supervisor.try_recv().is_none(), "a live worker is left alone");
+
+        supervisor.restart_worker();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut restarted = false;
+        while !restarted && std::time::Instant::now() < deadline {
+            restarted = matches!(supervisor.try_recv(), Some(SupervisorEvent::WorkerRestarting { .. }));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        supervisor.send(ShellToWorker::Shutdown);
+        supervisor.restart_worker();
+        let _ = std::fs::remove_file(&script);
+        assert!(restarted, "the stuck worker must be killed and a new one started");
     }
 
     #[test]

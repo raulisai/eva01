@@ -8,7 +8,7 @@
 
 use crate::context::WorkerContext;
 use crate::{dictation, housekeeping, recording};
-use eva_ipc::{ShellToWorker, WorkerState};
+use eva_ipc::{ShellToWorker, WorkerState, WorkerToShell};
 use std::sync::Arc;
 
 /// Handles one command. Returns immediately; results arrive on
@@ -38,6 +38,8 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
         }
         ShellToWorker::ListTasks { request_id } => housekeeping::list_tasks(ctx, request_id),
         ShellToWorker::FlagLastDictation { request_id } => housekeeping::flag_last_dictation(ctx, request_id),
+        // Answered right here, on the command loop: that is what it checks.
+        ShellToWorker::Ping { request_id } => ctx.events.emit(WorkerToShell::Pong { request_id }),
         ShellToWorker::ConfirmationResponse { confirmation_id, approved } => {
             if !ctx.broker.resolve(confirmation_id, approved) {
                 tracing::info!(%confirmation_id, "respuesta a una confirmación que ya no esperaba; se ignora");
