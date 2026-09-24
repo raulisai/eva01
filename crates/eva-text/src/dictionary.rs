@@ -9,6 +9,16 @@
 //! letter-to-sound rules and does not generalize to Spanish); a single
 //! Jaro-Winkler distance, which only looks at character-level similarity, is
 //! simpler and works the same regardless of language.
+//!
+//! A near miss is only corrected for an entry that is *distinctive* — seven
+//! letters or more, or with inner capitals or digits ("Kubernetes",
+//! "ChargeBee") — and only from a word that starts with the same letter and
+//! is a small edit away. Found by running dictations through it: with
+//! "García", "Pedro", "Marta" and "Clara" in the dictionary, "muchas gracias"
+//! became "muchas García", "mi perro" "mi Pedro", "el martes" "el Marta" and
+//! "claro que sí" "Clara que sí". Short names collide with everyday words;
+//! for them only the exact word, with its accents and capitals restored
+//! ("garcia" → "García"), is a correction.
 
 use crate::normalize::{collapse_whitespace, fold_diacritics, match_case, split_punctuation};
 
@@ -20,6 +30,25 @@ struct CustomWord {
     /// `fold_diacritics(display)`, precomputed once so matching never
     /// recomputes it per candidate.
     fold_key: String,
+    /// Whether a near miss may be corrected to it, not only the exact word.
+    distinctive: bool,
+}
+
+/// Letters an entry needs for a near miss to be corrected to it.
+const DISTINCTIVE_LENGTH: usize = 7;
+/// Letters a dictated word needs before it is taken for a near miss.
+const SHORTEST_NEAR_MISS: usize = 5;
+/// How close in edits a near miss must be, besides Jaro-Winkler.
+const NEAR_MISS_LEVENSHTEIN: f64 = 0.75;
+
+/// Whether `display` is unusual enough that a word close to it is a
+/// mishearing of it rather than a different word: long, or shaped like a
+/// product name (inner capitals, digits).
+fn is_distinctive(display: &str, fold_key: &str) -> bool {
+    let letters = fold_key.chars().filter(|c| c.is_alphabetic()).count();
+    let inner_capital = display.chars().skip(1).any(char::is_uppercase);
+    let digit = display.chars().any(|c| c.is_ascii_digit());
+    letters >= DISTINCTIVE_LENGTH || inner_capital || digit
 }
 
 /// A personal dictionary of words to fuzzy-correct transcripts against.
@@ -45,7 +74,8 @@ impl Dictionary {
                     return None;
                 }
                 let fold_key = fold_diacritics(&display);
-                Some(CustomWord { display, fold_key })
+                let distinctive = is_distinctive(&display, &fold_key);
+                Some(CustomWord { display, fold_key, distinctive })
             })
             .collect();
         Dictionary { words }
@@ -164,13 +194,17 @@ impl Dictionary {
                 if entry_len == 0.0 {
                     return None;
                 }
+                if candidate_key == entry.fold_key {
+                    return Some((entry.display.as_str(), 1.0));
+                }
                 let len_diff = (candidate_len - entry_len).abs();
                 let max_len = candidate_len.max(entry_len);
-                if len_diff / max_len > 0.30 {
-                    return None;
-                }
-                let score = strsim::jaro_winkler(candidate_key, &entry.fold_key);
-                Some((entry.display.as_str(), score))
+                let near_miss = entry.distinctive
+                    && candidate_len as usize >= SHORTEST_NEAR_MISS
+                    && len_diff / max_len <= 0.30
+                    && candidate_key.chars().next() == entry.fold_key.chars().next()
+                    && strsim::normalized_levenshtein(candidate_key, &entry.fold_key) >= NEAR_MISS_LEVENSHTEIN;
+                near_miss.then(|| (entry.display.as_str(), strsim::jaro_winkler(candidate_key, &entry.fold_key)))
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
     }
@@ -216,6 +250,41 @@ mod tests {
         let dict = Dictionary::new(["García"]);
         // "casa" is not remotely close to "garcía" and must be left alone.
         assert_eq!(dict.correct("mi casa es grande", 0.88), "mi casa es grande");
+    }
+
+    #[test]
+    fn everyday_words_are_never_turned_into_a_name_in_the_dictionary() {
+        let dict = Dictionary::new(["García", "Pedro", "Marta", "Clara", "Mirna", "Dima"]);
+        for sentence in [
+            "muchas gracias por todo",
+            "mi perro se llama toby",
+            "nos vemos el martes",
+            "claro que sí",
+            "mira esto",
+            "dime cuándo",
+        ] {
+            assert_eq!(dict.correct(sentence, 0.88), sentence, "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_short_name_is_still_restored_when_it_is_the_same_word() {
+        let dict = Dictionary::new(["García", "Pedro", "Núñez"]);
+        assert_eq!(dict.correct("habla con garcia y con pedro nunez", 0.88), "habla con García y con Pedro Núñez");
+    }
+
+    #[test]
+    fn a_misheard_technical_term_is_still_corrected() {
+        let dict = Dictionary::new(["Kubernetes", "Supabase", "ChargeBee", "TypeScript"]);
+        assert_eq!(dict.correct("el cluster de kubernetis", 0.88), "el cluster de Kubernetes");
+        assert_eq!(dict.correct("la base de superbase", 0.88), "la base de Supabase");
+        assert_eq!(dict.correct("migra a typescrip", 0.88), "migra a TypeScript");
+    }
+
+    #[test]
+    fn a_near_miss_must_start_with_the_same_letter() {
+        let dict = Dictionary::new(["Kubernetes"]);
+        assert_eq!(dict.correct("gubernetes", 0.88), "gubernetes");
     }
 
     #[test]
