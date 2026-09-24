@@ -23,15 +23,27 @@ const SCHEMA_VERSION: i64 = 3;
 /// place, exactly as documented in `docs/PLAN.md` §3.3. Enables WAL mode,
 /// which is both faster for this access pattern and more crash-resistant
 /// than the default rollback journal.
+///
+/// Only a database SQLite itself calls damaged is moved aside. Anything else
+/// — above all "database is locked", because the app's worker and a CLI
+/// command's worker share this file — is waited on or reported, never
+/// quarantined: moving a live database aside would leave the two workers
+/// writing to different files.
 pub fn open_checked(path: &Path) -> Result<Connection, StoreError> {
     if path.exists() {
-        if let Err(reason) = check_integrity(path) {
-            tracing::warn!(
-                path = %path.display(),
-                %reason,
-                "la base de datos no pasó el chequeo de integridad; se aparta y se crea una nueva"
-            );
-            quarantine(path)?;
+        match check_integrity(path) {
+            Integrity::Sound => {}
+            Integrity::Damaged(reason) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %reason,
+                    "la base de datos no pasó el chequeo de integridad; se aparta y se crea una nueva"
+                );
+                quarantine(path)?;
+            }
+            Integrity::Unknown(reason) => {
+                tracing::warn!(path = %path.display(), %reason, "no se pudo revisar la base de datos; se abre igual");
+            }
         }
     }
 
@@ -48,21 +60,48 @@ pub fn open_in_memory() -> Result<Connection, StoreError> {
     Ok(conn)
 }
 
-/// Runs `PRAGMA integrity_check` and returns `Err` with SQLite's own report
-/// if it finds anything other than a single `"ok"` row.
-fn check_integrity(path: &Path) -> Result<(), String> {
+/// How long a statement waits for another connection's lock before failing
+/// with "database is locked". Two workers (the app's and a CLI command's)
+/// write to the same file; their writes are short, so waiting beats failing.
+pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the integrity check found.
+#[derive(Debug, PartialEq, Eq)]
+enum Integrity {
+    /// A single `"ok"` row.
+    Sound,
+    /// SQLite reported damage — its report, or its corruption error.
+    Damaged(String),
+    /// The check could not run for some other reason (locked, unreadable).
+    Unknown(String),
+}
+
+/// Runs `PRAGMA integrity_check`.
+fn check_integrity(path: &Path) -> Integrity {
+    let classify = |e: rusqlite::Error| {
+        if is_corruption(&e) {
+            Integrity::Damaged(e.to_string())
+        } else {
+            Integrity::Unknown(e.to_string())
+        }
+    };
     let conn = match Connection::open(path) {
         Ok(c) => c,
-        Err(e) => return Err(format!("no se pudo abrir el archivo: {e}")),
+        Err(e) => return classify(e),
     };
-
-    let report: Result<String, rusqlite::Error> = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0));
-
-    match report {
-        Ok(text) if text == "ok" => Ok(()),
-        Ok(text) => Err(text),
-        Err(e) => Err(format!("PRAGMA integrity_check falló: {e}")),
+    if let Err(e) = conn.busy_timeout(BUSY_TIMEOUT) {
+        return classify(e);
     }
+    match conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)) {
+        Ok(text) if text == "ok" => Integrity::Sound,
+        Ok(text) => Integrity::Damaged(text),
+        Err(e) => classify(e),
+    }
+}
+
+/// Whether `error` is SQLite saying the file is damaged or not a database.
+fn is_corruption(error: &rusqlite::Error) -> bool {
+    matches!(error.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase))
 }
 
 /// Renames the file (and its WAL/SHM siblings, if present) aside with a
@@ -92,6 +131,7 @@ fn append_to_file_name(path: &Path, suffix: &str) -> std::path::PathBuf {
 /// Sets pragmas and creates every table this crate owns, if they don't
 /// already exist. Idempotent: safe to call on every startup.
 fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
 
@@ -234,6 +274,43 @@ mod tests {
             .query_row("SELECT value FROM settings WHERE key = 'marker'", [], |row| row.get(0))
             .expect("the row inserted before reopening must still be there");
         assert_eq!(value, "\"still here\"");
+    }
+
+    #[test]
+    fn a_database_locked_by_another_worker_is_waited_on_never_quarantined() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        open_checked(&path).expect("creates");
+
+        // Another worker holds the file exclusively for a moment.
+        let holder = Connection::open(&path).expect("opens");
+        holder.pragma_update(None, "locking_mode", "EXCLUSIVE").expect("pragma");
+        holder.execute_batch("BEGIN EXCLUSIVE; CREATE TABLE ocupado(x); ").expect("locks");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            holder.execute_batch("COMMIT;").expect("commits");
+            drop(holder);
+        });
+
+        let reopened = open_checked(&path);
+        release.join().expect("thread");
+
+        assert!(reopened.is_ok(), "it waited for the lock: {:?}", reopened.err());
+        let aside = std::fs::read_dir(dir.path())
+            .expect("list")
+            .filter_map(Result::ok)
+            .filter(|f| f.file_name().to_string_lossy().contains("corrupt"))
+            .count();
+        assert_eq!(aside, 0, "a locked database is not a corrupt one");
+    }
+
+    #[test]
+    fn only_corruption_errors_count_as_damage() {
+        let corrupt = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT), None);
+        let not_a_db = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB), None);
+        let busy = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None);
+        assert!(is_corruption(&corrupt) && is_corruption(&not_a_db));
+        assert!(!is_corruption(&busy));
     }
 
     #[test]
