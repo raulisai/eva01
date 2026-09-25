@@ -8,24 +8,28 @@
 //! is independently testable (see each module's unit tests); [`clean`] wires
 //! them together the way `eva-worker` uses them in production.
 
+pub mod app_resolver;
 pub mod apple_intelligence;
-pub mod dictionary;
 mod cache;
+pub mod dictionary;
 mod faithfulness;
 pub mod filler;
 pub mod formatter;
 mod normalize;
 mod pieces;
+pub mod planner;
 pub mod remote;
 mod repair;
 mod seams;
 pub mod style;
 
+pub use app_resolver::{AppResolver, InstalledModel};
 pub use apple_intelligence::AppleIntelligenceFormatter;
-pub use dictionary::Dictionary;
 pub use cache::CachingFormatter;
+pub use dictionary::Dictionary;
 pub use formatter::{warm_up, FormatError, Formatter, RuleOnlyFormatter};
-pub use normalize::fold_diacritics;
+pub use normalize::{fold_diacritics, split_punctuation};
+pub use planner::Planner;
 pub use remote::{OpenAiCompatibleFormatter, RemoteAssisted};
 pub use style::Style;
 

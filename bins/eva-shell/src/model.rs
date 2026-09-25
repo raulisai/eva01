@@ -12,7 +12,7 @@
 
 use eva_ipc::{TaskInfo, TaskState, WorkerState, WorkerToShell};
 use eva_macos::{Activity, Choice, Icon, OverlayContent, Tone};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -39,6 +39,10 @@ const OK_NOTICE: Duration = Duration::from_millis(1_400);
 const ERROR_NOTICE: Duration = Duration::from_millis(4_500);
 /// "Copiado · pégalo con ⌘V" stays long enough to move to where it goes.
 const CLIPBOARD_NOTICE: Duration = Duration::from_millis(4_000);
+/// How long unpasted words wait on the island for a Copy click.
+const HELD_TEXT: Duration = Duration::from_secs(45);
+/// How long "Copiado" stays after the click.
+const COPIED_NOTICE: Duration = Duration::from_millis(1_800);
 /// "Ejecutando en Claude Code" stays this long: the task itself runs on.
 const TASK_START_NOTICE: Duration = Duration::from_millis(2_500);
 const TASK_RESULT_NOTICE: Duration = Duration::from_millis(5_000);
@@ -139,6 +143,14 @@ struct Confirmation {
     deadline: Instant,
 }
 
+/// Dictated words that reached no text field, kept on the island until the
+/// user copies them or dismisses them.
+struct HeldText {
+    text: String,
+    reason: String,
+    until: Instant,
+}
+
 struct Notice {
     text: String,
     tone: Tone,
@@ -153,6 +165,9 @@ struct Doing {
     now: String,
     done: String,
     icon: Icon,
+    /// A command (open, search, an agent…), as opposed to plain dictation:
+    /// the island gives it its own colour, so it reads as one at a glance.
+    command: bool,
 }
 
 impl Doing {
@@ -161,7 +176,7 @@ impl Doing {
     /// the like are not.
     fn from_intent(intent_json: &serde_json::Value) -> Option<Doing> {
         let text = |key: &str| intent_json.get(key).and_then(serde_json::Value::as_str).map(str::to_string);
-        let doing = |now: String, done: String, icon: Icon| Some(Doing { now, done, icon });
+        let doing = |now: String, done: String, icon: Icon| Some(Doing { now, done, icon, command: true });
         match intent_json.get("kind")?.as_str()? {
             "open_app" => {
                 let app = text("app")?;
@@ -193,9 +208,25 @@ impl Doing {
                 };
                 doing(now, "Tarea enviada".to_string(), Icon::Symbol("sparkles"))
             }
-            "dictation" => doing("Escribiendo".to_string(), "Listo".to_string(), Icon::Symbol("text.cursor")),
+            "dictation" => Some(Doing {
+                now: "Escribiendo".to_string(),
+                done: "Listo".to_string(),
+                icon: Icon::Symbol("text.cursor"),
+                command: false,
+            }),
             _ => None,
         }
+    }
+}
+
+/// The arrow on its way: wait `ms` before the text lands, then rise and fade.
+fn sending_content(ms: u32) -> OverlayContent {
+    OverlayContent {
+        text: String::new(),
+        tone: Tone::Neutral,
+        activity: Activity::Sending(ms),
+        icon: Icon::Symbol("arrow.up"),
+        choices: Vec::new(),
     }
 }
 
@@ -224,6 +255,16 @@ pub struct ShellModel {
     requests: HashMap<Uuid, Tracked>,
     /// What each command that is running is doing, by request.
     doing: HashMap<Uuid, Doing>,
+    /// Recordings whose first words were the wake word: a command is being said.
+    wake_heard: HashSet<Uuid>,
+    /// Dictations whose text is about to land: "Listo" is on the island for this long.
+    sending: HashMap<Uuid, u32>,
+    /// The arrow is still rising after the text landed: until when, and its wait.
+    finishing: Option<(u32, Instant)>,
+    /// Words that reached no text field, waiting for a Copy click.
+    held: Option<HeldText>,
+    /// A click on Copy: the text the shell should put on the clipboard.
+    pending_copy: Option<String>,
     tasks: HashMap<Uuid, (TaskInfo, Instant)>,
     recent: Vec<TaskInfo>,
     confirmation: Option<Confirmation>,
@@ -247,6 +288,11 @@ impl ShellModel {
             recording: None,
             requests: HashMap::new(),
             doing: HashMap::new(),
+            wake_heard: HashSet::new(),
+            sending: HashMap::new(),
+            finishing: None,
+            held: None,
+            pending_copy: None,
             tasks: HashMap::new(),
             recent: Vec::new(),
             confirmation: None,
@@ -318,12 +364,32 @@ impl ShellModel {
 
     /// A click on button `index` of the question on the island: the same
     /// answer as its key (`0` is yes, `1` is no).
-    pub fn choose(&mut self, index: usize) -> Vec<Command> {
+    pub fn choose(&mut self, index: usize, now: Instant) -> Vec<Command> {
+        // The buttons under unpasted words: Copy (0) and Close (1).
+        if self.confirmation.is_none() {
+            if let Some(held) = self.held.take() {
+                if index == 0 {
+                    self.pending_copy = Some(held.text);
+                    self.notice = Some(Notice {
+                        text: "✓ Copiado".to_string(),
+                        tone: Tone::Ok,
+                        icon: Icon::Symbol("doc.on.clipboard"),
+                        until: now + COPIED_NOTICE,
+                    });
+                }
+                return Vec::new();
+            }
+        }
         match index {
             0 => self.confirm_key(),
             1 => self.cancel_key(),
             _ => Vec::new(),
         }
+    }
+
+    /// The text a click on Copy asked to put on the clipboard, once.
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
     }
 
     /// Whether the "yes"/"no" keys should be listening right now.
@@ -439,11 +505,32 @@ impl ShellModel {
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
+            WorkerToShell::TextNotPasted { text, reason, .. } => {
+                self.held = Some(HeldText { text, reason, until: now + HELD_TEXT });
+            }
+            WorkerToShell::AboutToPaste { request_id, in_ms } => {
+                if self.requests.contains_key(&request_id) {
+                    self.sending.insert(request_id, u32::try_from(in_ms).unwrap_or(u32::MAX));
+                }
+            }
+            WorkerToShell::WakeWordHeard { request_id } => {
+                // Still speaking, or the key just came up: either way it is EVA's.
+                if self.requests.get(&request_id).is_some_and(|t| matches!(t.phase, Phase::Listening | Phase::Thinking))
+                {
+                    self.wake_heard.insert(request_id);
+                }
+            }
             // Informational for the overlay: the worker pastes text itself,
             // and these are for logs and the CLI.
             WorkerToShell::IntentRecognized { request_id, intent_json } => {
                 if let Some(doing) = Doing::from_intent(&intent_json) {
                     self.doing.insert(request_id, doing);
+                }
+                // Whatever it is, if it is not dictation it is a command: EVA's
+                // (even one with nothing to say, like an app that is not there).
+                let dictation = intent_json.get("kind").and_then(serde_json::Value::as_str) == Some("dictation");
+                if !dictation {
+                    self.wake_heard.insert(request_id);
                 }
             }
             WorkerToShell::StateChanged { request_id: None, .. }
@@ -504,17 +591,31 @@ impl ShellModel {
             WorkerState::Idle => self.forget(id),
             WorkerState::Done(success) => {
                 let doing = self.doing.remove(&id);
+                // "Listo" was already shown, and sent, before the text landed.
+                let already_said = self.sending.get(&id).copied();
                 self.forget(id);
+                // The text has landed; the arrow finishes its flight on its own.
+                if let (true, Some(ms)) = (success, already_said) {
+                    let tail = Duration::from_secs_f64(eva_macos::SEND_TAIL_SECS);
+                    self.finishing = Some((ms, now + tail));
+                }
                 // Never over a message that already says more: an `Error`
                 // (or a task's summary) arrives just before its `Done`.
+                // A success says something only when it is a command with something
+                // to report ("Spotify abierto"). Dictation is told by the arrow and
+                // the text appearing; anything else just ends: no bare "Listo".
                 if self.notice.is_none() {
-                    if let (true, Some(doing)) = (success, doing) {
-                        self.notice =
-                            Some(Notice { text: doing.done, tone: Tone::Ok, icon: doing.icon, until: now + OK_NOTICE });
-                    } else if success {
-                        self.set_notice(now, "✓ Listo", Tone::Ok, OK_NOTICE);
-                    } else {
-                        self.set_notice(now, "✗ Algo falló", Tone::Error, ERROR_NOTICE);
+                    match (success, doing) {
+                        (true, Some(doing)) if doing.command && already_said.is_none() => {
+                            self.notice = Some(Notice {
+                                text: doing.done,
+                                tone: Tone::Ok,
+                                icon: doing.icon,
+                                until: now + OK_NOTICE,
+                            });
+                        }
+                        (true, _) => {}
+                        (false, _) => self.set_notice(now, "✗ Algo falló", Tone::Error, ERROR_NOTICE),
                     }
                 }
             }
@@ -525,6 +626,8 @@ impl ShellModel {
     fn forget(&mut self, id: Uuid) {
         self.requests.remove(&id);
         self.doing.remove(&id);
+        self.wake_heard.remove(&id);
+        self.sending.remove(&id);
         if self.recording == Some(id) {
             self.recording = None;
         }
@@ -543,6 +646,12 @@ impl ShellModel {
         }
         if self.confirmation.as_ref().is_some_and(|c| now >= c.deadline) {
             self.confirmation = None;
+        }
+        if self.held.as_ref().is_some_and(|h| now >= h.until) {
+            self.held = None;
+        }
+        if self.finishing.is_some_and(|(_, until)| now >= until) {
+            self.finishing = None;
         }
 
         let mut commands = self.heartbeat(now);
@@ -623,33 +732,74 @@ impl ShellModel {
                 choices: vec![choice("Sí", &self.keys.confirm, true), choice("No", &self.keys.cancel, false)],
             });
         }
-        if self.requests.values().any(|t| t.phase == Phase::Listening) {
-            return working("Escuchando", Activity::Listening);
+        if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Listening) {
+            // The voice bars, always; no words while it is only dictation.
+            // When the wake word is heard, the name appears beside them (in the
+            // command colour): EVA is listening for a command.
+            return if self.wake_heard.contains(id) {
+                Some(OverlayContent {
+                    text: "Eva".to_string(),
+                    tone: Tone::Command,
+                    activity: Activity::Listening,
+                    icon: Icon::None,
+                    choices: Vec::new(),
+                })
+            } else {
+                working("", Activity::Listening)
+            };
+        }
+        // The words are ready and about to land: an arrow that sends them off.
+        if let Some((_, ms)) = self.requests.keys().find_map(|id| self.sending.get_key_value(id)) {
+            return Some(sending_content(*ms));
         }
         if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Thinking) {
             // Once the words are understood, say what they turned out to be.
             return match self.doing.get(id) {
-                Some(doing) => Some(OverlayContent {
+                // A command says what it turned out to be; dictation is only dots.
+                Some(doing) if doing.command => Some(OverlayContent {
                     text: doing.now.clone(),
-                    tone: Tone::Neutral,
+                    tone: Tone::Command,
                     activity: Activity::Thinking,
                     icon: doing.icon.clone(),
                     choices: Vec::new(),
                 }),
-                None => working("Pensando", Activity::Thinking),
+                // Not yet known what it is, but the wake word was heard: EVA is working.
+                _ if self.wake_heard.contains(id) => Some(OverlayContent {
+                    text: "Eva".to_string(),
+                    tone: Tone::Command,
+                    activity: Activity::Thinking,
+                    icon: Icon::None,
+                    choices: Vec::new(),
+                }),
+                _ => working("", Activity::Thinking),
             };
         }
         if let Some((id, _)) = self.requests.iter().find(|(_, t)| t.phase == Phase::Executing) {
             return match self.doing.get(id) {
                 Some(doing) => Some(OverlayContent {
                     text: doing.now.clone(),
-                    tone: Tone::Neutral,
+                    tone: if doing.command { Tone::Command } else { Tone::Neutral },
                     activity: Activity::Executing,
                     icon: doing.icon.clone(),
                     choices: Vec::new(),
                 }),
                 None => working("Ejecutando", Activity::Executing),
             };
+        }
+        // The arrow, still rising after the text landed: the very same content,
+        // so the island does not redraw and the flight carries on.
+        if let Some((ms, _)) = self.finishing {
+            return Some(sending_content(ms));
+        }
+        if let Some(held) = &self.held {
+            let choice = |label: &str, primary| Choice { label: label.to_string(), shortcut: String::new(), primary };
+            return Some(OverlayContent {
+                text: format!("{}\n{}", held.reason, short(&held.text, 110)),
+                tone: Tone::Neutral,
+                activity: Activity::None,
+                icon: Icon::None,
+                choices: vec![choice("Copiar", true), choice("Cerrar", false)],
+            });
         }
         if self.notice.is_none() && self.follow_up.is_some() {
             return Some(OverlayContent {
@@ -802,7 +952,7 @@ mod tests {
         let id = Uuid::new_v4();
 
         assert_eq!(model.press(t0, id), vec![Command::StartRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("Escuchando"));
+        assert_eq!(text(&model).as_deref(), Some(""));
         assert_eq!(model.tray(t0).icon, TrayIcon::Listening);
     }
 
@@ -814,11 +964,10 @@ mod tests {
         model.press(t0, id);
 
         assert_eq!(model.release(t0 + secs(2)), vec![Command::StopRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("Pensando"));
+        assert_eq!(text(&model).as_deref(), Some(""));
 
         model.worker_event(t0 + secs(3), state(id, WorkerState::Done(true)));
-        assert_eq!(text(&model).as_deref(), Some("✓ Listo"));
-        assert_eq!(model.overlay().unwrap().tone, Tone::Ok);
+        assert_eq!(model.overlay(), None, "a bare success says nothing: never a \"Listo\"");
     }
 
     #[test]
@@ -828,12 +977,19 @@ mod tests {
         let id = Uuid::new_v4();
         model.press(t0, id);
         model.release(t0);
+        model.worker_event(
+            t0,
+            WorkerToShell::IntentRecognized {
+                request_id: id,
+                intent_json: serde_json::json!({ "kind": "open_app", "app": "Spotify" }),
+            },
+        );
         model.worker_event(t0, state(id, WorkerState::Done(true)));
 
         tick(&mut model, t0 + Duration::from_millis(500));
         assert!(model.overlay().is_some());
         tick(&mut model, t0 + secs(2));
-        assert_eq!(model.overlay(), None, "✓ Listo must not stay on screen forever");
+        assert_eq!(model.overlay(), None, "\"Spotify abierto\" must not stay on screen forever");
         assert_eq!(model.tray(t0).icon, TrayIcon::Idle);
     }
 
@@ -944,7 +1100,7 @@ mod tests {
         model.press(t0, id);
 
         assert_eq!(tick(&mut model, t0 + LISTENING_LIMIT), vec![Command::StopRecording(id)]);
-        assert_eq!(text(&model).as_deref(), Some("Pensando"), "what was said is still processed");
+        assert_eq!(text(&model).as_deref(), Some(""), "what was said is still processed");
         assert_eq!(model.release(t0 + LISTENING_LIMIT + secs(1)), Vec::new(), "the late key-up has nothing left to do");
     }
 
@@ -1105,7 +1261,7 @@ mod tests {
 
         let dictation = Uuid::new_v4();
         model.press(t0, dictation);
-        assert_eq!(text(&model).as_deref(), Some("Escuchando"));
+        assert_eq!(text(&model).as_deref(), Some(""));
         model.release(t0);
         model.worker_event(t0, state(dictation, WorkerState::Done(true)));
         tick(&mut model, t0 + secs(5));
@@ -1297,11 +1453,73 @@ mod tests {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
         let id = ask(&mut model, t0);
-        assert_eq!(model.choose(0), vec![Command::Confirm { id, approved: true }]);
+        assert_eq!(model.choose(0, t0), vec![Command::Confirm { id, approved: true }]);
 
         let id = ask(&mut model, t0);
-        assert_eq!(model.choose(1), vec![Command::Confirm { id, approved: false }]);
-        assert_eq!(model.choose(0), Vec::new(), "nothing left to answer");
+        assert_eq!(model.choose(1, t0), vec![Command::Confirm { id, approved: false }]);
+        assert_eq!(model.choose(0, t0), Vec::new(), "nothing left to answer");
+    }
+
+    fn not_pasted(model: &mut ShellModel, now: Instant, text: &str) {
+        model.worker_event(
+            now,
+            WorkerToShell::TextNotPasted {
+                request_id: Uuid::new_v4(),
+                text: text.to_string(),
+                reason: "No hay dónde pegar".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn words_that_reached_no_text_field_stay_on_the_island_with_a_copy_button() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        not_pasted(&mut model, t0, "hola, esto es lo que dije");
+
+        let island = model.overlay().unwrap();
+        assert_eq!(island.text, "No hay dónde pegar\nhola, esto es lo que dije");
+        let buttons: Vec<_> = island.choices.iter().map(|c| (c.label.as_str(), c.primary)).collect();
+        assert_eq!(buttons, vec![("Copiar", true), ("Cerrar", false)]);
+        // Still there long after the usual four seconds of a notice.
+        tick(&mut model, t0 + Duration::from_secs(30));
+        assert!(model.overlay().is_some());
+        tick(&mut model, t0 + HELD_TEXT + Duration::from_secs(1));
+        assert_eq!(model.overlay(), None, "and gone once it has waited long enough");
+    }
+
+    #[test]
+    fn copy_puts_all_the_words_on_the_clipboard_once_and_says_so() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let said = "una frase larga ".repeat(20);
+        not_pasted(&mut model, t0, &said);
+
+        assert_eq!(model.choose(0, t0), Vec::new());
+        assert_eq!(model.take_copy().as_deref(), Some(said.as_str()), "the whole text, not the preview");
+        assert_eq!(model.take_copy(), None, "once");
+        let done = model.overlay().unwrap();
+        assert_eq!((done.text.as_str(), done.tone), ("✓ Copiado", Tone::Ok));
+        assert!(done.choices.is_empty());
+    }
+
+    #[test]
+    fn close_dismisses_the_words_without_copying_them() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        not_pasted(&mut model, t0, "no la quiero");
+        assert_eq!(model.choose(1, t0), Vec::new());
+        assert_eq!(model.take_copy(), None);
+        assert_eq!(model.overlay(), None);
+    }
+
+    #[test]
+    fn a_new_recording_takes_the_island_and_the_held_words_wait_behind_it() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        not_pasted(&mut model, t0, "sigo aquí");
+        model.worker_event(t0, state(Uuid::new_v4(), WorkerState::Listening));
+        assert_eq!(model.overlay().unwrap().activity, Activity::Listening);
     }
 
     #[test]
@@ -1465,6 +1683,133 @@ mod tests {
     }
 
     #[test]
+    fn plain_dictation_shows_the_bars_alone_and_the_wake_word_adds_the_name() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Listening));
+        let plain = model.overlay().unwrap();
+        assert_eq!(
+            (plain.text.as_str(), plain.tone, plain.activity),
+            ("", Tone::Neutral, Activity::Listening),
+            "the voice bars, with no words, while it is only dictation"
+        );
+
+        model.worker_event(t0, WorkerToShell::WakeWordHeard { request_id: id });
+        let command = model.overlay().unwrap();
+        assert_eq!(
+            (command.text.as_str(), command.tone, command.activity),
+            ("Eva", Tone::Command, Activity::Listening)
+        );
+
+        // It belongs to that recording only.
+        model.worker_event(t0, state(id, WorkerState::Idle));
+        model.worker_event(t0, state(Uuid::new_v4(), WorkerState::Listening));
+        assert_eq!(model.overlay().unwrap().activity, Activity::Listening);
+    }
+
+    #[test]
+    fn dictating_shows_only_dots_and_then_an_arrow_sends_the_words_off_as_they_land() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Thinking));
+        model.worker_event(
+            t0,
+            WorkerToShell::IntentRecognized { request_id: id, intent_json: serde_json::json!({ "kind": "dictation" }) },
+        );
+        let typing = model.overlay().unwrap();
+        assert_eq!((typing.text.as_str(), typing.activity, typing.icon), ("", Activity::Thinking, Icon::None));
+
+        model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 120 });
+        let sent = model.overlay().unwrap();
+        assert_eq!(
+            (sent.text.as_str(), sent.activity, sent.icon.clone()),
+            ("", Activity::Sending(120), Icon::Symbol("arrow.up")),
+            "no words: only the arrow"
+        );
+
+        // The text lands. The arrow is the same content, still rising, until its tail is over.
+        let landed = t0 + Duration::from_millis(120);
+        model.worker_event(landed, state(id, WorkerState::Done(true)));
+        assert_eq!(model.overlay(), Some(sent.clone()), "the flight is not cut short");
+        tick(&mut model, landed + Duration::from_millis(100));
+        assert_eq!(model.overlay(), Some(sent));
+        tick(&mut model, landed + Duration::from_secs(1));
+        assert_eq!(model.overlay(), None, "gone, and no \"Listo\" after it");
+    }
+
+    #[test]
+    fn a_dictation_that_is_not_pasted_gets_no_send_animation() {
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Thinking));
+        // No AboutToPaste: nothing to send, the words stay on the island instead.
+        model.worker_event(
+            t0,
+            WorkerToShell::TextNotPasted { request_id: id, text: "hola".into(), reason: "No hay dónde pegar".into() },
+        );
+        model.worker_event(t0, state(id, WorkerState::Done(true)));
+        assert_eq!(model.overlay().unwrap().choices.len(), 2);
+    }
+
+    #[test]
+    fn a_command_with_nothing_to_say_still_puts_eva_beside_the_dots() {
+        // "Eva, abre youtube y busca naruto": an app that is not there — not dictation.
+        let mut model = ShellModel::new(keys());
+        let t0 = Instant::now();
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Thinking));
+        model.worker_event(
+            t0,
+            WorkerToShell::IntentRecognized {
+                request_id: id,
+                intent_json: serde_json::json!({ "kind": "app_not_found", "name": "youtube y busca naruto", "opening": true }),
+            },
+        );
+        let island = model.overlay().unwrap();
+        assert_eq!((island.text.as_str(), island.tone, island.activity), ("Eva", Tone::Command, Activity::Thinking));
+    }
+
+    #[test]
+    fn the_dots_carry_the_name_when_it_is_eva_that_is_working_and_not_when_it_is_dictation() {
+        let t0 = Instant::now();
+        // The wake word heard while the key was still down: Eva beside the dots.
+        let mut model = ShellModel::new(keys());
+        let id = Uuid::new_v4();
+        model.worker_event(t0, state(id, WorkerState::Listening));
+        model.worker_event(t0, WorkerToShell::WakeWordHeard { request_id: id });
+        model.worker_event(t0, state(id, WorkerState::Thinking));
+        let working = model.overlay().unwrap();
+        assert_eq!((working.text.as_str(), working.tone, working.activity), ("Eva", Tone::Command, Activity::Thinking));
+
+        // Heard only after the key came up: the same.
+        let mut late = ShellModel::new(keys());
+        let id = Uuid::new_v4();
+        late.worker_event(t0, state(id, WorkerState::Listening));
+        late.worker_event(t0, state(id, WorkerState::Thinking));
+        assert_eq!(late.overlay().unwrap().text, "", "dictation until proven otherwise");
+        late.worker_event(t0, WorkerToShell::WakeWordHeard { request_id: id });
+        assert_eq!(late.overlay().unwrap().text, "Eva");
+    }
+
+    #[test]
+    fn a_command_looks_different_from_dictation_once_it_is_understood() {
+        let tone_of = |intent: serde_json::Value| {
+            let mut model = ShellModel::new(keys());
+            let t0 = Instant::now();
+            let id = Uuid::new_v4();
+            model.worker_event(t0, WorkerToShell::IntentRecognized { request_id: id, intent_json: intent });
+            model.worker_event(t0, state(id, WorkerState::Executing));
+            model.overlay().unwrap().tone
+        };
+        assert_eq!(tone_of(serde_json::json!({ "kind": "open_app", "app": "Spotify" })), Tone::Command);
+        assert_eq!(tone_of(serde_json::json!({ "kind": "web_search", "query": "el clima" })), Tone::Command);
+        assert_eq!(tone_of(serde_json::json!({ "kind": "dictation", "text": "hola" })), Tone::Neutral);
+    }
+
+    #[test]
     fn what_each_kind_of_command_says_it_is_doing() {
         let says = |json: serde_json::Value| Doing::from_intent(&json).map(|d| (d.now, d.icon));
         assert_eq!(
@@ -1480,30 +1825,56 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_nothing_to_say_still_shows_the_plain_executing_and_listo() {
+    fn a_command_with_nothing_to_say_still_shows_the_plain_executing_and_then_just_ends() {
         let mut model = ShellModel::new(keys());
         let t0 = Instant::now();
         let id = Uuid::new_v4();
         model.worker_event(t0, state(id, WorkerState::Executing));
         assert_eq!(model.overlay().unwrap().text, "Ejecutando");
         model.worker_event(t0, state(id, WorkerState::Done(true)));
-        assert_eq!(model.overlay().unwrap().text, "✓ Listo");
+        assert_eq!(model.overlay(), None, "no bare \"Listo\"");
     }
 
     #[test]
-    fn a_dictation_says_escribiendo_and_an_agent_task_says_which_agent() {
+    fn a_dictation_never_says_listo_however_it_ends() {
+        // With the send arrow, without it (nothing announced), and after a failed intent lookup.
+        let t0 = Instant::now();
+        for announced in [true, false] {
+            let mut model = ShellModel::new(keys());
+            let id = Uuid::new_v4();
+            model.worker_event(t0, state(id, WorkerState::Thinking));
+            model.worker_event(
+                t0,
+                WorkerToShell::IntentRecognized {
+                    request_id: id,
+                    intent_json: serde_json::json!({ "kind": "dictation" }),
+                },
+            );
+            if announced {
+                model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 0 });
+            }
+            model.worker_event(t0, state(id, WorkerState::Done(true)));
+            let shown = model.overlay();
+            assert!(shown.as_ref().is_none_or(|o| !o.text.contains("Listo")), "{shown:?}");
+            tick(&mut model, t0 + secs(5));
+            assert_eq!(model.overlay(), None);
+        }
+    }
+
+    #[test]
+    fn a_dictation_is_only_dots_and_an_agent_task_says_which_agent() {
         let mut model = ShellModel::new(keys());
         let t0 = Instant::now();
         let id = Uuid::new_v4();
         model.worker_event(t0, state(id, WorkerState::Thinking));
-        assert_eq!(model.overlay().unwrap().text, "Pensando", "before it is understood");
+        assert_eq!(model.overlay().unwrap().text, "", "before it is understood: only dots");
 
         model.worker_event(
             t0,
             WorkerToShell::IntentRecognized { request_id: id, intent_json: serde_json::json!({ "kind": "dictation" }) },
         );
         let typing = model.overlay().unwrap();
-        assert_eq!((typing.text.as_str(), typing.icon), ("Escribiendo", Icon::Symbol("text.cursor")));
+        assert_eq!((typing.text.as_str(), typing.icon), ("", Icon::None), "dictation is only dots");
 
         model.worker_event(t0, state(id, WorkerState::Done(true)));
         let task = Uuid::new_v4();

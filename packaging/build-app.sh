@@ -33,6 +33,9 @@ VERSION="$(awk -F'"' '/^version *=/ {print $2; exit}' "$REPO_ROOT/Cargo.toml")"
 echo "==> Compilando eva-shell, eva-worker, eva-mcp y eva ($VERSION) en modo release"
 (cd "$REPO_ROOT" && cargo build --release -p eva-shell -p eva-worker -p eva-mcp -p eva-cli)
 
+echo "==> Borrando artefactos viejos de target/ (solo se conserva la última versión de cada uno)"
+"$REPO_ROOT/packaging/prune-target.sh"
+
 echo "==> Armando $APP_NAME"
 rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS"

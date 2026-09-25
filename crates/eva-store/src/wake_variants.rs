@@ -15,6 +15,23 @@ pub fn count(conn: &Connection, heard: &str) -> Result<u32, StoreError> {
     Ok(conn.query_row("SELECT hits FROM wake_variants WHERE heard = ?1", params![heard], |row| row.get(0))?)
 }
 
+/// Makes `heard` count as at least `hits` sightings: what the user saying
+/// "this is how I say it" is worth, without waiting for it to happen again.
+pub fn teach(conn: &Connection, heard: &str, hits: u32) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO wake_variants (heard, hits) VALUES (?1, ?2)
+         ON CONFLICT(heard) DO UPDATE SET hits = MAX(hits, excluded.hits)",
+        params![heard, hits],
+    )?;
+    Ok(())
+}
+
+/// Forgets `heard` altogether. Not an error if it was never counted.
+pub fn forget(conn: &Connection, heard: &str) -> Result<(), StoreError> {
+    conn.execute("DELETE FROM wake_variants WHERE heard = ?1", params![heard])?;
+    Ok(())
+}
+
 /// Marks `heard` as certain: counted as at least `hits` times, whatever it was before.
 pub fn trust(conn: &Connection, heard: &str, hits: u32) -> Result<(), StoreError> {
     conn.execute(
@@ -52,6 +69,15 @@ mod tests {
         store.trust_wake_variant("ava", 3).unwrap();
         assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
         store.trust_wake_variant("ava", 1).unwrap();
+        assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
+    }
+
+    #[test]
+    fn teaching_a_spelling_trusts_it_at_once_and_never_lowers_a_count() {
+        let store = Store::open_in_memory().unwrap();
+        store.teach_wake_variant("ava", 3).unwrap();
+        assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
+        store.teach_wake_variant("ava", 1).unwrap();
         assert_eq!(store.trusted_wake_variants(3).unwrap(), vec!["ava".to_string()]);
     }
 }

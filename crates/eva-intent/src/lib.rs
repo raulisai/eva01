@@ -13,12 +13,15 @@ pub mod context;
 pub mod intent;
 pub mod risk;
 pub mod sites;
+pub mod sound;
 pub mod spoken;
+pub mod steps;
 pub mod wake;
 
 pub use apps::{AppEntry, AppIndex};
 pub use intent::Intent;
 pub use risk::Risk;
+pub use steps::Step;
 
 /// The result of running the whole intention layer on a raw transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,7 +77,22 @@ pub fn interpret_tolerant(
     let Some(found) = wake::find_wake_word(raw_text, wake_word, learned) else { return dictation };
     let intent = match custom.iter().find(|phrase| intent::is_phrase(found.rest, phrase)) {
         Some(phrase) => Intent::Custom { phrase: (*phrase).to_string() },
-        None => intent::parse(found.rest, app_index),
+        None => {
+            let parsed = intent::parse(found.rest, app_index);
+            // Nothing matched, so this would go to an agent as a task: if it is
+            // nearly one of the user's phrases, ask instead. Not on a wake word
+            // that was only guessed at — a question out of nowhere is noise.
+            let would_be_a_task = matches!(parsed, Intent::AgentTask { provider: None, .. });
+            match intent::nearest_phrase(found.rest, custom)
+                .filter(|_| would_be_a_task && found.how != wake::WakeMatch::Similar)
+            {
+                Some(phrase) => Intent::ConfirmCustom {
+                    heard: found.rest.trim().trim_end_matches(['.', '!', '?']).to_string(),
+                    phrase: phrase.to_string(),
+                },
+                None => parsed,
+            }
+        }
     };
     if found.how == wake::WakeMatch::Similar && !intent.is_clear_command() {
         return dictation;
@@ -180,6 +198,39 @@ mod tests {
         assert_eq!(
             interpret_with("Adán, abre Brave", "Adán", &sample_index(), &custom),
             InterpretResult::Command(Intent::Custom { phrase: "abre brave".to_string() })
+        );
+    }
+
+    #[test]
+    fn a_phrase_that_is_nearly_the_users_gets_a_question_not_an_agent() {
+        let custom = ["ver mi canal favorito"];
+        let asked = |spoken: &str| interpret_with(spoken, "Adán", &sample_index(), &custom);
+        // Most of the words are the same, or the letters barely differ.
+        for said in ["Adán, ponme mi canal favorito.", "Adán, ver mi canal favorite", "adan ver mi canal favoritos"] {
+            assert!(
+                matches!(asked(said), InterpretResult::Command(Intent::ConfirmCustom { ref phrase, .. }) if phrase == "ver mi canal favorito"),
+                "{said}: {:?}",
+                asked(said)
+            );
+        }
+        // Talking about the same subject is not asking for the command.
+        for said in ["Adán, mi canal favorito tiene un problema con las miniaturas", "Adán, agrega tests al login"] {
+            assert!(matches!(asked(said), InterpretResult::Command(Intent::AgentTask { .. })), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_near_phrase_never_beats_a_rule_and_never_follows_a_guessed_wake_word() {
+        let custom = ["abre spotify ya"];
+        // "abre spotify" is an app command whatever the user's phrases are.
+        assert!(matches!(
+            interpret_with("Adán, abre Brave", "Adán", &sample_index(), &custom),
+            InterpretResult::Command(Intent::OpenApp { .. })
+        ));
+        let custom = ["ver mi canal favorito"];
+        assert_eq!(
+            interpret_tolerant("Adam ponme mi canal favorito", "Adán", &sample_index(), &custom, &[]).result,
+            InterpretResult::Dictation
         );
     }
 

@@ -20,6 +20,7 @@ pub mod projects;
 pub mod remote;
 pub mod server;
 pub mod service;
+pub mod youtube;
 
 pub use desktop::{Desktop, SystemDesktop};
 pub use error::DesktopError;

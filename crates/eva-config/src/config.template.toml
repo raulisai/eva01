@@ -72,10 +72,15 @@
 # notify_task_results = true
 # Segundos antes de detener una tarea de agente; 0 = sin límite.
 # task_timeout_secs = 1800
+# Milisegundos que la flecha de la isla se ve antes de que el texto aparezca
+# donde dictas (luego sigue subiendo un instante). 0 = pegar al instante, sin
+# esperar nada; la flecha sale igual.
+# send_animation_ms = 120
 
 [dictation]
 # Un espacio después de cada dictado, para que el siguiente no se pegue.
 # trailing_space = true
+# pause_media = true      # pausa la música y silencia el Mac mientras dictas; lo devuelve al soltar
 
 [history]
 # Guardar el texto de cada dictado en este equipo (crudo y formateado). Es lo que
@@ -83,6 +88,10 @@
 # save_transcripts = true
 # Días que se conservan; los marcados como mal transcritos no se borran. 0 = todo.
 # keep_days = 30
+# Modo entrenamiento: guarda también el AUDIO de cada dictado y orden en este Mac
+# (carpeta training/), para revisarlos en el panel («Revisar») y medir con tu voz.
+# Apagado por defecto; el interruptor del panel manda sobre esta línea.
+# save_audio = false
 
 [styles]
 # Estilo de puntuación por app (además de los que ya trae EVA01: chat, correo,
@@ -118,3 +127,17 @@
 # api_key_env = "OPENAI_API_KEY"
 # model = "gpt-4o-mini"
 # use_for = ["edit"]   # "edit" (reescribir selección) y/o "format" (cada dictado)
+
+[resolver]
+# Cuando «abre <algo>» no coincide con ninguna app, un modelo local pequeño decide
+# cuál de TUS apps quisiste decir («breve» → Brave) y EVA01 lo recuerda. Solo se usa
+# un servidor de esta Mac (Ollama); nada sale de tu equipo. Si no responde, se omite.
+# Instalar el modelo:  ollama pull qwen2.5:3b   (y tener Ollama abierto)
+# enabled = true
+# base_url = "http://127.0.0.1:11434/v1"
+# model = "qwen2.5:3b"
+# Lo mismo para pedidos largos que ninguna regla entiende («abre YouTube y busca música
+# chill», «pon música para concentrarme»): el modelo propone los pasos, EVA01 te los
+# muestra y, si dices que sí, los ejecuta (cada paso pasa por el gateway como siempre).
+# planner = true
+# confirm_plans = true   # false: ejecutarlos sin preguntar

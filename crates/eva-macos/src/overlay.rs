@@ -19,7 +19,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSImage, NSImageView, NSPanel, NSTextField, NSView, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSFont, NSImage, NSImageView, NSPanel, NSTextField, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowStyleMask,
     NSWorkspace,
 };
 use objc2_app_kit::{NSEvent, NSEventMask};
@@ -41,32 +42,50 @@ pub enum Tone {
     Error,
     /// A question for the user: blue.
     Ask,
+    /// A command (open, search, an agent…): violet, so it never looks like plain dictation.
+    Command,
 }
 
 impl Tone {
-    /// The panel's background as (red, green, blue, alpha).
+    /// The tint laid over the frosted glass, as (red, green, blue, alpha).
+    /// Light on purpose: the blur underneath does most of the work, and the
+    /// island should look like glass, not like a dark slab.
     fn background(self) -> (f64, f64, f64, f64) {
         match self {
-            Tone::Neutral => (0.10, 0.10, 0.10, 0.88),
-            Tone::Ok => (0.05, 0.30, 0.15, 0.92),
-            Tone::Error => (0.42, 0.09, 0.09, 0.93),
-            Tone::Ask => (0.08, 0.20, 0.42, 0.95),
+            Tone::Neutral => (0.05, 0.05, 0.07, 0.30),
+            Tone::Ok => (0.05, 0.40, 0.20, 0.55),
+            Tone::Error => (0.55, 0.10, 0.10, 0.60),
+            Tone::Ask => (0.10, 0.25, 0.60, 0.55),
+            Tone::Command => (0.28, 0.20, 0.62, 0.50),
+        }
+    }
+
+    /// The colour of the animation and icon: white, or a soft violet for a command.
+    fn accent(self) -> (f64, f64, f64) {
+        match self {
+            Tone::Command => (0.78, 0.74, 1.0),
+            _ => (1.0, 1.0, 1.0),
         }
     }
 }
 
 /// What EVA is doing while it works: drawn as a small animation next to the
-/// text, so the state reads without reading.
+/// text (or on its own), so the state reads without reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
     /// Nothing animated: a plain message (done, error, a question).
     None,
-    /// Recording the user: moving voice bars.
+    /// Recording: the moving voice bars (with the name "Eva" beside them once
+    /// the wake word is heard, alone while it is only dictation).
     Listening,
-    /// Transcribing and formatting: three pulsing dots.
+    /// Working on the words: three dots that rise in turn.
     Thinking,
-    /// Running an action: three dots, faster (or the action's icon, if it has one).
+    /// Running an action: a ring of dots turning (or the action's icon, if it has one).
     Executing,
+    /// The arrow that sends the words off: it shows for this many milliseconds
+    /// (the wait before the text lands) and then, for a moment more, rises and
+    /// fades away.
+    Sending(u32),
 }
 
 /// The picture that says what is being done, in place of the animation.
@@ -130,6 +149,9 @@ pub struct Overlay {
     icon_view: Retained<NSImageView>,
     /// The rounded, tinted body of the island — the only thing that changes size.
     body: Retained<CALayer>,
+    /// The shape the frosted glass behind it is cut to: it follows the body.
+    glass_mask: Retained<CALayer>,
+    tone: Cell<Tone>,
     /// The layers the activity animation moves: bars when listening, dots
     /// when thinking or executing.
     glyphs: Vec<Retained<CALayer>>,
@@ -166,11 +188,13 @@ const PILL_HEIGHT: f64 = 40.0;
 /// Width reserved for the animation or icon, and the gap before the text.
 const GLYPH_WIDTH: f64 = 28.0;
 const GLYPH_GAP: f64 = 10.0;
-const GLYPH_COUNT: usize = 5;
+/// The voice bars while listening, and the tallest one.
+const BAR_COUNT: usize = 5;
+const BAR_MAX: f64 = 22.0;
+/// The animation layers: the spinner needs eight, the others use the first few.
+const GLYPH_COUNT: usize = 8;
 /// The icon's side.
 const ICON_SIZE: f64 = 22.0;
-/// Tallest a voice bar gets.
-const BAR_MAX: f64 = 22.0;
 /// Space between the text and the panel's edge.
 const H_PADDING: f64 = 18.0;
 const V_PADDING: f64 = 12.0;
@@ -181,6 +205,10 @@ const BOTTOM_MARGIN: f64 = 80.0;
 /// Buttons: their height and the gap between them.
 const BUTTON_HEIGHT: f64 = 30.0;
 const BUTTON_GAP: f64 = 10.0;
+/// The "sent" arrow: it shows for `ms` (the wait before the paste) plus this
+/// tail, rising and fading; a short hold first, so it reads before it moves.
+pub const SEND_TAIL_SECS: f64 = 0.20;
+const SEND_RISE: f64 = 34.0;
 const MORPH_SECS: f64 = 0.42;
 const HIDE_SECS: f64 = 0.22;
 const CONTENT_DELAY_SECS: f64 = 0.10;
@@ -226,19 +254,34 @@ impl Overlay {
         // Animation while the views stay where the final layout puts them.
         let container = NSView::initWithFrame(NSView::alloc(mtm), frame);
         container.setWantsLayer(true);
+
+        // The glass: a blur of whatever is behind the island, cut to the shape
+        // of the body by a mask that moves with it. The tint (the body) is a
+        // layer on top of it, so both are clipped by the same mask.
+        let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), frame);
+        glass.setMaterial(NSVisualEffectMaterial::HUDWindow);
+        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        glass.setState(NSVisualEffectState::Active);
+        glass.setWantsLayer(true);
+        let glass_mask = CALayer::new();
+        glass_mask.setBackgroundColor(Some(&NSColor::blackColor().CGColor()));
         let body = CALayer::new();
-        body.setMasksToBounds(true);
+        body.setBorderWidth(0.5);
+        body.setBorderColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.16).CGColor()));
         #[allow(clippy::expect_used)] // a layer-backed view always has a layer
-        container.layer().expect("a view with wantsLayer has a layer").addSublayer(&body);
+        let glass_layer = glass.layer().expect("a view with wantsLayer has a layer");
+        // SAFETY: `glass_mask` is a live layer that belongs to no other layer, and
+        // it is kept (in `Overlay`) for as long as the glass it cuts.
+        unsafe { glass_layer.setMask(Some(&glass_mask)) };
+        glass_layer.addSublayer(&body);
+        container.addSubview(&glass);
         container.addSubview(&label);
         container.addSubview(&icon_view);
         panel.setContentView(Some(&container));
 
-        let white = NSColor::whiteColor().CGColor();
         let glyphs: Vec<_> = (0..GLYPH_COUNT)
             .map(|_| {
                 let glyph = CALayer::new();
-                glyph.setBackgroundColor(Some(&white));
                 glyph.setHidden(true);
                 body.addSublayer(&glyph);
                 glyph
@@ -285,6 +328,8 @@ impl Overlay {
             panel,
             button_layers,
             button_labels,
+            glass_mask,
+            tone: Cell::new(Tone::Neutral),
             button_rects,
             clicked,
             click_monitor,
@@ -316,10 +361,15 @@ impl Overlay {
     /// from what it was — never a jump.
     pub fn show(&self, content: &OverlayContent) {
         self.generation.set(self.generation.get() + 1);
+        // A previous "sending" left the panel raised and faded out.
+        self.panel.setAlphaValue(1.0);
         let (r, g, b, a) = content.tone.background();
         let tint = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a).CGColor();
         self.label.setStringValue(&NSString::from_str(&content.text));
         self.activity.set(content.activity);
+        self.tone.set(content.tone);
+        let (ar, ag, ab) = content.tone.accent();
+        self.icon_view.setContentTintColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(ar, ag, ab, 1.0)));
         let icon = load_icon(&content.icon);
         self.has_icon.set(icon.is_some());
         self.icon_view.setImage(icon.as_deref());
@@ -341,8 +391,7 @@ impl Overlay {
             let dot = NSSize::new(PILL_HEIGHT / 2.0, PILL_HEIGHT / 2.0);
             CATransaction::begin();
             CATransaction::setDisableActions(true);
-            self.body.setFrame(self.body_frame(dot));
-            self.body.setCornerRadius(dot.height / 2.0);
+            self.set_shape(self.body_frame(dot), dot.height / 2.0);
             self.body.setBackgroundColor(Some(&tint));
             CATransaction::commit();
         }
@@ -353,8 +402,7 @@ impl Overlay {
         CATransaction::setAnimationTimingFunction(Some(&CAMediaTimingFunction::functionWithControlPoints(
             0.3, 1.25, 0.5, 1.0,
         )));
-        self.body.setFrame(target);
-        self.body.setCornerRadius((layout.body.height / 2.0).min(22.0));
+        self.set_shape(target, (layout.body.height / 2.0).min(22.0));
         self.body.setBackgroundColor(Some(&tint));
         CATransaction::commit();
 
@@ -366,6 +414,15 @@ impl Overlay {
         // or stealing focus from whatever the user is dictating into — the
         // entire point of using an `NSPanel` here.
         self.panel.orderFrontRegardless();
+    }
+
+    /// Moves the body and the glass mask together, so the blur is always
+    /// exactly as big and as round as the tinted shape over it.
+    fn set_shape(&self, frame: NSRect, radius: f64) {
+        for layer in [&self.body, &self.glass_mask] {
+            layer.setFrame(frame);
+            layer.setCornerRadius(radius);
+        }
     }
 
     /// How big the body must be for `content`, and how it lays out.
@@ -382,10 +439,19 @@ impl Overlay {
         if compact {
             self.label.setPreferredMaxLayoutWidth(PANEL_WIDTH);
             let text = self.label.fittingSize();
-            let text = NSSize::new(text.width.ceil(), text.height.ceil());
+            let text = if content.text.is_empty() {
+                NSSize::new(0.0, 0.0)
+            } else {
+                NSSize::new(text.width.ceil(), text.height.ceil())
+            };
             // An icon is a square; the animations are wider.
             let slot = if content.icon == Icon::None { GLYPH_WIDTH } else { ICON_SIZE };
-            let width = H_PADDING - 2.0 + slot + GLYPH_GAP + text.width + H_PADDING;
+            // With no words the pill is just its animation, evenly padded.
+            let width = if content.text.is_empty() {
+                2.0 * (H_PADDING - 2.0) + slot
+            } else {
+                H_PADDING - 2.0 + slot + GLYPH_GAP + text.width + H_PADDING
+            };
             Layout { compact, slot, buttons: false, text, body: NSSize::new(width, PILL_HEIGHT) }
         } else {
             self.label.setPreferredMaxLayoutWidth(PANEL_WIDTH - 2.0 * H_PADDING);
@@ -423,7 +489,12 @@ impl Overlay {
             layer.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, fill).CGColor()));
             layer.setFrame(rect);
             layer.setHidden(false);
-            text.setStringValue(&NSString::from_str(&format!("{}  {}", choice.label, choice.shortcut)));
+            let caption = if choice.shortcut.is_empty() {
+                choice.label.clone()
+            } else {
+                format!("{}  {}", choice.label, choice.shortcut)
+            };
+            text.setStringValue(&NSString::from_str(&caption));
             text.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(ink, ink, ink, 1.0)));
             text.setFrame(NSRect::new(
                 NSPoint::new(rect.origin.x, rect.origin.y + (BUTTON_HEIGHT - 16.0) / 2.0),
@@ -485,6 +556,25 @@ impl Overlay {
         let fade = ((since - CONTENT_DELAY_SECS) / CONTENT_FADE_SECS).clamp(0.0, 1.0);
         self.fade_content(fade);
         self.draw_glyphs(t, fade);
+        if let Activity::Sending(ms) = self.activity.get() {
+            self.fly(since, f64::from(ms) / 1000.0);
+        }
+    }
+
+    /// The "sent" animation, `since` seconds in. `wait` is how long until the
+    /// text lands: the arrow holds still for half of it, then rises and fades,
+    /// taking [`SEND_TAIL_SECS`] more after the text has landed.
+    fn fly(&self, since: f64, wait: f64) {
+        let hold = wait * 0.5 + 0.04;
+        let total = wait + SEND_TAIL_SECS;
+        let flight = ((since - hold) / (total - hold).max(0.05)).clamp(0.0, 1.0);
+        let eased = flight * flight; // gathers speed, like a throw
+        self.panel.setAlphaValue(1.0 - eased);
+        let Some(screen) = objc2_app_kit::NSScreen::mainScreen(self.mtm) else { return };
+        let frame = screen.frame();
+        let x = frame.origin.x + (frame.size.width - PANEL_WIDTH) / 2.0;
+        let y = frame.origin.y + BOTTOM_MARGIN + SEND_RISE * eased;
+        self.panel.setFrameOrigin(NSPoint::new(x, y));
     }
 
     /// Jumps to the end of every animation: the body at its final size, the
@@ -493,65 +583,80 @@ impl Overlay {
         let layout = self.layout.get();
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        self.body.setFrame(self.body_frame(layout.body));
-        self.body.setCornerRadius((layout.body.height / 2.0).min(22.0));
+        self.set_shape(self.body_frame(layout.body), (layout.body.height / 2.0).min(22.0));
         CATransaction::commit();
         self.fade_content(1.0);
         self.draw_glyphs(t, 1.0);
     }
 
-    /// The listening bars and thinking dots at time `t`, `fade` visible.
+    /// The animation at time `t`, `fade` visible — deliberately abstract and
+    /// quiet: voice bars while listening, three dots rising in turn while
+    /// thinking, a ring of dots turning while it acts.
     fn draw_glyphs(&self, t: f64, fade: f64) {
         let layout = self.layout.get();
         let activity = self.activity.get();
         let animated = layout.compact && !self.has_icon.get();
-        let mid = layout.body.height / 2.0;
-        let left = H_PADDING - 2.0;
+        // The animation's slot: a square, centred vertically at its left.
+        // Centred when there are no words beside it.
+        let centre_x =
+            if layout.text.width == 0.0 { layout.body.width / 2.0 } else { H_PADDING - 2.0 + GLYPH_WIDTH / 2.0 };
+        let centre = NSPoint::new(centre_x, layout.body.height / 2.0);
+        let (r, g, b) = self.tone.get().accent();
+        let ink = |alpha: f64| NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, alpha).CGColor();
+        let dot = |glyph: &CALayer, at: NSPoint, diameter: f64, alpha: f64| {
+            glyph.setHidden(false);
+            glyph.setBorderWidth(0.0);
+            glyph.setBackgroundColor(Some(&ink(alpha * fade)));
+            glyph.setCornerRadius(diameter / 2.0);
+            glyph.setFrame(NSRect::new(
+                NSPoint::new(at.x - diameter / 2.0, at.y - diameter / 2.0),
+                NSSize::new(diameter, diameter),
+            ));
+        };
         CATransaction::begin();
         CATransaction::setDisableActions(true);
+        for glyph in &self.glyphs {
+            glyph.setHidden(true);
+        }
         match activity {
             Activity::Listening if animated => {
-                let step = GLYPH_WIDTH / GLYPH_COUNT as f64;
-                for (i, glyph) in self.glyphs.iter().enumerate() {
+                // Voice bars, as they were: two sines out of step, so they
+                // move like a voice and not like a metronome.
+                let step = GLYPH_WIDTH / BAR_COUNT as f64;
+                let left = centre.x - GLYPH_WIDTH / 2.0;
+                for (i, glyph) in self.glyphs[..BAR_COUNT].iter().enumerate() {
                     let phase = i as f64 * 1.3;
-                    // Two sines out of step, so the bars move like a voice
-                    // and not like a metronome.
                     let level = 0.5 + 0.5 * (0.5 * (t * 7.0 + phase).sin() + 0.5 * (t * 11.3 + phase * 2.1).sin());
                     let height = 5.0 + level * (BAR_MAX - 5.0);
                     glyph.setHidden(false);
-                    glyph.setOpacity(fade as f32);
+                    glyph.setBorderWidth(0.0);
+                    glyph.setBackgroundColor(Some(&ink(fade)));
                     glyph.setCornerRadius(2.0);
                     glyph.setFrame(NSRect::new(
-                        NSPoint::new(left + i as f64 * step + 1.0, mid - height / 2.0),
+                        NSPoint::new(left + i as f64 * step + 1.0, centre.y - height / 2.0),
                         NSSize::new(4.0, height),
                     ));
                 }
             }
-            Activity::Thinking | Activity::Executing if animated => {
-                let speed = if activity == Activity::Thinking { 4.0 } else { 7.0 };
-                let step = GLYPH_WIDTH / 3.0;
+            Activity::Thinking if animated => {
+                // Three dots that rise and fall in turn, like a message being typed.
+                for (i, glyph) in self.glyphs[..3].iter().enumerate() {
+                    let wave = 0.5 + 0.5 * (t * 5.2 - i as f64 * 0.9).sin();
+                    let at = NSPoint::new(centre.x + (i as f64 - 1.0) * 9.0, centre.y + 3.5 * (wave - 0.5) * 2.0);
+                    dot(glyph, at, 5.5, 0.4 + 0.6 * wave);
+                }
+            }
+            Activity::Executing if animated => {
+                // Eight dots on a ring, brightest at the head and fading behind it, turning.
+                let head = t * 1.25;
                 for (i, glyph) in self.glyphs.iter().enumerate() {
-                    if i >= 3 {
-                        glyph.setHidden(true);
-                        continue;
-                    }
-                    // Each dot swells in turn.
-                    let swell = 0.5 + 0.5 * (t * speed - i as f64 * 1.1).sin();
-                    let diameter = 6.0 + 4.0 * swell;
-                    glyph.setHidden(false);
-                    glyph.setOpacity(((0.45 + 0.55 * swell) * fade) as f32);
-                    glyph.setCornerRadius(diameter / 2.0);
-                    glyph.setFrame(NSRect::new(
-                        NSPoint::new(left + i as f64 * step + (step - diameter) / 2.0, mid - diameter / 2.0),
-                        NSSize::new(diameter, diameter),
-                    ));
+                    let angle = std::f64::consts::TAU * (i as f64 / GLYPH_COUNT as f64);
+                    let behind = (head - i as f64 / GLYPH_COUNT as f64).rem_euclid(1.0);
+                    let at = NSPoint::new(centre.x + 9.5 * angle.cos(), centre.y + 9.5 * angle.sin());
+                    dot(glyph, at, 3.4, 1.0 - 0.8 * behind);
                 }
             }
-            _ => {
-                for glyph in &self.glyphs {
-                    glyph.setHidden(true);
-                }
-            }
+            _ => {}
         }
         CATransaction::commit();
     }
@@ -583,8 +688,7 @@ impl Overlay {
         // SAFETY: the block only reads a counter and orders out a panel it
         // owns, both on the main thread the transaction completes on.
         unsafe { CATransaction::setCompletionBlock(Some(&closed)) };
-        self.body.setFrame(self.body_frame(dot));
-        self.body.setCornerRadius(dot.height / 2.0);
+        self.set_shape(self.body_frame(dot), dot.height / 2.0);
         CATransaction::commit();
         let _ = layout;
     }
@@ -671,12 +775,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_tone_has_its_own_background_and_is_mostly_opaque() {
-        let tones = [Tone::Neutral, Tone::Ok, Tone::Error, Tone::Ask];
-        let backgrounds: Vec<_> = tones.iter().map(|t| t.background()).collect();
-        for (i, a) in backgrounds.iter().enumerate() {
-            assert!(a.3 > 0.8, "the text must stay readable over any app: {a:?}");
-            for b in &backgrounds[i + 1..] {
+    fn every_tone_has_its_own_tint_and_is_translucent_but_not_clear() {
+        let tones = [Tone::Neutral, Tone::Ok, Tone::Error, Tone::Ask, Tone::Command];
+        let tints: Vec<_> = tones.iter().map(|t| t.background()).collect();
+        for (i, a) in tints.iter().enumerate() {
+            assert!((0.2..=0.7).contains(&a.3), "glass shows what is behind it, tinted enough to tell the tone: {a:?}");
+            for b in &tints[i + 1..] {
                 assert_ne!(a, b, "two tones look the same");
             }
         }

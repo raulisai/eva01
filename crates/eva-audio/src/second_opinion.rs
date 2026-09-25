@@ -26,9 +26,21 @@ pub const SHORT_CLIP: Duration = Duration::from_secs(4);
 
 /// A word said this many times in a row is a loop, not speech.
 const LOOP_WORD_RUN: usize = 4;
-/// A pair of words said this many times in a row is a loop too ("es porque
-/// es porque es porque").
-const LOOP_PAIR_RUN: usize = 3;
+/// A group of 2 to [`LOOP_MAX_UNIT`] words said this many times in a row is a
+/// loop too ("es porque es porque es porque", "nada más que nada más que…").
+const LOOP_GROUP_RUN: usize = 3;
+/// The longest repeating group looked for. Measured: the decoder repeated
+/// «nada más que» for a whole minute of tokens.
+const LOOP_MAX_UNIT: usize = 6;
+
+/// How many repeats of a group of `unit` words make a loop.
+fn loop_threshold(unit: usize) -> usize {
+    if unit == 1 {
+        LOOP_WORD_RUN
+    } else {
+        LOOP_GROUP_RUN
+    }
+}
 
 /// What a transcript must look like to be kept from the second opinion: in
 /// the worker, "starts with the wake word".
@@ -51,10 +63,17 @@ impl SecondOpinion {
 
     /// Which of the two transcripts to keep. `other` is the second model's
     /// answer if it was already asked (in parallel, for a short clip).
+    ///
+    /// A clip with a voice in it that the main model answers with *nothing* is
+    /// a lost dictation, whatever its length: measured on this user's own
+    /// recordings, 1 in 7 came back empty and the small model heard a clear
+    /// sentence in the ones checked. So an empty answer over a voice always
+    /// asks the second model, and takes whatever it makes of it.
     fn choose(&self, samples: &[f32], first: Transcript, other: Option<Transcript>) -> Transcript {
         let Some(second) = &self.second else { return first };
         let first_loops = has_loop(&first.text);
-        if (self.wanted)(&first.text) || !(is_short(samples) || first_loops) {
+        let lost = first.text.trim().is_empty() && crate::speech::has_speech(samples);
+        if (self.wanted)(&first.text) || !(is_short(samples) || first_loops || lost) {
             return first;
         }
         let other = match other {
@@ -67,7 +86,11 @@ impl SecondOpinion {
                 }
             },
         };
-        if (self.wanted)(&other.text) || (first_loops && !has_loop(&other.text)) {
+        let rescued = lost && !other.text.trim().is_empty() && !has_loop(&other.text);
+        if rescued {
+            tracing::info!(heard = %other.text, "el modelo grande no oyó nada sobre una voz; se usa el pequeño");
+        }
+        if (self.wanted)(&other.text) || (first_loops && !has_loop(&other.text)) || rescued {
             other
         } else {
             first
@@ -103,19 +126,25 @@ fn core(token: &str) -> String {
     token.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// Whether `text` repeats a word 4 times in a row, or a pair of words 3 times
-/// (`LOOP_WORD_RUN`, `LOOP_PAIR_RUN`).
+/// Whether `text` repeats a word 4 times in a row, or a group of 2–6 words 3
+/// times (`LOOP_WORD_RUN`, `LOOP_GROUP_RUN`).
 pub fn has_loop(text: &str) -> bool {
-    let words: Vec<String> = text.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
-    let word_loop = words.windows(LOOP_WORD_RUN).any(|run| run.iter().all(|w| *w == run[0]));
-    let pair_loop = words.windows(2 * LOOP_PAIR_RUN).any(|run| {
-        let (a, b) = (&run[0], &run[1]);
-        a != b && run.chunks(2).all(|pair| pair[0] == *a && pair[1] == *b)
-    });
-    word_loop || pair_loop
+    let cores: Vec<String> = text.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
+    (0..cores.len()).any(|start| best_run(&cores, start).is_some())
 }
 
-/// `text` with every run of a repeated word or pair of words reduced to one
+/// The loop that starts at `start`, as `(unit, repeats)`: the one that covers
+/// the most words, the shorter group on a tie.
+fn best_run(cores: &[String], start: usize) -> Option<(usize, usize)> {
+    (1..=LOOP_MAX_UNIT)
+        .filter_map(|unit| {
+            let repeats = run_of(cores, start, unit);
+            (repeats >= loop_threshold(unit)).then_some((unit, repeats))
+        })
+        .max_by_key(|(unit, repeats)| (unit * repeats, std::cmp::Reverse(*unit)))
+}
+
+/// `text` with every run of a repeated word or group of words reduced to one
 /// occurrence — "bueno, bueno, bueno, bueno." → "bueno." — keeping the
 /// punctuation that ended the run. Text without a loop comes back unchanged
 /// (a doubled "muy muy" is speech, and is left alone).
@@ -128,13 +157,7 @@ pub fn collapse_loops(text: &str) -> String {
     let mut kept: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
     while i < tokens.len() {
-        let pair_len = run_of(&cores, i, 2);
-        let word_len = run_of(&cores, i, 1);
-        let (unit, repeats) = if pair_len >= LOOP_PAIR_RUN && pair_len * 2 > word_len {
-            (2, pair_len)
-        } else if word_len >= LOOP_WORD_RUN {
-            (1, word_len)
-        } else {
+        let Some((unit, repeats)) = best_run(&cores, i) else {
             kept.push(tokens[i].to_string());
             i += 1;
             continue;
@@ -156,10 +179,10 @@ fn run_of(cores: &[String], start: usize, unit: usize) -> usize {
     if start + unit > cores.len() || cores[start..start + unit].iter().any(String::is_empty) {
         return 0;
     }
-    if unit == 2 && cores[start] == cores[start + 1] {
-        return 0; // a doubled word is a word run, not a pair run
-    }
     let pattern = &cores[start..start + unit];
+    if unit > 1 && pattern.iter().all(|word| *word == pattern[0]) {
+        return 0; // one word said several times is a word run, not a group run
+    }
     let mut repeats = 1;
     while start + (repeats + 1) * unit <= cores.len()
         && cores[start + repeats * unit..start + (repeats + 1) * unit] == *pattern
@@ -190,6 +213,18 @@ mod tests {
         let pairs = "Ciertamente es porque es porque es porque es porque.";
         assert!(has_loop(pairs));
         assert_eq!(collapse_loops(pairs), "Ciertamente es porque.");
+    }
+
+    #[test]
+    fn a_group_of_three_words_repeated_for_a_minute_is_collapsed_like_the_one_that_was_pasted() {
+        // What was really pasted 60 times, in this user's own history.
+        let mut looping = String::from("Abre youtube y busca");
+        for _ in 0..60 {
+            looping.push_str(" nada más que");
+        }
+        assert!(has_loop(&looping));
+        assert_eq!(collapse_loops(&looping), "Abre youtube y busca nada más que");
+        assert_eq!(collapse_loops("a b c d a b c d a b c d fin"), "a b c d fin");
     }
 
     #[test]
@@ -276,6 +311,32 @@ mod tests {
             starts_with_adan(),
         );
         assert_eq!(stt.transcribe(&seconds(8.0)).unwrap().text, "Eva, cierra Spotify.");
+    }
+
+    #[test]
+    fn a_voice_the_main_model_answers_with_nothing_is_rescued_by_the_second_at_any_length() {
+        let second = counting("Adam abre Spotify y busca canciones de Naruto.");
+        let stt = SecondOpinion::new(Arc::new(FixedTranscript::new("")), Some(second.clone()), starts_with_adan());
+        // Ten seconds of talking: not a "short clip", and the small model still gets to try.
+        assert_eq!(stt.transcribe(&seconds(10.0)).unwrap().text, "Adam abre Spotify y busca canciones de Naruto.");
+    }
+
+    #[test]
+    fn a_silent_recording_is_not_rescued_into_invented_words() {
+        let second = counting("Gracias por ver el video.");
+        let stt = SecondOpinion::new(Arc::new(FixedTranscript::new("")), Some(second.clone()), starts_with_adan());
+        assert_eq!(stt.transcribe(&vec![0.002; 160_000]).unwrap().text, "");
+        assert_eq!(second.asked.load(Ordering::SeqCst), 0, "nothing was asked: there was no voice");
+    }
+
+    #[test]
+    fn a_rescue_that_is_itself_empty_or_a_loop_changes_nothing() {
+        let stt = SecondOpinion::new(
+            Arc::new(FixedTranscript::new("")),
+            Some(counting("bueno, bueno, bueno, bueno.")),
+            starts_with_adan(),
+        );
+        assert_eq!(stt.transcribe(&seconds(10.0)).unwrap().text, "");
     }
 
     #[test]

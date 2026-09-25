@@ -27,6 +27,16 @@ pub trait Desktop: Send + Sync {
     /// Puts `text` on the clipboard without pasting it — what to do with a
     /// dictation that cannot be pasted (a password field is focused).
     fn copy_text(&self, text: &str) -> Result<(), DesktopError>;
+    /// Controls the music player (Spotify or Apple Music).
+    fn media(&self, command: &eva_macos::MediaCommand) -> Result<(), DesktopError>;
+    /// Says whether the Mac should be quiet (the dictation key is down).
+    /// Instant: only records the wish, in the order things happen.
+    fn want_media_quiet(&self, _quiet: bool) {}
+    /// Brings the Mac's real sound in line with the last
+    /// [`Desktop::want_media_quiet`]: pauses the music and silences the
+    /// output, or puts it all back. Takes a few hundred ms, so it runs on a
+    /// blocking thread; safe to call late, twice or out of order.
+    fn settle_media_quiet(&self) {}
     /// Whether macOS is currently blocking synthesized keystrokes
     /// system-wide (a password field has focus, or a terminal has Secure
     /// Keyboard Entry on), which would silently swallow a paste.
@@ -49,12 +59,15 @@ pub trait Desktop: Send + Sync {
 /// `es_ES`). The voice comes from the config (`feedback.voice`).
 pub struct SystemDesktop {
     voice: String,
+    /// Quiets the Mac while dictating; remembers a crash through a state file.
+    quiet: eva_macos::duck::MediaDucker,
 }
 
 impl SystemDesktop {
     /// A desktop that speaks with `voice` (any name `say -v '?'` lists).
     pub fn with_voice(voice: impl Into<String>) -> SystemDesktop {
-        SystemDesktop { voice: voice.into() }
+        let state_file = eva_config::support_dir().join("media-duck.state");
+        SystemDesktop { voice: voice.into(), quiet: eva_macos::duck::MediaDucker::for_this_mac(state_file) }
     }
 }
 
@@ -106,6 +119,10 @@ impl Desktop for SystemDesktop {
         eva_macos::read_selection().map_err(DesktopError::from)
     }
 
+    fn media(&self, command: &eva_macos::MediaCommand) -> Result<(), DesktopError> {
+        eva_macos::media::run(command).map_err(DesktopError::from)
+    }
+
     fn copy_text(&self, text: &str) -> Result<(), DesktopError> {
         use eva_macos::paste::Pasteboard;
         eva_macos::paste::SystemPasteboard.write_string(text).map_err(DesktopError::from)
@@ -118,6 +135,14 @@ impl Desktop for SystemDesktop {
     fn has_text_target(&self) -> bool {
         let pid = eva_macos::frontmost_app().map(|app| app.pid);
         eva_macos::text_target_focused(pid) != Some(false)
+    }
+
+    fn want_media_quiet(&self, quiet: bool) {
+        self.quiet.want_quiet(quiet);
+    }
+
+    fn settle_media_quiet(&self) {
+        self.quiet.settle();
     }
 }
 
@@ -145,6 +170,12 @@ pub mod mock {
         SelectedText,
         /// [`Desktop::copy_text`] was called with this text.
         CopyText(String),
+        /// [`Desktop::media`] was called with this description.
+        Media(String),
+        /// [`Desktop::want_media_quiet`] was called with this wish.
+        WantMediaQuiet(bool),
+        /// [`Desktop::settle_media_quiet`] was called.
+        SettleMediaQuiet,
     }
 
     /// Records every call made to it and, optionally, fails every call with
@@ -247,6 +278,18 @@ pub mod mock {
 
         fn speak(&self, text: &str) -> Result<(), DesktopError> {
             self.record(Call::Speak(text.to_string()))
+        }
+
+        fn media(&self, command: &eva_macos::MediaCommand) -> Result<(), DesktopError> {
+            self.record(Call::Media(command.describe()))
+        }
+
+        fn want_media_quiet(&self, quiet: bool) {
+            let _ = self.record(Call::WantMediaQuiet(quiet));
+        }
+
+        fn settle_media_quiet(&self) {
+            let _ = self.record(Call::SettleMediaQuiet);
         }
 
         fn selected_text(&self) -> Result<Option<String>, DesktopError> {

@@ -6,22 +6,26 @@
 
 mod apps;
 mod calibration;
+mod command_book;
 mod commands;
-mod conversation;
 mod confirm;
 mod context;
+mod conversation;
 mod dictation;
 mod handler;
 mod harvest;
 mod housekeeping;
 mod orphans;
+mod plan;
 mod recording;
 mod rpc;
 mod startup;
 mod streaming;
 mod tasks;
+mod teach;
 #[cfg(test)]
 mod testkit;
+mod training;
 
 use eva_ipc::{ShellToWorker, WorkerToShell};
 use std::time::Duration;

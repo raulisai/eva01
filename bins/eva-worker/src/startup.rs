@@ -59,6 +59,11 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("no se pudo limpiar el historial: {e}"),
     }
 
+    let pruned = crate::training::prune(&crate::training::dir_of(&support.join("harvest")), config.history.keep_days);
+    if pruned > 0 {
+        tracing::info!(count = pruned, "audios de entrenamiento sin revisar borrados por su edad");
+    }
+
     let worker_process = crate::orphans::Process::current();
     let stopped =
         crate::orphans::AgentLedger::new(support.join("run").join("agents"), worker_process.clone()).reap().await;
@@ -114,6 +119,11 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         worker_process,
         config,
     }));
+
+    // A command made in the panel works on the next thing said, no restart.
+    ctx.commands.watch(&Config::default_path());
+    // A crash in the middle of a recording must not leave the Mac muted.
+    eva_macos::duck::recover(&eva_config::support_dir().join("media-duck.state"));
 
     if let Some(endpoint) = endpoint {
         endpoint.serve(&ctx);

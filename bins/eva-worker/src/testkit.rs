@@ -54,8 +54,14 @@ impl Rig {
         // either: tests of worktrees make a real repository for it.
         config.feedback.speak_task_results = false;
         config.feedback.notify_task_results = false;
+        // No waiting for the island's send animation in tests.
+        config.feedback.send_animation_ms = 0;
         config.agents.worktree = false;
         config.agents.project_roots = Vec::new();
+        // Never ask a model that may be running on the machine the tests run on.
+        config.resolver.enabled = false;
+        // Nor pause the music or silence the Mac of whoever runs them.
+        config.dictation.pause_media = false;
         RigBuilder {
             desktop: MockDesktop::new(),
             agents: AgentRegistry::new(Vec::new()),

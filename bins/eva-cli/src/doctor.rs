@@ -35,19 +35,42 @@ pub struct Check {
     pub detail: String,
     /// What to do about it, when it is not fine.
     pub hint: Option<String>,
+    /// A fix the shell's Doctor window can offer as a button (an id it knows,
+    /// e.g. `install_model`), when the problem has one.
+    pub action: Option<&'static str>,
 }
 
 impl Check {
     fn ok(name: &'static str, detail: impl Into<String>) -> Check {
-        Check { verdict: Verdict::Ok, name, detail: detail.into(), hint: None }
+        Check { verdict: Verdict::Ok, name, detail: detail.into(), hint: None, action: None }
     }
 
     fn warn(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Check {
-        Check { verdict: Verdict::Warn, name, detail: detail.into(), hint: Some(hint.into()) }
+        Check { verdict: Verdict::Warn, name, detail: detail.into(), hint: Some(hint.into()), action: None }
     }
 
     fn fail(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Check {
-        Check { verdict: Verdict::Fail, name, detail: detail.into(), hint: Some(hint.into()) }
+        Check { verdict: Verdict::Fail, name, detail: detail.into(), hint: Some(hint.into()), action: None }
+    }
+
+    fn with_action(mut self, action: &'static str) -> Check {
+        self.action = Some(action);
+        self
+    }
+
+    /// The check as the Doctor window reads it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "verdict": match self.verdict {
+                Verdict::Ok => "ok",
+                Verdict::Warn => "warn",
+                Verdict::Fail => "fail",
+            },
+            "name": self.name,
+            "detail": self.detail,
+            "hint": self.hint,
+            "action": self.action,
+        })
     }
 
     /// The report line(s) for this check.
@@ -65,9 +88,8 @@ impl Check {
     }
 }
 
-/// Runs every check, prints the report, and returns the exit code: `1` if any
-/// check failed outright, else `0`.
-pub async fn run(smoke: bool) -> i32 {
+/// Every check, in report order. `smoke` also makes each agent answer for real.
+async fn collect(smoke: bool) -> Vec<Check> {
     let loaded = Config::load();
     let support = support_dir();
     let mut checks = Vec::new();
@@ -83,15 +105,28 @@ pub async fn run(smoke: bool) -> i32 {
     checks.push(login_item());
     checks.extend(agents(&loaded.config, smoke).await);
     checks.extend(worker().await);
+    checks
+}
+
+/// Runs every check, prints the report, and returns the exit code: `1` if any
+/// check failed outright, else `0`. With `json` the report is one JSON object
+/// (what the shell's Doctor window reads) instead of text.
+pub async fn run(smoke: bool, json: bool) -> i32 {
+    let checks = collect(smoke).await;
+    let failed = checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
+    let warned = checks.iter().filter(|c| c.verdict == Verdict::Warn).count();
+
+    if json {
+        let checks: Vec<_> = checks.iter().map(Check::to_json).collect();
+        println!("{}", serde_json::json!({ "checks": checks, "failed": failed, "warned": warned }));
+        return i32::from(failed > 0);
+    }
 
     println!("EVA01 — diagnóstico\n");
     for check in &checks {
         println!("{}", check.render());
     }
-    println!("\nRegistros: ~/Library/Logs/EVA01 · datos y modelos: {}", support.display());
-
-    let failed = checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
-    let warned = checks.iter().filter(|c| c.verdict == Verdict::Warn).count();
+    println!("\nRegistros: ~/Library/Logs/EVA01 · datos y modelos: {}", support_dir().display());
     println!("{}", summary(failed, warned));
     i32::from(failed > 0)
 }
@@ -207,7 +242,8 @@ fn stt_model(config: &Config, support: &std::path::Path) -> Vec<Check> {
             format!("Canary entiende mejor el español: {install_hint}"),
         )],
         models::ModelChoice::None => {
-            vec![Check::fail("Modelo de voz", "no hay ninguno instalado: no se puede dictar", install_hint)]
+            vec![Check::fail("Modelo de voz", "no hay ninguno instalado: no se puede dictar", install_hint)
+                .with_action("install_model")]
         }
     }
 }

@@ -5,9 +5,11 @@
 //! `startup`), and finding out why something does not work (`doctor`,
 //! `audit`).
 
+mod analysis;
 mod commands;
 mod doctor;
 mod model;
+mod panel;
 mod render;
 mod session;
 mod startup;
@@ -52,10 +54,23 @@ enum Command {
         /// Además, hace que cada agente responda de verdad (tarda unos segundos).
         #[arg(long)]
         smoke: bool,
+        /// El reporte como un objeto JSON (lo lee la ventana Doctor de la app).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Datos del panel de la app: una petición JSON por stdin, una respuesta por stdout.
+    #[command(hide = true)]
+    Panel {
+        /// La ruta, p. ej. `history` o `config.set`.
+        route: String,
     },
     /// Calibra EVA01 a tu voz: te pide unas frases, oye cómo salen y aprende cómo
     /// se escribe tu palabra de activación y tus aplicaciones (no ejecuta nada).
     Calibrate,
+    /// Escucha una y otra vez y dice lo que oyó, sin ejecutar nada (lo usa el
+    /// panel para enseñarle a una orden tuya las formas de pedirla).
+    #[command(hide = true)]
+    Teach,
     /// Pide el reporte de salud de eva-worker.
     Health,
     /// Muestra las tareas de agente en curso y las recientes.
@@ -181,6 +196,7 @@ async fn main() {
             talk(|request_id| ShellToWorker::RunIntentText { request_id, text }, timeout).await
         }
         Command::Calibrate => talk(|request_id| ShellToWorker::Calibrate { request_id }, timeout).await,
+        Command::Teach => talk(|request_id| ShellToWorker::Teach { request_id }, Duration::from_secs(TEACH_SECS)).await,
         Command::Health => talk(|request_id| ShellToWorker::HealthCheck { request_id }, timeout).await,
         Command::Tasks => talk(|request_id| ShellToWorker::ListTasks { request_id }, timeout).await,
         Command::WakeWord { word } => talk(|request_id| ShellToWorker::SetWakeWord { request_id, word }, timeout).await,
@@ -194,7 +210,8 @@ async fn main() {
             DictionaryAction::List => talk(|request_id| ShellToWorker::ListCustomWords { request_id }, timeout).await,
         },
         Command::Commands { action } => commands::run(action.unwrap_or(CommandsAction::List)),
-        Command::Doctor { smoke } => doctor::run(smoke).await,
+        Command::Panel { route } => panel::run(&route),
+        Command::Doctor { smoke, json } => doctor::run(smoke, json).await,
         Command::Audit { limit } => audit(limit),
         Command::History { limit, flagged } => history(limit, flagged),
         Command::Model { action } => {
@@ -214,6 +231,9 @@ async fn main() {
     };
     std::process::exit(exit_code);
 }
+
+/// The longest a teaching session runs before it ends by itself.
+const TEACH_SECS: u64 = 900;
 
 /// Sends one command to a fresh worker and prints what comes back.
 async fn talk(command: impl FnOnce(Uuid) -> ShellToWorker, timeout: Duration) -> i32 {

@@ -14,6 +14,7 @@
 mod hotkeys;
 mod icons;
 mod model;
+mod panel_ui;
 mod supervisor;
 mod tray;
 
@@ -132,8 +133,7 @@ fn main() {
                 }
                 menu_id::CANCEL_TASKS => commands.push(Command::CancelAllTasks),
                 menu_id::FLAG_BAD => commands.push(Command::FlagLastDictation(Uuid::new_v4())),
-                menu_id::OPEN_CONFIG => open_config(),
-                menu_id::OPEN_LOGS => open_path(&logs_dir()),
+                menu_id::PANEL => panel_ui::open(""),
                 _ => {}
             }
         }
@@ -151,9 +151,21 @@ fn main() {
             }
         }
 
+        if panel_ui::restart_requested() {
+            tracing::info!("reinicio pedido desde Doctor");
+            supervisor.send(ShellToWorker::Shutdown);
+            *control_flow = ControlFlow::Exit;
+        }
+
         // A click on the island's Sí / No is the same answer as its key.
         if let Some(choice) = overlay.take_choice() {
-            commands.extend(model.choose(choice));
+            commands.extend(model.choose(choice, now));
+        }
+        // "Copiar" on unpasted words: the whole text, to the clipboard.
+        if let Some(text) = model.take_copy() {
+            if let Err(e) = eva_macos::copy_text(&text) {
+                tracing::warn!("no se pudo copiar el texto al portapapeles: {e}");
+            }
         }
         commands.extend(model.tick(now));
         for notification in model.take_notifications() {
@@ -346,24 +358,6 @@ fn notify(title: &str, body: &str) {
 
 fn logs_dir() -> std::path::PathBuf {
     dirs::home_dir().map_or_else(std::env::temp_dir, |h| h.join("Library/Logs/EVA01"))
-}
-
-/// Opens the config file in the default editor, creating the commented
-/// template first if there is none — so "Abrir configuración…" always lands
-/// on something to edit.
-fn open_config() {
-    let path = Config::default_path();
-    if let Err(e) = Config::ensure_file(&path) {
-        tracing::warn!("no se pudo crear {}: {e}", path.display());
-        return;
-    }
-    open_path(&path);
-}
-
-fn open_path(path: &std::path::Path) {
-    if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
-        tracing::warn!("no se pudo abrir {}: {e}", path.display());
-    }
 }
 
 fn worker_binary_path() -> std::path::PathBuf {

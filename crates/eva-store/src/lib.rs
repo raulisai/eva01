@@ -22,8 +22,11 @@
 
 pub mod app_aliases;
 pub mod audit;
+pub mod command_phrases;
+pub mod corrections;
 pub mod dictionary;
 mod error;
+pub mod feedback;
 pub mod schema;
 pub mod sessions;
 pub mod settings;
@@ -33,6 +36,7 @@ pub mod wake_variants;
 
 pub use audit::{AuditRecord, Decision};
 pub use error::StoreError;
+pub use feedback::Feedback;
 pub use sessions::AgentSessionRecord;
 pub use tasks::{NewTask, TaskRecord};
 pub use transcripts::TranscriptRecord;
@@ -150,11 +154,80 @@ impl Store {
         self.with_conn(app_aliases::list)
     }
 
+    // -- learned corrections ------------------------------------------------
+
+    /// See [`corrections::learn`].
+    pub fn learn_correction(&self, heard: &str, meant: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| corrections::learn(c, heard, meant))
+    }
+
+    /// See [`corrections::forget`].
+    pub fn forget_correction(&self, heard: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| corrections::forget(c, heard))
+    }
+
+    /// See [`corrections::list`].
+    pub fn list_corrections(&self) -> Result<Vec<(String, String, u32)>, StoreError> {
+        self.with_conn(corrections::list)
+    }
+
+    // -- feedback on flagged dictations -------------------------------------
+
+    /// See [`feedback::save`].
+    pub fn save_feedback(&self, feedback: &Feedback) -> Result<(), StoreError> {
+        self.with_conn(|c| feedback::save(c, feedback))
+    }
+
+    /// See [`feedback::get`].
+    pub fn get_feedback(&self, transcript_id: Uuid) -> Result<Option<Feedback>, StoreError> {
+        self.with_conn(|c| feedback::get(c, transcript_id))
+    }
+
+    /// See [`feedback::all`].
+    pub fn all_feedback(&self) -> Result<Vec<Feedback>, StoreError> {
+        self.with_conn(feedback::all)
+    }
+
     // -- wake word variants -----------------------------------------------
+
+    /// See [`command_phrases::learn`].
+    pub fn learn_command_phrase(&self, phrase: &str, command: &str, how: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| command_phrases::learn(c, phrase, command, how))
+    }
+
+    /// See [`command_phrases::forget`].
+    pub fn forget_command_phrase(&self, phrase: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| command_phrases::forget(c, phrase))
+    }
+
+    /// See [`command_phrases::forget_command`].
+    pub fn forget_command_phrases_of(&self, command: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| command_phrases::forget_command(c, command))
+    }
+
+    /// See [`command_phrases::rename_command`].
+    pub fn rename_command_phrases(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| command_phrases::rename_command(c, from, to))
+    }
+
+    /// See [`command_phrases::list`].
+    pub fn list_command_phrases(&self) -> Result<Vec<command_phrases::LearnedPhrase>, StoreError> {
+        self.with_conn(command_phrases::list)
+    }
 
     /// See [`wake_variants::count`].
     pub fn count_wake_variant(&self, heard: &str) -> Result<u32, StoreError> {
         self.with_conn(|c| wake_variants::count(c, heard))
+    }
+
+    /// See [`wake_variants::teach`].
+    pub fn teach_wake_variant(&self, heard: &str, hits: u32) -> Result<(), StoreError> {
+        self.with_conn(|c| wake_variants::teach(c, heard, hits))
+    }
+
+    /// See [`wake_variants::forget`].
+    pub fn forget_wake_variant(&self, heard: &str) -> Result<(), StoreError> {
+        self.with_conn(|c| wake_variants::forget(c, heard))
     }
 
     /// See [`wake_variants::trust`].

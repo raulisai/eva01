@@ -19,6 +19,7 @@ eva-gateway = { workspace = true }
 eva-ipc = { workspace = true }
 eva-store = { workspace = true }
 async-trait = "0.1"
+ureq = { version = "3", features = ["json"] }
 dirs = "5"
 
 [dev-dependencies]

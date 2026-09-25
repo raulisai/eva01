@@ -258,13 +258,27 @@ fn check_artifacts(input: &str, output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Quotation marks the dictation never had. The model likes to wrap what it
+/// takes for a title or a quote ("la palabra "todo eso"", "Eso debería decir
+/// "bueno""), and nobody dictates quotation marks — spoken, they would be words
+/// ("comillas"). Real cases from this user's own history. Left as they are when
+/// the dictation itself had any.
+fn without_added_quotes(input: &str, output: &str) -> String {
+    const QUOTES: &[char] = &['"', '“', '”', '«', '»'];
+    if input.contains(QUOTES) || !output.contains(QUOTES) {
+        return output.to_string();
+    }
+    output.chars().filter(|c| !QUOTES.contains(c)).collect::<String>().replace("  ", " ")
+}
+
 /// Strips the prompt's own label when the model repeats it before its answer
 /// ("Corregida: Manda un correo…"), which the few-shot template invites.
 /// Found running the real model: the echo made the answer one word longer
 /// than the dictation, so the guard threw away an otherwise perfect
 /// formatting. Only a label the dictation did not itself start with goes.
 pub(crate) fn clean_format(input: &str, output: &str) -> String {
-    let trimmed = output.trim();
+    let trimmed = without_added_quotes(input, output.trim());
+    let trimmed = trimmed.as_str();
     for label in ["Corregida:", "corregida:", "Transcripción:", "transcripción:"] {
         let word = label.trim_end_matches(':').to_lowercase();
         let said_it = input.trim_start().to_lowercase().starts_with(&word);
@@ -446,6 +460,18 @@ mod tests {
         let cleaned = clean_format(input, echoed);
         assert_eq!(cleaned, "Manda un correo a soporte diciendo que el servidor está caído.");
         ok(input, &cleaned);
+    }
+
+    #[test]
+    fn quotes_the_model_added_are_removed_but_the_users_own_stay() {
+        assert_eq!(
+            clean_format(
+                "me detecta bien la palabra todo eso me gustaría",
+                "Me detecta bien la palabra \"todo eso\". Me gustaría"
+            ),
+            "Me detecta bien la palabra todo eso. Me gustaría"
+        );
+        assert_eq!(clean_format("dijo «hola» y se fue", "Dijo «hola» y se fue."), "Dijo «hola» y se fue.");
     }
 
     #[test]

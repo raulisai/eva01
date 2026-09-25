@@ -61,9 +61,23 @@ pub fn lessons(wake_word: &str, index: &AppIndex, samples: &[Sample]) -> Lessons
             *wake.entry(first).or_default() += 1;
         }
         let Some(expected) = &sample.expected_app else { continue };
+        // Said so it sounds like the app ("Breve" for Brave) it opens without
+        // asking, but the way this user says it is worth keeping all the same:
+        // the list of names grows with every calibration.
+        let sounds_alike_name;
         let heard_name = match &command {
             Intent::ConfirmApp { heard, app, .. } if app == expected => Some(heard),
             Intent::AppNotFound { name, .. } => Some(name),
+            Intent::OpenApp { app } | Intent::CloseApp { app } if app == expected => {
+                let after_verb = rest.split_once(char::is_whitespace).map_or("", |(_, name)| name);
+                sounds_alike_name = after_verb.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+                let known = index.spoken_names(expected);
+                let is_new = !sounds_alike_name.is_empty()
+                    && !known.iter().any(|k| {
+                        fold_diacritics(k).to_lowercase() == fold_diacritics(&sounds_alike_name).to_lowercase()
+                    });
+                is_new.then_some(&sounds_alike_name)
+            }
             _ => None,
         };
         if let Some(name) = heard_name {
@@ -121,13 +135,13 @@ mod tests {
     #[test]
     fn a_misheard_app_name_is_learned_only_for_the_app_that_was_asked() {
         let samples = [
-            heard(Some("Brave Browser"), "Eva, abre breve."),
-            heard(Some("Spotify"), "Eva, abre Spotifi."),
+            heard(Some("Brave Browser"), "Eva, abre, breve."),
+            heard(Some("Spotify"), "Eva, abre Spotifly."),
             heard(Some("Spotify"), "Eva, abre Photoshop."),
         ];
         let lessons = lessons("Eva", &index(), &samples);
         assert!(lessons.apps.contains(&("breve".to_string(), "Brave Browser".to_string())), "{lessons:?}");
-        assert!(lessons.apps.contains(&("spotifi".to_string(), "Spotify".to_string())), "{lessons:?}");
+        assert!(lessons.apps.contains(&("spotifly".to_string(), "Spotify".to_string())), "{lessons:?}");
         assert!(!lessons.apps.iter().any(|(heard, _)| heard == "photoshop"), "a wholly different word is a slip");
     }
 }

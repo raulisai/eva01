@@ -5,6 +5,7 @@
 //! the test kit.
 
 use crate::apps::AppCatalog;
+use crate::command_book::CommandBook;
 use crate::confirm::ConfirmationBroker;
 use crate::harvest::Harvest;
 use crate::orphans::AgentLedger;
@@ -161,6 +162,8 @@ pub struct WorkerContext {
     pub store: Store,
     /// `config.toml`.
     pub config: Config,
+    /// The user's own commands, kept fresh from disk (see [`CommandBook`]).
+    pub commands: CommandBook,
     /// Resolves spoken app names to canonical ones.
     pub app_index: AppCatalog,
     /// What was just opened, for the few seconds a follow-up leans on it.
@@ -235,6 +238,7 @@ impl WorkerContext {
 
         WorkerContext {
             store: deps.store,
+            commands: CommandBook::new(deps.config.commands.clone()),
             config: deps.config,
             app_index: deps.app_index,
             conversation: Default::default(),

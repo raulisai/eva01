@@ -205,6 +205,14 @@ pub fn copy_selection() -> Result<Option<String>, MacosError> {
     copy_selection_with(&SystemPasteboard, &SystemKeystrokeSynthesizer, COPY_TIMEOUT)
 }
 
+/// Puts `text` on the system clipboard, replacing what was there.
+///
+/// # Errors
+/// [`MacosError::PasteboardWriteFailed`] if the pasteboard refused it.
+pub fn copy_text(text: &str) -> Result<(), MacosError> {
+    SystemPasteboard.write_string(text)
+}
+
 /// The real `NSPasteboard`-backed [`Pasteboard`].
 pub struct SystemPasteboard;
 

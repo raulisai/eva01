@@ -54,9 +54,17 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
         InterpretResult::Command(intent) => {
             // A misheard command is as worth flagging as a misheard dictation.
             ctx.harvest.remember_dictation(request_id, None, text, None);
+            crate::training::save(ctx, request_id, text, None);
             crate::conversation::run(ctx, request_id, intent).await
         }
     }
+}
+
+/// The personal dictionary plus what the user taught by reporting mistakes.
+fn learned_dictionary(ctx: &WorkerContext) -> Dictionary {
+    let replacements: Vec<(String, String)> =
+        ctx.store.list_corrections().unwrap_or_default().into_iter().map(|(heard, meant, _)| (heard, meant)).collect();
+    Dictionary::new(ctx.store.list_custom_words().unwrap_or_default()).with_replacements(replacements)
 }
 
 /// What `text` is: dictation, or a command (the user's own phrases included).
@@ -76,13 +84,17 @@ fn classify_apps(ctx: &WorkerContext, text: &str) -> Interpreted {
     // Stripping universal (never-a-real-word) fillers first is always safe
     // — see `eva_text::filler`'s own doc for why — and fixes this without
     // weakening the gate itself.
-    let gate_input = eva_text::filler::remove_universal_fillers(text);
+    let gate_input = learned_dictionary(ctx).replace_learned(&eva_text::filler::remove_universal_fillers(text));
 
-    let phrases: Vec<&str> = ctx.config.custom_commands().flat_map(|c| c.phrases()).collect();
+    // The user's own commands (fresh from disk) and every other way they have
+    // taught for saying them.
+    let commands = ctx.commands.runnable();
+    let taught = ctx.store.list_command_phrases().unwrap_or_default();
+    let phrases: Vec<&str> =
+        commands.iter().flat_map(|c| c.phrases()).chain(taught.iter().map(|l| l.phrase.as_str())).collect();
     let learned = ctx.store.trusted_wake_variants(TRUSTED_AFTER_HITS).unwrap_or_default();
-    let interpret = |apps: &eva_intent::AppIndex| {
-        crate::conversation::interpret(ctx, &gate_input, apps, &phrases, &learned)
-    };
+    let interpret =
+        |apps: &eva_intent::AppIndex| crate::conversation::interpret(ctx, &gate_input, apps, &phrases, &learned);
     let result = interpret(&ctx.app_index.current());
     // An app the index does not know may have been installed since it was
     // built: look again before saying it is not there…
@@ -129,7 +141,7 @@ pub fn interpret_text_for_test(ctx: &WorkerContext, text: &str) -> serde_json::V
 /// on the on-device model (bounded by its own internal timeout,
 /// `docs/PLAN.md` §3.3 point 3).
 async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
-    let dictionary = Dictionary::new(ctx.store.list_custom_words().unwrap_or_default());
+    let dictionary = learned_dictionary(ctx);
     let style = style_for(ctx, ctx.active_window().await.as_ref().and_then(|w| w.bundle_identifier.clone()).as_deref());
 
     let formatter = Arc::clone(&ctx.formatter);
@@ -182,6 +194,7 @@ fn remember(ctx: &WorkerContext, request_id: Uuid, cleaned: &eva_text::CleanedTr
         None
     };
     ctx.harvest.remember_dictation(request_id, transcript_id, &cleaned.raw, Some(&cleaned.formatted));
+    crate::training::save(ctx, request_id, &cleaned.raw, Some(&cleaned.formatted));
 }
 
 /// The style for the app with this bundle id: the user's own rules from
@@ -202,21 +215,46 @@ pub(crate) fn style_for(ctx: &WorkerContext, bundle_id: Option<&str>) -> Style {
 /// it on the clipboard and says so, instead of silently losing it.
 async fn deliver(ctx: &Arc<WorkerContext>, request_id: Uuid, text: String) {
     let desktop = Arc::clone(&ctx.desktop);
+    let kept = text.trim_end().to_string();
+
+    // The island shows an arrow that sends the words off *just before* they
+    // land, and lets it finish rising after: tell the shell how long until the
+    // paste, and wait exactly that long (nothing when it is 0). Only when the
+    // text really is going into a field.
+    let send_ms = ctx.config.feedback.send_animation_ms;
+    let probe = Arc::clone(&ctx.desktop);
+    let will_paste = tokio::task::spawn_blocking(move || !probe.secure_input_active() && probe.has_text_target()).await;
+    if will_paste.unwrap_or(false) {
+        ctx.events.emit(WorkerToShell::AboutToPaste { request_id, in_ms: send_ms });
+        if send_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(send_ms)).await;
+        }
+    }
     let result = tokio::task::spawn_blocking(move || paste_or_copy(desktop.as_ref(), &text)).await;
+    let not_pasted =
+        |reason: &str| WorkerToShell::TextNotPasted { request_id, text: kept.clone(), reason: reason.to_string() };
 
     match result {
         Ok(Ok(Delivery::Pasted)) => ctx.events.state(request_id, WorkerState::Done(true)),
         Ok(Ok(Delivery::CopiedNoTarget)) => {
-            // Not a failure: the words are safe on the clipboard, one ⌘V away.
-            ctx.events.emit(WorkerToShell::Notice { request_id, message: "Copiado · pégalo con ⌘V".to_string() });
+            // Not a failure: the words are already on the clipboard, and the
+            // island keeps them with a Copy button in case that gets replaced.
+            ctx.events.emit(not_pasted("No hay dónde pegar"));
             ctx.events.state(request_id, WorkerState::Done(true));
         }
         Ok(Ok(Delivery::CopiedInstead)) => ctx.events.fail(
             request_id,
             "hay un campo de contraseña activo y macOS no deja pegar aquí; el texto quedó en el portapapeles",
         ),
-        Ok(Err(e)) => ctx.events.fail(request_id, e.to_string()),
-        Err(join_error) => ctx.events.fail(request_id, format!("el pegado se interrumpió: {join_error}")),
+        Ok(Err(e)) => {
+            // Nothing was pasted and nothing may be on the clipboard: keep the words.
+            ctx.events.emit(not_pasted("No se pudo pegar"));
+            ctx.events.fail(request_id, e.to_string());
+        }
+        Err(join_error) => {
+            ctx.events.emit(not_pasted("No se pudo pegar"));
+            ctx.events.fail(request_id, format!("el pegado se interrumpió: {join_error}"));
+        }
     }
 }
 
@@ -368,6 +406,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn what_a_report_taught_is_applied_to_the_next_dictation_and_to_commands() {
+        let mut rig = Rig::new();
+        rig.ctx.store.learn_correction("todo eso", "todo esto").expect("learn");
+        rig.ctx.store.learn_correction("abra", "abre").expect("learn");
+
+        let events = rig.run(typed(&rig, "dime todo eso")).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Dime todo esto.")),
+            "{events:?}"
+        );
+        assert!(rig.desktop.calls().contains(&Call::InsertText("Dime todo esto. ".to_string())));
+        // Only the phrase, never the word alone.
+        let events = rig.run(typed(&rig, "eso es todo")).await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Eso es todo.")));
+
+        let taken = interpret_text_for_test(&rig.ctx, "Adán, abra Brave");
+        assert_eq!(taken["kind"], "open_app", "a command is read with the corrections too: {taken}");
+    }
+
+    #[tokio::test]
     async fn the_trailing_space_can_be_turned_off_in_the_config() {
         let mut rig = Rig::builder().configure(|c| c.dictation.trailing_space = false).build();
         rig.run(typed(&rig, "hola mundo")).await;
@@ -427,9 +489,44 @@ mod tests {
         let events = rig.run(typed(&rig, "hola mundo")).await;
 
         assert_eq!(rig.desktop.calls(), vec![Call::CopyText("Hola mundo. ".to_string())], "no paste into nothing");
-        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Notice { message, .. } if message.contains("⌘V"))));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerToShell::TextNotPasted { text, reason, .. } if text == "Hola mundo." && reason == "No hay dónde pegar"
+        )));
         assert!(!events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+    }
+
+    #[tokio::test]
+    async fn the_shell_is_told_the_paste_is_coming_and_it_waits_exactly_that_long() {
+        let mut rig = Rig::builder().configure(|c| c.feedback.send_animation_ms = 120).build();
+        let started = std::time::Instant::now();
+        let events = rig.run(typed(&rig, "hola mundo")).await;
+
+        let told = events.iter().position(|e| matches!(e, WorkerToShell::AboutToPaste { in_ms: 120, .. }));
+        let done =
+            events.iter().position(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. }));
+        assert!(told.is_some() && told < done, "announced before the end: {events:?}");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(120), "the paste waited for the animation");
+        assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Hola mundo. ".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn with_no_wait_configured_the_arrow_is_still_announced_and_nothing_is_delayed() {
+        let mut rig = Rig::new(); // the rig's default: 0
+        let started = std::time::Instant::now();
+        let events = rig.run(typed(&rig, "hola mundo")).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::AboutToPaste { in_ms: 0, .. })), "{events:?}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(100), "no waiting at all");
+    }
+
+    #[tokio::test]
+    async fn no_send_animation_is_announced_when_the_text_is_not_going_into_a_field() {
+        let desktop = MockDesktop::new().with_no_text_target();
+        let mut rig = Rig::builder().desktop(desktop).configure(|c| c.feedback.send_animation_ms = 120).build();
+        let events = rig.run(typed(&rig, "hola mundo")).await;
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::AboutToPaste { .. })), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::TextNotPasted { .. })));
     }
 
     #[tokio::test]
@@ -449,6 +546,13 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(false), .. })));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                WorkerToShell::TextNotPasted { text, reason, .. } if text == "Hola." && reason == "No se pudo pegar"
+            )),
+            "what was said must survive a failed paste: {events:?}"
+        );
     }
 
     #[tokio::test]

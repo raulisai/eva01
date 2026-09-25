@@ -56,11 +56,13 @@ pub enum ActionKind {
     Notify,
     /// Speak text aloud.
     Speak,
+    /// Control the music player: play a playlist, pause, next, previous.
+    Media,
 }
 
 impl ActionKind {
     /// Every kind, in a stable order — for listing policies.
-    pub const ALL: [ActionKind; 10] = [
+    pub const ALL: [ActionKind; 11] = [
         ActionKind::OpenApp,
         ActionKind::CloseApp,
         ActionKind::OpenUrl,
@@ -71,6 +73,7 @@ impl ActionKind {
         ActionKind::ReadSelection,
         ActionKind::Notify,
         ActionKind::Speak,
+        ActionKind::Media,
     ];
 
     /// The snake_case name used in the config file and in audit entries.
@@ -86,6 +89,7 @@ impl ActionKind {
             ActionKind::ReadSelection => "read_selection",
             ActionKind::Notify => "notify",
             ActionKind::Speak => "speak",
+            ActionKind::Media => "media",
         }
     }
 }

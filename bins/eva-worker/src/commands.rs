@@ -50,10 +50,24 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, voice.web_search(&query).await);
         }
+        Intent::Media { step } => {
+            ctx.events.state(request_id, WorkerState::Executing);
+            let outcome = run_step(ctx, &voice, &step).await;
+            match outcome {
+                Ok(()) => ctx.events.state(request_id, WorkerState::Done(true)),
+                Err(message) => ctx.events.fail(request_id, message),
+            }
+        }
         Intent::ConfirmApp { heard, app, opening } => confirm_app(ctx, request_id, &heard, &app, opening, &voice).await,
         Intent::AppNotFound { name, opening } => app_not_found(ctx, request_id, &name, opening, &voice).await,
         Intent::Custom { phrase } => run_custom(ctx, request_id, &phrase, intent_json).await,
+        Intent::ConfirmCustom { heard, phrase } => confirm_custom(ctx, request_id, &heard, &phrase, &voice).await,
         Intent::AgentTask { prompt, provider } => {
+            // No rule took it: before it becomes a task for an agent, see whether
+            // it is really a couple of small actions the local model can plan.
+            if provider.is_none() && crate::plan::try_plan(ctx, request_id, &prompt).await {
+                return;
+            }
             crate::tasks::start_new(ctx, request_id, intent_json, prompt, provider).await;
         }
         Intent::ContinueAgentTask { extra_prompt } => {
@@ -65,7 +79,7 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
     }
 }
 
-/// "Abre Spotifi": asks "¿quisiste decir Spotify?". A yes does it and
+/// "Abre Spotifly": asks "¿quisiste decir Spotify?". A yes does it and
 /// remembers how the user says it, so that name needs no question again; a
 /// no does nothing and remembers nothing.
 async fn confirm_app(
@@ -83,14 +97,50 @@ async fn confirm_app(
         ctx.events.fail(request_id, format!("no abro nada: «{heard}» no era «{app}»"));
         return;
     }
+    learn_app(ctx, heard, app);
+    run_app(ctx, request_id, app, opening, voice).await;
+}
+
+/// Remembers, for good, that this is how the user says `app`.
+fn learn_app(ctx: &WorkerContext, heard: &str, app: &str) {
     let folded = eva_text::fold_diacritics(heard).to_lowercase();
     if let Err(e) = ctx.store.learn_app_alias(&folded, app) {
         tracing::warn!("no se pudo guardar que «{heard}» es «{app}»: {e}");
     }
     ctx.app_index.learn(heard, app);
     tracing::info!(%heard, %app, "aprendido: así dices esta app");
+}
+
+async fn run_app(ctx: &WorkerContext, request_id: Uuid, app: &str, opening: bool, voice: &impl DesktopService) {
+    ctx.events.state(request_id, WorkerState::Executing);
     let outcome = if opening { voice.open_app(app).await } else { voice.close_app(app).await };
     report(ctx, request_id, outcome);
+}
+
+/// Whether `app` is spelled or sounds enough like `heard` that a model's pick
+/// can be trusted without asking: the same first consonant and a similar
+/// sound overall. Anything further is a question.
+fn plausible(heard: &str, app: &str) -> bool {
+    let said = eva_intent::sound::sound_of(heard);
+    // The whole name, or any one word of it ("Brave" in "Brave Browser").
+    std::iter::once(app).chain(app.split_whitespace()).any(|part| {
+        let name = eva_intent::sound::sound_of(part);
+        said.consonants.chars().next() == name.consonants.chars().next()
+            && strsim::jaro_winkler(&said.full, &name.full) >= 0.7
+    })
+}
+
+/// What the quick matching could not find, asked of the local model: which of
+/// the installed apps was meant. `None` when it is off, silent or unsure.
+async fn ask_model(ctx: &WorkerContext, name: &str) -> Option<String> {
+    let settings = &ctx.config.resolver;
+    if !settings.enabled {
+        return None;
+    }
+    let resolver = eva_text::AppResolver::new(&settings.base_url, &settings.model)?;
+    let apps: Vec<String> = ctx.app_index.current().names().into_iter().map(str::to_string).collect();
+    let heard = name.to_string();
+    tokio::task::spawn_blocking(move || resolver.resolve(&heard, &apps)).await.ok().flatten()
 }
 
 /// "Abre Photoshop" without Photoshop: says so, and — for opening — offers to
@@ -98,6 +148,25 @@ async fn confirm_app(
 /// answered with a key, like any other confirmation; only a yes opens the
 /// App Store, and it opens on the search, not on anything to buy.
 async fn app_not_found(ctx: &WorkerContext, request_id: Uuid, name: &str, opening: bool, voice: &impl DesktopService) {
+    // What was said may be an installed app said badly ("braille" for Brave).
+    // The local model, if there is one, knows the apps and can tell; without
+    // it, the closest by sound. A candidate that resembles what was said is
+    // trusted and remembered, so it is never asked twice; a far one is asked
+    // about first.
+    ctx.events.state(request_id, WorkerState::Executing);
+    let by_model = ask_model(ctx, name).await;
+    let candidate =
+        by_model.clone().or_else(|| ctx.app_index.current().suggest(name).map(|a| a.canonical_name.clone()));
+    if let Some(app) = candidate {
+        tracing::info!(heard = %name, %app, model = by_model.is_some(), "app propuesta para lo que se oyó");
+        if plausible(name, &app) {
+            learn_app(ctx, name, &app);
+            run_app(ctx, request_id, &app, opening, voice).await;
+        } else {
+            confirm_app(ctx, request_id, name, &app, opening, voice).await;
+        }
+        return;
+    }
     if !opening {
         ctx.events.fail(request_id, format!("no encuentro «{name}» entre tus aplicaciones"));
         return;
@@ -114,15 +183,69 @@ async fn app_not_found(ctx: &WorkerContext, request_id: Uuid, name: &str, openin
     report(ctx, request_id, voice.open_url(&eva_mcp::app_store_search_url(name)).await);
 }
 
-/// Runs one of the user's own `[[commands]]`. Each thing it does goes through
-/// the gateway, so `[gateway.voice]` rules it like any other command.
-async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, intent_json: serde_json::Value) {
-    use eva_config::CommandAction;
+/// The command the user's `phrase` means: the one that has it among its own
+/// phrases, or the one a phrase learned by voice or confirmation points to.
+fn command_for(ctx: &WorkerContext, phrase: &str) -> Option<eva_config::CommandConfig> {
+    let commands = ctx.commands.runnable();
+    if let Some(command) = commands.iter().find(|c| c.phrases().any(|say| say == phrase)) {
+        return Some(command.clone());
+    }
+    let learned = ctx.store.list_command_phrases().unwrap_or_default();
+    let meant = &learned.iter().find(|l| l.phrase == phrase)?.command;
+    commands.into_iter().find(|c| c.say == *meant)
+}
 
-    let Some(command) = ctx.config.custom_commands().find(|c| c.phrases().any(|say| say == phrase)) else {
+/// "Adán, ponme mi canal": close to one of the user's phrases without being
+/// it. Asks "¿Quisiste decir «ver mi canal»?"; a yes runs it and remembers
+/// this way of saying it (so it is never asked twice), a no does nothing and
+/// remembers nothing — the same road an app name walks in [`confirm_app`].
+async fn confirm_custom(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    heard: &str,
+    phrase: &str,
+    voice: &impl DesktopService,
+) {
+    ctx.events.state(request_id, WorkerState::Executing);
+    let Some(command) = command_for(ctx, phrase) else {
         ctx.events.fail(request_id, format!("la orden «{phrase}» ya no está en la configuración"));
         return;
     };
+    let yes = voice
+        .ask_confirmation(&format!("¿Quisiste decir «{}»?", command.say), &format!("Oí «{heard}»"))
+        .await
+        .unwrap_or(false);
+    if !yes {
+        ctx.events.fail(request_id, format!("no hago nada: «{heard}» no era «{}»", command.say));
+        return;
+    }
+    let phrase = eva_intent::intent::normalize_phrase(heard);
+    match ctx.store.learn_command_phrase(&phrase, &command.say, "confirmed") {
+        Ok(()) => tracing::info!(%phrase, command = %command.say, "aprendido: así dices esta orden"),
+        Err(e) => tracing::warn!("no se pudo guardar que «{heard}» es «{}»: {e}", command.say),
+    }
+    let now_custom = serde_json::to_value(Intent::Custom { phrase: phrase.clone() }).unwrap_or(serde_json::Value::Null);
+    run_command(ctx, request_id, &command, now_custom).await;
+}
+
+/// Runs one of the user's own `[[commands]]`. Each thing it does goes through
+/// the gateway, so `[gateway.voice]` rules it like any other command.
+async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, intent_json: serde_json::Value) {
+    match command_for(ctx, phrase) {
+        Some(command) => run_command(ctx, request_id, &command, intent_json).await,
+        None => ctx.events.fail(request_id, format!("la orden «{phrase}» ya no está en la configuración")),
+    }
+}
+
+async fn run_command(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    command: &eva_config::CommandConfig,
+    intent_json: serde_json::Value,
+) {
+    use eva_config::CommandAction;
+
+    let phrase = command.say.as_str();
     match command.action() {
         Ok(CommandAction::Insert(text)) => crate::dictation::insert_text(ctx, request_id, text, intent_json).await,
         Ok(CommandAction::Task(prompt)) => {
@@ -133,7 +256,7 @@ async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, in
             let voice = ctx.voice.scoped_to_intent(intent_json);
             let mut problems = Vec::new();
             for target in targets {
-                if let Err(problem) = open_target(ctx, &voice, target).await {
+                if let Err(problem) = run_step(ctx, &voice, target).await {
                     problems.push(problem);
                 }
             }
@@ -147,14 +270,26 @@ async fn run_custom(ctx: &Arc<WorkerContext>, request_id: Uuid, phrase: &str, in
     }
 }
 
-/// Opens one app or address the way "Adán, abre …" would — same grammar, same
-/// app aliases, same URL detection — so a custom command cannot understand
-/// a name differently from a spoken one.
-async fn open_target(ctx: &WorkerContext, voice: &impl DesktopService, target: &str) -> Result<(), String> {
-    let outcome = match eva_intent::intent::parse(&format!("abre {target}"), &ctx.app_index.current()) {
-        Intent::OpenApp { app } => voice.open_app(&app).await,
-        Intent::OpenUrl { url } => voice.open_url(&url).await,
-        _ => return Err(format!("no encontré «{target}» entre tus apps ni parece una dirección web")),
+/// Does one step of a command: opens an app or address the way "Adán, abre …"
+/// would — same grammar, same app aliases, same URL detection, so a command
+/// cannot understand a name differently from a spoken one — or searches,
+/// plays a video, controls the music. Each goes through the gateway.
+pub(crate) async fn run_step(ctx: &WorkerContext, voice: &eva_mcp::LocalService, line: &str) -> Result<(), String> {
+    use eva_intent::Step;
+    use eva_macos::MediaCommand;
+
+    let outcome = match Step::parse(line) {
+        Step::Search(query) => voice.web_search(&query).await,
+        Step::Youtube(query) => voice.youtube_play(&query).await,
+        Step::Play(target) => voice.media(MediaCommand::Play(target)).await,
+        Step::Pause => voice.media(MediaCommand::Pause).await,
+        Step::Next => voice.media(MediaCommand::Next).await,
+        Step::Previous => voice.media(MediaCommand::Previous).await,
+        Step::Open(target) => match eva_intent::intent::parse(&format!("abre {target}"), &ctx.app_index.current()) {
+            Intent::OpenApp { app } => voice.open_app(&app).await,
+            Intent::OpenUrl { url } => voice.open_url(&url).await,
+            _ => return Err(format!("no encontré «{target}» entre tus apps ni parece una dirección web")),
+        },
     };
     outcome.map_err(|e| match e {
         ServiceError::Refused(message) | ServiceError::Failed(message) => message,
@@ -237,6 +372,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_search_step_searches_the_web_between_the_things_it_opens() {
+        let mut rig =
+            with_commands("[[commands]]\nsay = \"mi canal\"\nopen = [\"brave\", \"buscar: lofi hip hop\", \"https://youtube.com/@mio\"]")
+                .build();
+        rig.run(typed("Adán, mi canal")).await;
+
+        let calls = rig.desktop.calls();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0], Call::OpenApp("Brave Browser".to_string()));
+        assert!(matches!(&calls[1], Call::OpenUrl(url) if url.contains("google.com/search") && url.contains("lofi")));
+        assert_eq!(calls[2], Call::OpenUrl("https://youtube.com/@mio".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_phrase_close_to_a_command_asks_and_a_yes_runs_it_and_remembers_the_way_it_was_said() {
+        let mut rig =
+            with_commands("[[commands]]\nsay = \"ver mi canal favorito\"\nopen = [\"https://youtube.com/@mio\"]")
+                .build();
+        let events = rig.run_answering(typed("Adán, ponme mi canal favorito"), true).await;
+
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenUrl("https://youtube.com/@mio".to_string())]);
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+        let learned = rig.ctx.store.list_command_phrases().unwrap();
+        assert_eq!(learned.len(), 1);
+        assert_eq!(
+            (learned[0].phrase.as_str(), learned[0].command.as_str()),
+            ("ponme mi canal favorito", "ver mi canal favorito")
+        );
+
+        // The next time it is exact: `run` answers no confirmation, so a
+        // question would have left this run without a second call.
+        rig.run(typed("adan, Ponme mi canal favorito.")).await;
+        assert_eq!(rig.desktop.calls().len(), 2, "no question the second time: it just runs");
+    }
+
+    #[tokio::test]
+    async fn a_no_to_the_question_does_nothing_and_remembers_nothing() {
+        let mut rig =
+            with_commands("[[commands]]\nsay = \"ver mi canal favorito\"\nopen = [\"https://youtube.com/@mio\"]")
+                .build();
+        let events = rig.run_answering(typed("Adán, ponme mi canal favorito"), false).await;
+
+        assert!(rig.desktop.calls().is_empty());
+        assert!(rig.ctx.store.list_command_phrases().unwrap().is_empty());
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn controls_of_the_music_and_a_command_with_music_steps_go_through_the_gateway() {
+        let mut rig = with_commands(
+            "[[commands]]\nsay = \"pon musica chill\"\nopen = [\"spotify\", \"reproducir: spotify:playlist:37i9dQZF1DXcBWIGoYBM5M\", \"siguiente:\"]",
+        )
+        .build();
+        rig.run(typed("Adán, pausa la música")).await;
+        rig.run(typed("Adán, siguiente canción")).await;
+        rig.run(typed("Adán, dale play")).await;
+        rig.run(typed("Adán, pon música chill")).await;
+
+        let calls = rig.desktop.calls();
+        assert_eq!(calls[0], Call::Media("pausar la música".to_string()));
+        assert_eq!(calls[1], Call::Media("siguiente canción".to_string()));
+        assert_eq!(calls[2], Call::Media("reanudar la música".to_string()));
+        assert!(
+            calls.contains(&Call::Media("reproducir spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_string())),
+            "{calls:?}"
+        );
+        let audit = rig.ctx.store.recent_audit(20).unwrap();
+        assert!(audit.iter().any(|a| a.intent_json["action"] == "media"), "the audit says it was music");
+    }
+
+    #[tokio::test]
     async fn the_gateway_policy_rules_custom_commands_too() {
         let mut rig = with_commands("[[commands]]\nsay = \"mi correo\"\ninsert = \"yo@ejemplo.com\"")
             .configure(|c| {
@@ -302,7 +508,7 @@ mod tests {
             crate::apps::AppCatalog::fixed(eva_intent::AppIndex::new(vec![eva_intent::AppEntry::new("Spotify")]));
         let mut rig = Rig::builder().apps(apps).build();
 
-        let declined = rig.run_answering(typed("Adán, abre Spotifi"), false).await;
+        let declined = rig.run_answering(typed("Adán, abre Spotifly"), false).await;
         assert!(
             declined
                 .iter()
@@ -312,11 +518,11 @@ mod tests {
         assert!(rig.desktop.calls().is_empty(), "a no opens nothing");
         assert!(rig.ctx.store.list_app_aliases().unwrap().is_empty(), "and teaches nothing");
 
-        rig.run_answering(typed("Adán, abre Spotifi"), true).await;
+        rig.run_answering(typed("Adán, abre Spotifly"), true).await;
         assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Spotify".to_string())]);
-        assert_eq!(rig.ctx.store.list_app_aliases().unwrap(), vec![("spotifi".to_string(), "Spotify".to_string())]);
+        assert_eq!(rig.ctx.store.list_app_aliases().unwrap(), vec![("spotifly".to_string(), "Spotify".to_string())]);
 
-        let again = rig.run(typed("Adán, abre Spotifi")).await;
+        let again = rig.run(typed("Adán, abre Spotifly")).await;
         assert!(!again.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })), "no second question");
         assert_eq!(rig.desktop.calls().len(), 2);
     }
@@ -363,6 +569,91 @@ mod tests {
                     .to_string()
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn brave_said_the_ways_the_log_shows_opens_it_or_offers_it_and_remembers_the_offer() {
+        let mut rig = Rig::new();
+        // Heard by the speech model as "Breve", "Brive", with a comma after the verb…
+        for said in ["Adán, abre, breve", "Adán, abre, Brive", "Adán Abre Breve"] {
+            rig.run(typed(said)).await;
+        }
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string()); 3]);
+
+        // …and "braille" is one consonant off: close enough to open and remember.
+        let opened = rig.run(typed("Adán, abre braille")).await;
+        assert!(!opened.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })), "{opened:?}");
+        assert_eq!(rig.desktop.calls().len(), 4);
+        assert_eq!(
+            rig.ctx.store.list_app_aliases().unwrap(),
+            vec![("braille".to_string(), "Brave Browser".to_string())]
+        );
+    }
+
+    /// A fake local model that always answers `content`.
+    fn fake_model(content: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = stream.read(&mut [0u8; 8192]);
+                let payload = serde_json::json!({"choices": [{"message": {"content": content}}]}).to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn the_local_model_resolves_what_nothing_else_could_and_the_pick_is_remembered() {
+        let url = fake_model("Brave Browser");
+        let mut rig = Rig::builder()
+            .configure(|c| {
+                c.resolver.enabled = true;
+                c.resolver.base_url = url;
+            })
+            .build();
+
+        // "brayle" looks like Brave: opened at once, and learned.
+        let events = rig.run(typed("Adán, abre brayle")).await;
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })), "{events:?}");
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+        assert_eq!(
+            rig.ctx.store.list_app_aliases().unwrap(),
+            vec![("brayle".to_string(), "Brave Browser".to_string())]
+        );
+
+        // A pick that looks nothing like what was said is asked about first, and a no teaches nothing.
+        let asked = rig.run_answering(typed("Adán, abre egipto"), false).await;
+        assert!(
+            asked.iter().any(
+                |e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("Brave Browser"))
+            ),
+            "{asked:?}"
+        );
+        assert_eq!(rig.desktop.calls().len(), 1);
+        assert_eq!(rig.ctx.store.list_app_aliases().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_knows_no_such_app_leaves_the_app_store_offer() {
+        let url = fake_model("NINGUNA");
+        let mut rig = Rig::builder()
+            .configure(|c| {
+                c.resolver.enabled = true;
+                c.resolver.base_url = url;
+            })
+            .build();
+        let declined = rig.run_answering(typed("Adán, abre Photoshop"), false).await;
+        assert!(declined.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("no está instalada"))), "{declined:?}");
     }
 
     #[tokio::test]

@@ -16,7 +16,11 @@ fn main() {
     let overlay = Overlay::new(mtm);
 
     let states = [
-        ("escuchando", "Escuchando", Tone::Neutral, Activity::Listening),
+        ("escuchando", "", Tone::Neutral, Activity::Listening),
+        ("comando_escuchando", "Eva", Tone::Command, Activity::Listening),
+        ("puntos", "", Tone::Neutral, Activity::Thinking),
+        ("enviando", "", Tone::Neutral, Activity::Sending(120)),
+        ("comando", "Ejecutando en Codex", Tone::Command, Activity::Executing),
         ("pensando", "Pensando", Tone::Neutral, Activity::Thinking),
         ("ejecutando", "Ejecutando", Tone::Neutral, Activity::Executing),
         ("listo", "✓ Listo", Tone::Ok, Activity::None),
@@ -55,6 +59,9 @@ fn main() {
         (name, OverlayContent { text: text.to_string(), tone, activity, icon, choices: Vec::new() })
     }));
     for (name, content) in &mut shots {
+        if *name == "enviando" {
+            content.icon = Icon::Symbol("arrow.up");
+        }
         if *name == "pregunta" {
             let choice = |label: &str, shortcut: &str, primary| Choice {
                 label: label.to_string(),

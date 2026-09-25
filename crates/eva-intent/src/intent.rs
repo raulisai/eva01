@@ -108,6 +108,25 @@ pub enum Intent {
         phrase: String,
     },
 
+    /// "Adán, ponme mi canal favorito": not one of the user's phrases word for
+    /// word, but close to one. The caller asks "¿Quisiste decir «ver mi canal
+    /// favorito»?" and, on a yes, runs that command and remembers this way of
+    /// saying it, so next time it is exact — the same road `ConfirmApp` walks.
+    ConfirmCustom {
+        /// What was heard, as said.
+        heard: String,
+        /// The user's phrase it is probably meant to be.
+        phrase: String,
+    },
+
+    /// "Adán, pausa la música", "siguiente canción": controls the music that is
+    /// already playing. Carries the step as its line (`pausar:`, `siguiente:`,
+    /// `anterior:`, `reproducir:`; see [`crate::steps`]).
+    Media {
+        /// The step's line.
+        step: String,
+    },
+
     /// "Adán, continúa" (or "…y agrega también X") — resume the last agent
     /// session for the active project, per `docs/PLAN.md` fase 7. Which
     /// session that is, and whether one even exists, is `eva-worker`'s job
@@ -128,18 +147,74 @@ impl Intent {
     }
 }
 
+/// The words of `text`, without accents, case or punctuation.
+fn words_of(text: &str) -> Vec<String> {
+    eva_text::fold_diacritics(text)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `text` as the words it is remembered by: no accents, capitals or
+/// punctuation, one space between words ("¡Ponme mi canal!" → "ponme mi canal").
+pub fn normalize_phrase(text: &str) -> String {
+    words_of(text).join(" ")
+}
+
 /// Whether `spoken` is the user's `phrase`: the same words, whatever the
 /// accents, case or punctuation the speech model happened to give them.
 pub fn is_phrase(spoken: &str, phrase: &str) -> bool {
-    let words = |text: &str| -> Vec<String> {
-        eva_text::fold_diacritics(text)
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .map(str::to_string)
-            .collect()
+    let wanted = words_of(phrase);
+    !wanted.is_empty() && words_of(spoken) == wanted
+}
+
+/// How close `spoken` is to being `phrase`, from 0 (nothing alike) to 1 (the
+/// same words). Two ways of being close count: the letters are nearly the
+/// same ("ver mi canal favorite"), or most of the words are ("ponme mi canal
+/// favorito" for "ver mi canal favorito"). Longer sentences that merely
+/// *start* like the phrase ("mi correo es un desastre") stay far away.
+pub fn phrase_closeness(spoken: &str, phrase: &str) -> f64 {
+    let (heard, wanted) = (words_of(spoken), words_of(phrase));
+    if heard.is_empty() || wanted.is_empty() {
+        return 0.0;
+    }
+    let letters = strsim::normalized_levenshtein(&heard.join(" "), &wanted.join(" "));
+    // A single word has no "most of the words": only its letters can say.
+    if wanted.len() < 2 || heard.len() < 2 {
+        return letters;
+    }
+    let alike = |a: &str, b: &str| {
+        a == b || (a.chars().count().min(b.chars().count()) >= 4 && strsim::normalized_levenshtein(a, b) >= 0.8)
     };
-    let wanted = words(phrase);
-    !wanted.is_empty() && words(spoken) == wanted
+    let mut free: Vec<&String> = wanted.iter().collect();
+    let shared = heard
+        .iter()
+        .filter(|word| match free.iter().position(|other| alike(word, other)) {
+            Some(at) => {
+                free.swap_remove(at);
+                true
+            }
+            None => false,
+        })
+        .count();
+    let words = 2.0 * shared as f64 / (heard.len() + wanted.len()) as f64;
+    letters.max(words)
+}
+
+/// How close is close enough to ask "¿quisiste decir…?" — never to just do it.
+pub const NEAR_PHRASE: f64 = 0.75;
+
+/// The phrase in `phrases` that `spoken` is nearest to, if any is near enough
+/// to ask about. An exact match is not this function's business (see
+/// [`is_phrase`]).
+pub fn nearest_phrase<'a>(spoken: &str, phrases: &[&'a str]) -> Option<&'a str> {
+    phrases
+        .iter()
+        .map(|phrase| (*phrase, phrase_closeness(spoken, phrase)))
+        .filter(|(_, score)| *score >= NEAR_PHRASE)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(phrase, _)| phrase)
 }
 
 /// Parses `command_text` (text with the wake word already stripped by
@@ -174,6 +249,9 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
     }
 
     let plainly = without_courtesy(trimmed);
+    if let Some(step) = media_step(plainly) {
+        return Intent::Media { step: step.to_string() };
+    }
     for (verb, build) in RULES {
         if let Some(rest) = strip_verb(plainly, verb) {
             return build(rest, app_index);
@@ -181,6 +259,98 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
     }
 
     Intent::AgentTask { prompt: trimmed.to_string(), provider: None }
+}
+
+/// Ways of saying each control of the music player, as `normalize_phrase`
+/// writes them. Whole phrases only: "pon música chill" is not one of these (it
+/// names something to play, which is the planner's job), and neither is a
+/// sentence that merely contains "siguiente".
+const MEDIA_PHRASES: &[(&str, &[&str])] = &[
+    (
+        "pausar:",
+        &[
+            "pausa",
+            "pausa la musica",
+            "pausa la cancion",
+            "pausa la reproduccion",
+            "pausar",
+            "pausar la musica",
+            "pausar la cancion",
+            "pon pausa",
+            "pon en pausa la musica",
+            "deten la musica",
+            "deten la cancion",
+            "detener la musica",
+            "para la musica",
+            "para la cancion",
+            "pausa spotify",
+            "pausa la musica de spotify",
+        ],
+    ),
+    (
+        "siguiente:",
+        &[
+            "siguiente",
+            "siguiente cancion",
+            "siguiente tema",
+            "siguiente pista",
+            "la siguiente",
+            "la siguiente cancion",
+            "cancion siguiente",
+            "pasa la cancion",
+            "pasa a la siguiente",
+            "pasa a la siguiente cancion",
+            "salta la cancion",
+            "salta esta cancion",
+            "cambia la cancion",
+            "cambia de cancion",
+            "otra cancion",
+            "pon la siguiente cancion",
+            "pon la siguiente",
+        ],
+    ),
+    (
+        "anterior:",
+        &[
+            "anterior",
+            "cancion anterior",
+            "la anterior",
+            "la cancion anterior",
+            "pon la anterior",
+            "pon la cancion anterior",
+            "vuelve a la anterior",
+            "vuelve a la cancion anterior",
+            "regresa a la cancion anterior",
+            "cancion de antes",
+        ],
+    ),
+    (
+        "reproducir:",
+        &[
+            "reproduce",
+            "reproducir",
+            "play",
+            "dale play",
+            "dale al play",
+            "pon play",
+            "reanuda",
+            "reanuda la musica",
+            "reanudar la musica",
+            "continua la musica",
+            "sigue con la musica",
+            "pon musica",
+            "pon la musica",
+            "toca musica",
+            "pon algo de musica",
+        ],
+    ),
+];
+
+/// The step line for `text` when it is exactly a control of the music player.
+fn media_step(text: &str) -> Option<&'static str> {
+    let said = normalize_phrase(text);
+    let said = said.strip_suffix(" por favor").unwrap_or(&said);
+    MEDIA_PHRASES.iter().find(|(_, phrases)| phrases.contains(&said)).map(|(step, _)| *step)
 }
 
 /// One rule: a verb (and its common variants) to recognize at the start of
@@ -296,6 +466,7 @@ const NAME_LEADS: &[&str] = &[
     "el programa de ",
     "el programa ",
     "el ",
+    "a ",
     "la ",
     "los ",
     "las ",
@@ -371,8 +542,14 @@ fn find_app<'a>(rest: &str, app_index: &'a AppIndex) -> Option<(&'a crate::apps:
     app_index.find_guess(rest).or_else(|| app_index.find_guess(app_name(rest)))
 }
 
+/// "abre, brave" and "abre. Brave": what the speech model puts between the
+/// verb and the name is not part of the name.
+fn without_leading_punctuation(rest: &str) -> &str {
+    rest.trim_start_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '¿' | '¡'))
+}
+
 fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
-    let rest = without_closing_punctuation(rest);
+    let rest = without_closing_punctuation(without_leading_punctuation(rest));
     if let Some(url) = crate::spoken::spoken_url(rest) {
         return Intent::OpenUrl { url };
     }
@@ -393,7 +570,7 @@ fn build_open(rest: &str, app_index: &AppIndex) -> Intent {
 }
 
 fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
-    let rest = without_closing_punctuation(rest);
+    let rest = without_closing_punctuation(without_leading_punctuation(rest));
     match find_app(rest, app_index) {
         Some((app, true)) => {
             Intent::ConfirmApp { heard: app_name(rest).to_string(), app: app.canonical_name.clone(), opening: false }

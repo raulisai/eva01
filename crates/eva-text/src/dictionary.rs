@@ -22,6 +22,11 @@
 
 use crate::normalize::{collapse_whitespace, fold_diacritics, match_case, split_punctuation};
 
+/// A word as replacements compare it: no accents, no capitals.
+fn fold_word(word: &str) -> String {
+    fold_diacritics(word).to_lowercase()
+}
+
 /// One entry in the personal dictionary.
 struct CustomWord {
     /// The text to output when this word is matched, in its preferred form
@@ -54,7 +59,19 @@ fn is_distinctive(display: &str, fold_key: &str) -> bool {
 /// A personal dictionary of words to fuzzy-correct transcripts against.
 pub struct Dictionary {
     words: Vec<CustomWord>,
+    /// Phrases the user reported as misheard, with what they meant.
+    replacements: Vec<Replacement>,
 }
+
+/// "Heard X, meant Y", taught by reporting a dictation.
+struct Replacement {
+    /// The folded, lowercase words of what was heard.
+    heard: Vec<String>,
+    meant: String,
+}
+
+/// The longest phrase a replacement can be, in words.
+const LONGEST_REPLACEMENT: usize = 5;
 
 impl Dictionary {
     /// Builds a dictionary from a list of display-form words. Empty or
@@ -78,7 +95,64 @@ impl Dictionary {
                 Some(CustomWord { display, fold_key, distinctive })
             })
             .collect();
-        Dictionary { words }
+        Dictionary { words, replacements: Vec::new() }
+    }
+
+    /// Adds what the user taught by reporting mistakes: each `(heard, meant)`
+    /// replaces the phrase `heard` — compared without accents or capitals,
+    /// whole words only — by `meant` wherever it appears. Longer phrases win
+    /// over shorter ones that start at the same word.
+    #[must_use]
+    pub fn with_replacements<I, H, M>(mut self, pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (H, M)>,
+        H: AsRef<str>,
+        M: AsRef<str>,
+    {
+        for (heard, meant) in pairs {
+            let words: Vec<String> = heard.as_ref().split_whitespace().map(fold_word).collect();
+            if words.is_empty() || words.len() > LONGEST_REPLACEMENT || words.iter().any(String::is_empty) {
+                continue;
+            }
+            self.replacements.push(Replacement { heard: words, meant: meant.as_ref().trim().to_string() });
+        }
+        self.replacements.sort_by_key(|r| std::cmp::Reverse(r.heard.len()));
+        self
+    }
+
+    /// Applies only the learned replacements (no fuzzy dictionary matching):
+    /// what a command is read with before it is interpreted.
+    pub fn replace_learned(&self, text: &str) -> String {
+        if self.replacements.is_empty() || text.trim().is_empty() {
+            return text.to_string();
+        }
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let folded: Vec<String> = tokens.iter().map(|t| fold_word(split_punctuation(t).1)).collect();
+        let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            let hit = self.replacements.iter().find(|r| {
+                let n = r.heard.len();
+                i + n <= tokens.len()
+                    && folded[i..i + n] == r.heard[..]
+                    // Punctuation inside the phrase means it was not one phrase.
+                    && tokens[i..i + n - 1].iter().all(|t| split_punctuation(t).2.is_empty())
+            });
+            match hit {
+                Some(r) => {
+                    let n = r.heard.len();
+                    let (prefix, _, _) = split_punctuation(tokens[i]);
+                    let (_, _, suffix) = split_punctuation(tokens[i + n - 1]);
+                    out.push(format!("{prefix}{}{suffix}", r.meant));
+                    i += n;
+                }
+                None => {
+                    out.push(tokens[i].to_string());
+                    i += 1;
+                }
+            }
+        }
+        out.join(" ")
     }
 
     /// Returns `true` if the dictionary has no entries.
@@ -96,8 +170,13 @@ impl Dictionary {
     /// accepts an exact fold match, lower values accept looser typos. `0.88`
     /// is a reasonable starting point for short technical terms and names.
     pub fn correct(&self, text: &str, threshold: f64) -> String {
-        if self.words.is_empty() || text.trim().is_empty() {
+        if text.trim().is_empty() || (self.words.is_empty() && self.replacements.is_empty()) {
             return text.to_string();
+        }
+        let learned = self.replace_learned(text);
+        let text = learned.as_str();
+        if self.words.is_empty() {
+            return collapse_whitespace(text);
         }
 
         let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -219,6 +298,22 @@ mod tests {
     fn corrects_an_unaccented_dictation_to_the_accented_display_form() {
         let dict = Dictionary::new(["García"]);
         assert_eq!(dict.correct("hola Garcia como estas", 0.88), "hola García como estas");
+    }
+
+    #[test]
+    fn a_learned_replacement_applies_to_whole_words_and_keeps_punctuation() {
+        let dict =
+            Dictionary::new(Vec::<String>::new()).with_replacements([("todo eso", "todo esto"), ("adam", "Adán")]);
+        assert_eq!(dict.correct("Adam, abre Brave y todo eso.", 0.88), "Adán, abre Brave y todo esto.");
+        assert_eq!(dict.correct("madam todo esos", 0.88), "madam todo esos");
+        assert_eq!(dict.replace_learned("¿ADAM?"), "¿Adán?");
+    }
+
+    #[test]
+    fn the_longer_learned_phrase_wins_and_a_broken_phrase_does_not_match() {
+        let dict = Dictionary::new(Vec::<String>::new()).with_replacements([("a b", "X"), ("a b c", "Y"), ("d", "Z")]);
+        assert_eq!(dict.replace_learned("a b c"), "Y");
+        assert_eq!(dict.replace_learned("a, b"), "a, b");
     }
 
     #[test]

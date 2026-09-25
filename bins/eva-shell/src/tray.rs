@@ -5,7 +5,7 @@
 use crate::icons;
 use crate::model::{short, TrayIcon, TrayView};
 use eva_ipc::{TaskInfo, TaskState};
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::TrayIconBuilder;
 
 /// Menu item ids the event loop reacts to.
@@ -14,10 +14,8 @@ pub mod id {
     pub const CANCEL_TASKS: &str = "cancel_tasks";
     /// Flag the last dictation as wrong.
     pub const FLAG_BAD: &str = "flag_bad";
-    /// Open `config.toml` in the default editor.
-    pub const OPEN_CONFIG: &str = "open_config";
-    /// Open the logs folder.
-    pub const OPEN_LOGS: &str = "open_logs";
+    /// Open the panel: history, dictionary, commands, settings and Doctor in one window.
+    pub const PANEL: &str = "panel";
     /// Quit EVA.
     pub const QUIT: &str = "quit";
 }
@@ -36,21 +34,47 @@ pub enum Item {
         /// Whether it can be clicked.
         enabled: bool,
     },
-    /// A submenu of labels.
+    /// A submenu, with lines of its own (labels, actions, dividers).
     Submenu {
         /// Its title.
         title: String,
         /// Its lines.
-        labels: Vec<String>,
+        items: Vec<Item>,
     },
     /// A divider.
     Separator,
 }
 
-/// The menu for `view`.
+/// The menu for `view`: the status, one **Tareas** submenu (what is running,
+/// then how the recent ones ended), and the few things done from the menu bar.
+/// Everything else — history, logs, settings, Doctor — lives in the panel.
 pub fn menu_spec(view: &TrayView) -> Vec<Item> {
     let mut items = vec![Item::Label(format!("EVA01 — {}", view.status)), Item::Separator];
+    items.push(Item::Submenu { title: tasks_title(view), items: tasks_items(view) });
+    items.extend([
+        Item::Separator,
+        Item::Action { id: id::FLAG_BAD, text: "Esto salió mal (último dictado)".to_string(), enabled: true },
+        Item::Action { id: id::PANEL, text: "Panel".to_string(), enabled: true },
+        Item::Separator,
+        Item::Action { id: id::QUIT, text: "Salir de EVA01".to_string(), enabled: true },
+    ]);
+    items
+}
 
+fn tasks_title(view: &TrayView) -> String {
+    match view.running.len() {
+        0 => "Tareas".to_string(),
+        n => format!("Tareas · ▶ {n} en curso"),
+    }
+}
+
+/// Inside the submenu: what is running (with a way to cancel it), a divider,
+/// then the recent ones — ✓ if they went well, ✗ if not.
+fn tasks_items(view: &TrayView) -> Vec<Item> {
+    let mut items = vec![Item::Label("En curso".to_string())];
+    if view.running.is_empty() {
+        items.push(Item::Label("   Ninguna".to_string()));
+    }
     for task in &view.running {
         items.push(Item::Label(format!(
             "▶ {} — {} ({})",
@@ -59,26 +83,15 @@ pub fn menu_spec(view: &TrayView) -> Vec<Item> {
             age(task.age_secs)
         )));
     }
-    items.push(Item::Action {
-        id: id::CANCEL_TASKS,
-        text: "Cancelar tareas en curso".to_string(),
-        enabled: !view.running.is_empty(),
-    });
-    if !view.recent.is_empty() {
-        items.push(Item::Submenu {
-            title: "Tareas recientes".to_string(),
-            labels: view.recent.iter().map(recent_line).collect(),
-        });
+    if !view.running.is_empty() {
+        items.push(Item::Action { id: id::CANCEL_TASKS, text: "Cancelar tareas en curso".to_string(), enabled: true });
     }
-
-    items.extend([
-        Item::Separator,
-        Item::Action { id: id::FLAG_BAD, text: "Esto salió mal (último dictado)".to_string(), enabled: true },
-        Item::Action { id: id::OPEN_CONFIG, text: "Abrir configuración…".to_string(), enabled: true },
-        Item::Action { id: id::OPEN_LOGS, text: "Abrir carpeta de registros".to_string(), enabled: true },
-        Item::Separator,
-        Item::Action { id: id::QUIT, text: "Salir de EVA01".to_string(), enabled: true },
-    ]);
+    items.push(Item::Separator);
+    items.push(Item::Label("Recientes".to_string()));
+    if view.recent.is_empty() {
+        items.push(Item::Label("   Aún no hay tareas".to_string()));
+    }
+    items.extend(view.recent.iter().map(|task| Item::Label(recent_line(task))));
     items
 }
 
@@ -158,21 +171,25 @@ impl Tray {
     }
 }
 
+fn make_item(item: &Item) -> Box<dyn IsMenuItem> {
+    match item {
+        Item::Label(text) => Box::new(MenuItem::new(text, false, None)),
+        Item::Action { id, text, enabled } => Box::new(MenuItem::with_id(*id, text, *enabled, None)),
+        Item::Separator => Box::new(PredefinedMenuItem::separator()),
+        Item::Submenu { title, items } => {
+            let submenu = Submenu::new(title, true);
+            for child in items {
+                let _ = submenu.append(make_item(child).as_ref());
+            }
+            Box::new(submenu)
+        }
+    }
+}
+
 fn build_menu(items: &[Item]) -> Menu {
     let menu = Menu::new();
     for item in items {
-        let _ = match item {
-            Item::Label(text) => menu.append(&MenuItem::new(text, false, None)),
-            Item::Action { id, text, enabled } => menu.append(&MenuItem::with_id(*id, text, *enabled, None)),
-            Item::Separator => menu.append(&PredefinedMenuItem::separator()),
-            Item::Submenu { title, labels } => {
-                let submenu = Submenu::new(title, true);
-                for label in labels {
-                    let _ = submenu.append(&MenuItem::new(label, false, None));
-                }
-                menu.append(&submenu)
-            }
-        };
+        let _ = menu.append(make_item(item).as_ref());
     }
     menu
 }
@@ -198,14 +215,32 @@ mod tests {
         TrayView { icon: TrayIcon::Idle, status: "Listo".into(), running, recent }
     }
 
-    fn cancel_item(items: &[Item]) -> (bool, String) {
+    /// The lines inside the Tareas submenu.
+    fn tasks(items: &[Item]) -> &[Item] {
         items
             .iter()
             .find_map(|i| match i {
-                Item::Action { id, text, enabled } if *id == id::CANCEL_TASKS => Some((*enabled, text.clone())),
+                Item::Submenu { items, .. } => Some(items.as_slice()),
                 _ => None,
             })
-            .expect("the cancel item is always in the menu")
+            .expect("the menu always has the Tareas submenu")
+    }
+
+    fn cancel_item(items: &[Item]) -> Option<bool> {
+        tasks(items).iter().find_map(|i| match i {
+            Item::Action { id, enabled, .. } if *id == id::CANCEL_TASKS => Some(*enabled),
+            _ => None,
+        })
+    }
+
+    fn labels(items: &[Item]) -> Vec<&str> {
+        tasks(items)
+            .iter()
+            .filter_map(|i| match i {
+                Item::Label(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -222,45 +257,66 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_tasks_is_only_offered_when_there_is_something_to_cancel() {
-        assert!(!cancel_item(&menu_spec(&view(vec![], vec![]))).0);
-        let running = vec![task("codex", "refactoriza", TaskState::Running, None, 5)];
-        assert!(cancel_item(&menu_spec(&view(running, vec![]))).0);
+    fn the_menu_is_status_tasks_and_a_few_actions_with_no_logs_entry() {
+        let items = menu_spec(&view(vec![], vec![]));
+        assert_eq!(items.iter().filter(|i| matches!(i, Item::Submenu { .. })).count(), 1);
+        let texts: Vec<&str> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Action { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["Esto salió mal (último dictado)", "Panel", "Salir de EVA01"]);
     }
 
     #[test]
-    fn a_running_task_shows_who_what_and_for_how_long() {
+    fn cancelling_tasks_is_only_offered_when_there_is_something_to_cancel() {
+        assert_eq!(cancel_item(&menu_spec(&view(vec![], vec![]))), None);
+        let running = vec![task("codex", "refactoriza", TaskState::Running, None, 5)];
+        assert_eq!(cancel_item(&menu_spec(&view(running, vec![]))), Some(true));
+    }
+
+    #[test]
+    fn an_idle_menu_says_so_instead_of_showing_empty_sections() {
+        let items = menu_spec(&view(vec![], vec![]));
+        assert_eq!(labels(&items), ["En curso", "   Ninguna", "Recientes", "   Aún no hay tareas"]);
+        assert!(matches!(&items[2], Item::Submenu { title, .. } if title == "Tareas"));
+    }
+
+    #[test]
+    fn a_running_task_shows_who_what_and_for_how_long_and_the_title_counts_it() {
         let running = vec![task("claude_code", "arregla el login", TaskState::Running, None, 190)];
         let items = menu_spec(&view(running, vec![]));
-        assert!(items.contains(&Item::Label("▶ Claude — arregla el login (3 min)".into())), "{items:?}");
+        assert!(labels(&items).contains(&"▶ Claude — arregla el login (3 min)"), "{items:?}");
+        assert!(matches!(&items[2], Item::Submenu { title, .. } if title == "Tareas · ▶ 1 en curso"));
     }
 
     #[test]
-    fn recent_tasks_are_a_submenu_marked_by_outcome() {
+    fn running_tasks_come_first_and_recent_ones_are_marked_by_outcome() {
+        let running = vec![task("codex", "refactoriza", TaskState::Running, None, 5)];
         let recent = vec![
             task("codex", "agrega tests", TaskState::Succeeded, Some("3 archivos"), 60),
             task("codex", "borra la cache", TaskState::Failed, None, 90),
         ];
-        let items = menu_spec(&view(vec![], recent));
-        let Some(Item::Submenu { labels, .. }) = items.iter().find(|i| matches!(i, Item::Submenu { .. })) else {
-            panic!("expected a submenu");
-        };
-        assert_eq!(labels[0], "✓ Codex — agrega tests → 3 archivos");
-        assert_eq!(labels[1], "✗ Codex — borra la cache");
-    }
-
-    #[test]
-    fn with_no_recent_tasks_there_is_no_empty_submenu() {
-        assert!(!menu_spec(&view(vec![], vec![])).iter().any(|i| matches!(i, Item::Submenu { .. })));
+        let items = menu_spec(&view(running, recent));
+        assert_eq!(
+            labels(&items),
+            [
+                "En curso",
+                "▶ Codex — refactoriza (menos de 1 min)",
+                "Recientes",
+                "✓ Codex — agrega tests → 3 archivos",
+                "✗ Codex — borra la cache",
+            ]
+        );
     }
 
     #[test]
     fn a_very_long_prompt_is_cut_to_fit_a_menu() {
         let running = vec![task("codex", &"palabra ".repeat(40), TaskState::Running, None, 1)];
         let items = menu_spec(&view(running, vec![]));
-        let Some(Item::Label(line)) = items.iter().find(|i| matches!(i, Item::Label(t) if t.starts_with('▶'))) else {
-            panic!("expected the task line");
-        };
+        let line = labels(&items).into_iter().find(|l| l.starts_with('▶')).expect("the task line");
         assert!(line.chars().count() < 80, "{line}");
     }
 

@@ -38,8 +38,8 @@ pub const BUILTINS: &[Builtin] = &[
     },
     Builtin {
         say: "abre <app mal dicha>",
-        does: "si suena parecido a una app tuya, pregunta «¿quisiste decir…?»; al confirmar lo recuerda y la próxima vez no pregunta",
-        example: "abre Spotifi",
+        does: "si suena igual que una app tuya («breve», «zafarí»), la abre; si solo se le parece, pregunta «¿quisiste decir…?» y al confirmar lo recuerda",
+        example: "abre Spotifly",
         kind: "confirm_app",
     },
     Builtin {
@@ -59,6 +59,18 @@ pub const BUILTINS: &[Builtin] = &[
         does: "busca en la web; justo después de abrir YouTube, Spotify, GitHub… busca ahí (5 s, sin decir «Eva»)",
         example: "busca el clima de mañana",
         kind: "web_search",
+    },
+    Builtin {
+        say: "pausa la música / siguiente canción / canción anterior / dale play",
+        does: "controla Spotify o Música, la que esté abierta (la primera vez macOS pide permiso de Automatización)",
+        example: "siguiente canción",
+        kind: "media",
+    },
+    Builtin {
+        say: "<un pedido con varios pasos>",
+        does: "«abre YouTube y busca música chill», «pon música para trabajar»: el modelo local propone los pasos, te los muestra y, si dices que sí, los ejecuta",
+        example: "agrega tests al login",
+        kind: "agent_task",
     },
     Builtin {
         say: "usa Claude / Codex y <tarea>",

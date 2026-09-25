@@ -166,6 +166,25 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
 23. **Un empaquetado con certificado propio fallaba de dos maneras** (encontrado al firmar con «EVA01 Local»): el
     Hardened Runtime impedía cargar la librería de Apple Intelligence (solo vale con un Developer ID real) y el CLI
     `eva` seguía apuntando a la ruta de compilación (`build-app.sh` solo reapuntaba `eva-worker`).
+24. **El texto que se perdía, medido con tu propia voz.** De 181 enunciados de un día de uso real, 28 salieron
+    vacíos (15 %), y en 9 de ellos alguna pasada sí había oído la frase. Un audio marcado dio vacío con el modelo
+    grande en todos los rellenos y volúmenes probados, mientras `canary-180m-flash` entendía «Adam abre Spotify y
+    busca canciones de Naruto»: la segunda opinión solo se pedía en clips de hasta 4 s y ese dura 5,6 s. Ahora un
+    audio con voz (`eva-audio::speech`) que el modelo grande deja vacío pregunta siempre al pequeño; un trozo con voz
+    que sale vacío en un dictado largo ya no se da por hecho (se reintenta al soltar, con el audio completo); los
+    bucles de 2 a 6 palabras se colapsan («nada más que» se llegó a pegar 60 veces); y las comillas que el
+    formateador añade y nadie dictó se quitan.
+25. **Modo entrenamiento y «Revisar».** Todo lo medido antes era voz sintética. Con el interruptor del panel
+    (o `[history] save_audio`), cada dictado y orden guarda su audio y lo que se oyó/pegó en `training/`; el panel los
+    muestra para escribir «lo que dije» y cada revisión es un par `.wav`/`.txt` que `eva-eval --corpus` lee tal cual.
+    Sin revisar se borra a los `keep_days`; nada se guarda en un campo de contraseña.
+26. **Órdenes propias, música y pedidos largos.** Las órdenes se crean en el panel con un asistente y se enseñan
+    hablando; cada orden acepta las formas de decirlo que le enseñes y aprende otras con un «sí» (`command_phrases`).
+    Nuevos pasos (`youtube:`, `reproducir:`, `pausar:`, `siguiente:`…) y control de Spotify/Música por AppleScript
+    (acción `media` del gateway). Lo que ninguna regla entiende («abre YouTube y busca música chill») lo planifica el
+    modelo local (Qwen vía Ollama): propone pasos, se validan contra lo dicho y contra las apps instaladas, se
+    muestran y solo con un sí se ejecutan por el gateway.
+
 ### Lo que falta y por qué
 
 Verificado de verdad (no solo con pruebas unitarias): el `.app` firmado con un certificado local arranca y `eva

@@ -151,6 +151,24 @@ impl LocalService {
         self.gated(ActionKind::WebSearch, query, move |d| d.open_url(&url)).await
     }
 
+    /// Controls the music player, by voice or as a step of a command.
+    pub async fn media(&self, command: eva_macos::MediaCommand) -> Outcome<()> {
+        let subject = command.describe();
+        self.gated(ActionKind::Media, &subject, move |d| d.media(&command)).await
+    }
+
+    /// "Pon música chill en YouTube": opens the first video of the search, so
+    /// it plays, instead of the page of results. When YouTube cannot be asked
+    /// (offline, or it changed its page) the results page opens as it always
+    /// did — a search that shows is better than one that fails.
+    pub async fn youtube_play(&self, query: &str) -> Outcome<()> {
+        let asked = query.to_string();
+        let url = tokio::task::spawn_blocking(move || crate::youtube::watch_url(&asked))
+            .await
+            .unwrap_or_else(|_| crate::youtube::results_url(query));
+        self.gated(ActionKind::OpenUrl, &url.clone(), move |d| d.open_url(&url)).await
+    }
+
     fn window_info(app: eva_macos::RunningAppInfo) -> WindowInfo {
         WindowInfo { name: app.localized_name, bundle_id: app.bundle_identifier, pid: app.pid, title: app.window_title }
     }

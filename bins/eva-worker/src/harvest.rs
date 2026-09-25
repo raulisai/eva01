@@ -84,6 +84,11 @@ impl Harvest {
         self.state().audio = Some((request_id, samples));
     }
 
+    /// The audio held for `request_id`, if it is the recording held.
+    pub fn audio_of(&self, request_id: Uuid) -> Option<Vec<f32>> {
+        self.state().audio.as_ref().filter(|(id, _)| *id == request_id).map(|(_, samples)| samples.clone())
+    }
+
     /// Holds the text the recording (or typed request) `request_id` produced.
     /// `transcript_id` is its row in the database, when it was saved there;
     /// `formatted` is what was pasted, or `None` for a command.

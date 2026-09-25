@@ -188,6 +188,22 @@ formatea el texto por adelantado. `eva-eval --streaming` mide solo lo que queda 
 última frase). Con el dictado sintético de 70 s y Apple Intelligence: **14,9 s → 3,2 s** (voz 6,6 s → 1,4 s,
 formato 8,3 s → 1,9 s), con el mismo texto salvo puntuación.
 
+## Modo entrenamiento: tu voz, no `say`
+
+Todas las cifras de arriba salen de voces sintéticas. Para medir cómo te oye **a ti**, activa el
+«Modo entrenamiento» en el panel (página «Revisar»): cada dictado y orden guarda su audio y lo que se oyó y se
+pegó en `~/Library/Application Support/EVA01/training/` (solo en tu Mac; nada si hay un campo de contraseña).
+En «Revisar» escuchas cada uno y escribes lo que dijiste (o pulsas «Estaba bien»): eso crea el `.txt` de
+referencia. Lo sin revisar se borra a los `[history] keep_days`; lo revisado es el corpus y se queda.
+
+```bash
+EVA_CANARY_MODEL_DIR=… cargo run --release -p eva-eval -- --corpus ~/Library/Application\ Support/EVA01/training \
+  --raw --wake-word Eva --second-opinion ~/Library/Application\ Support/EVA01/models/canary-180m-flash
+```
+
+Con unas decenas de revisados se compara el modelo actual con las alternativas (mismo comando, otro
+`EVA_CANARY_MODEL_DIR` o `EVA_STT_MODEL_PATH`), con datos tuyos.
+
 ## Cómo cosechar muestras nuevas
 
 1. Usa EVA01 normalmente.

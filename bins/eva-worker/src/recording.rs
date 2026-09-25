@@ -4,7 +4,7 @@
 
 use crate::context::{Capture, RecordingSession, WorkerContext};
 use eva_audio::CaptureHandle;
-use eva_ipc::WorkerState;
+use eva_ipc::{WorkerState, WorkerToShell};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -24,6 +24,28 @@ const SILENCE_PEAK: f32 = 0.01;
 
 /// Shorter than this (a quarter second at 16 kHz) is a tap, not speech.
 const MIN_SAMPLES: usize = 4_000;
+
+/// The wake word is listened for while the recording is still going. What
+/// the real model taught (measured, on clips of a spoken command): cut at
+/// arbitrary points it is unreliable — a lead-in of quiet before the words
+/// makes short clips come back empty. So the clip starts where the *speech*
+/// starts (a little before), and is tried once it holds 1.0 s of it, then after
+/// every further 0.4 s, up to 2.6 s of speech. Past that it is dictation, not a
+/// command, and nothing more is spent on it.
+const PEEK_FIRST: usize = 16_000;
+const PEEK_EVERY: usize = 6_400;
+const PEEK_MAX: usize = 41_600;
+/// How far into the recording the start of speech is looked for (6 s).
+const PEEK_SEARCH: usize = 96_000;
+/// A sample this loud is speech starting (a quiet room sits around 0.005).
+const ONSET_LEVEL: f32 = 0.03;
+/// The clip starts this much before the first loud sample (0.15 s), so the
+/// first consonant is not cut.
+const ONSET_LEAD: usize = 2_400;
+
+/// A spelling of the wake word taken for it this many times is trusted for
+/// anything (the same threshold the final decision uses).
+const TRUSTED_AFTER_HITS: u32 = 3;
 
 /// Starts capturing, if a model is configured. The microphone is opened on a
 /// blocking thread, not here: CoreAudio can take its time (a Bluetooth headset
@@ -57,7 +79,9 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
         streaming: Arc::clone(&streaming),
     });
     drop(recording);
+    quiet_the_mac(ctx, true);
     ctx.events.state(request_id, WorkerState::Listening);
+    spawn_peek(ctx, request_id, Arc::clone(&buffer));
     #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
     {
         *streaming.lock().unwrap() = crate::streaming::start(ctx, request_id, Arc::clone(&buffer));
@@ -102,6 +126,75 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
     });
 }
 
+/// Listens to the first seconds of a recording *while it is still going*, and
+/// says [`WorkerToShell::WakeWordHeard`] if they start with the wake word.
+/// Purely a hint for the island: what the recording turns out to be is still
+/// decided from the whole transcript, once the key is released.
+fn spawn_peek(ctx: &Arc<WorkerContext>, request_id: Uuid, buffer: Arc<Mutex<Vec<f32>>>) {
+    let Some(stt) = ctx.audio.as_ref().map(|a| Arc::clone(&a.stt)) else { return };
+    let job_ctx = Arc::clone(ctx);
+    // Not a tracked job: it lives exactly as long as the recording, which is
+    // still going when everything else has settled.
+    tokio::spawn(async move {
+        let mut needed = PEEK_FIRST;
+        loop {
+            if !still_recording(&job_ctx, request_id) {
+                return;
+            }
+            // The clip: from just before the speech started, as much as is there.
+            #[allow(clippy::unwrap_used)]
+            // only poisoned if the capture callback panicked, forbidden by workspace policy
+            let (clip, searched) = {
+                let guard = buffer.lock().unwrap();
+                let head = &guard[..guard.len().min(PEEK_SEARCH)];
+                let clip = head.iter().position(|s| s.abs() >= ONSET_LEVEL).and_then(|onset| {
+                    let start = onset.saturating_sub(ONSET_LEAD);
+                    let available = guard.len() - start;
+                    (available >= needed).then(|| guard[start..start + available.min(PEEK_MAX)].to_vec())
+                });
+                (clip, guard.len() >= PEEK_SEARCH)
+            };
+            let Some(samples) = clip else {
+                if searched {
+                    return; // no speech in the first seconds: nothing to listen for
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                continue;
+            };
+            let done = samples.len() >= PEEK_MAX;
+            needed = samples.len() + PEEK_EVERY;
+
+            let stt = Arc::clone(&stt);
+            let seconds = samples.len() as f32 / 16_000.0;
+            let transcript = match tokio::task::spawn_blocking(move || stt.transcribe(&samples)).await {
+                Ok(Ok(transcript)) => transcript,
+                // One failed listen is not the end of them: try again a little later.
+                Ok(Err(e)) => {
+                    tracing::warn!(%request_id, seconds, "no se pudo escuchar la palabra de activación: {e}");
+                    continue;
+                }
+                Err(_) => return,
+            };
+            // The key may have come up while that was transcribing.
+            if !still_recording(&job_ctx, request_id) {
+                tracing::info!(%request_id, seconds, heard = %transcript.text, "la escucha de la palabra de activación llegó tarde (ya se soltó la tecla)");
+                return;
+            }
+            tracing::info!(%request_id, seconds, heard = %transcript.text, "escucha de la palabra de activación");
+            let heard = eva_text::filler::remove_universal_fillers(&transcript.text);
+            let learned = job_ctx.store.trusted_wake_variants(TRUSTED_AFTER_HITS).unwrap_or_default();
+            if eva_intent::wake::find_wake_word(&heard, &job_ctx.wake_word, &learned).is_some() {
+                tracing::info!(%request_id, "palabra de activación oída mientras graba");
+                job_ctx.events.emit(WorkerToShell::WakeWordHeard { request_id });
+                return;
+            }
+            if done {
+                return;
+            }
+        }
+    });
+}
+
 /// Whether `request_id` is still the recording in progress.
 pub(crate) fn still_recording(ctx: &WorkerContext, request_id: Uuid) -> bool {
     ctx.recording().as_ref().is_some_and(|s| s.request_id == request_id)
@@ -133,11 +226,30 @@ fn close(session: &RecordingSession) -> Option<Box<dyn CaptureHandle>> {
 /// delayed message) can never stop someone else's recording.
 fn take_session(ctx: &WorkerContext, request_id: Uuid) -> Option<RecordingSession> {
     let mut recording = ctx.recording();
-    if recording.as_ref().is_some_and(|s| s.request_id == request_id) {
-        recording.take()
-    } else {
-        None
+    let session = if recording.as_ref().is_some_and(|s| s.request_id == request_id) { recording.take() } else { None };
+    drop(recording);
+    if session.is_some() {
+        // The key is up (or the recording failed): the sound comes back now,
+        // not after the transcription.
+        quiet_the_mac(ctx, false);
     }
+    session
+}
+
+/// While the dictation key is down the Mac's music is paused and its sound
+/// silenced, so the microphone hears only the user; released, it all comes
+/// back. The wish is recorded here, in order; the slow part (AppleScript)
+/// runs on a blocking thread and only reconciles with the last wish, so it
+/// does not matter which of the two jobs of a quick tap runs first.
+fn quiet_the_mac(ctx: &WorkerContext, quiet: bool) {
+    if !ctx.config.dictation.pause_media {
+        return;
+    }
+    let desktop = Arc::clone(&ctx.desktop);
+    desktop.want_media_quiet(quiet);
+    ctx.spawn_job(async move {
+        let _ = tokio::task::spawn_blocking(move || desktop.settle_media_quiet()).await;
+    });
 }
 
 /// Stops and discards a recording. `false` if there was none with that id.
@@ -307,6 +419,44 @@ mod tests {
         assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Hola mundo. ".to_string())]);
     }
 
+    /// Two seconds of "speech": past the first listen for the wake word.
+    fn long_speech() -> Vec<f32> {
+        vec![0.2; 32_000]
+    }
+
+    #[tokio::test]
+    async fn the_wake_word_is_noticed_while_the_user_is_still_speaking() {
+        let mut rig = Rig::builder().audio(audio(long_speech(), "adán abre brave")).build();
+        let request_id = Uuid::new_v4();
+        let mut heard = rig.run(ShellToWorker::StartRecording { request_id }).await;
+        heard.extend(rig.until(|e| matches!(e, WorkerToShell::WakeWordHeard { .. })).await);
+        assert!(
+            heard.iter().any(|e| matches!(e, WorkerToShell::WakeWordHeard { request_id: id } if *id == request_id)),
+            "the key is still down and the island can already say it is a command: {heard:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quiet_lead_in_before_the_words_does_not_stop_the_wake_word_being_noticed() {
+        // 1.5 s of a quiet room, then speech: the clip must start at the speech.
+        let mut script = vec![0.002; 24_000];
+        script.extend(vec![0.2; 32_000]);
+        let mut rig = Rig::builder().audio(audio(script, "adán abre brave")).build();
+        let request_id = Uuid::new_v4();
+        let mut heard = rig.run(ShellToWorker::StartRecording { request_id }).await;
+        heard.extend(rig.until(|e| matches!(e, WorkerToShell::WakeWordHeard { .. })).await);
+        assert!(heard.iter().any(|e| matches!(e, WorkerToShell::WakeWordHeard { .. })), "{heard:?}");
+    }
+
+    #[tokio::test]
+    async fn plain_dictation_is_never_announced_as_a_command() {
+        let mut rig = Rig::builder().audio(audio(long_speech(), "hola mundo esto es un dictado")).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartRecording { request_id }).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!rig.drain().iter().any(|e| matches!(e, WorkerToShell::WakeWordHeard { .. })));
+    }
+
     #[tokio::test]
     async fn a_recording_that_starts_with_the_wake_word_runs_the_command_not_a_paste() {
         // The mock STT ignores the audio and always returns the same text,
@@ -352,6 +502,45 @@ mod tests {
 
         let second = rig.run(ShellToWorker::StartRecording { request_id: Uuid::new_v4() }).await;
         assert!(second.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn the_mac_is_quiet_only_while_the_key_is_down_and_comes_back_on_release_or_cancel() {
+        for cancel in [false, true] {
+            let mut rig = Rig::builder()
+                .audio(audio(speech(), "hola mundo"))
+                .configure(|c| c.dictation.pause_media = true)
+                .build();
+            let request_id = Uuid::new_v4();
+
+            rig.run(ShellToWorker::StartRecording { request_id }).await;
+            assert_eq!(rig.desktop.calls().first(), Some(&Call::WantMediaQuiet(true)), "quiet from the press");
+
+            let end =
+                if cancel { ShellToWorker::Cancel { request_id } } else { ShellToWorker::StopRecording { request_id } };
+            rig.run(end).await;
+            let calls = rig.desktop.calls();
+            let wishes: Vec<&Call> = calls.iter().filter(|c| matches!(c, Call::WantMediaQuiet(_))).collect();
+            assert_eq!(
+                wishes,
+                vec![&Call::WantMediaQuiet(true), &Call::WantMediaQuiet(false)],
+                "cancel={cancel}: {calls:?}"
+            );
+            assert!(
+                calls.iter().filter(|c| **c == Call::SettleMediaQuiet).count() >= 2,
+                "each wish is settled: {calls:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn with_pausing_off_the_music_and_the_volume_are_never_touched() {
+        let mut rig =
+            Rig::builder().audio(audio(speech(), "hola")).configure(|c| c.dictation.pause_media = false).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartRecording { request_id }).await;
+        rig.run(ShellToWorker::StopRecording { request_id }).await;
+        assert!(!rig.desktop.calls().iter().any(|c| matches!(c, Call::WantMediaQuiet(_) | Call::SettleMediaQuiet)));
     }
 
     #[tokio::test]

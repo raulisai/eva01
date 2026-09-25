@@ -94,6 +94,15 @@ pub fn close_app(app_name: &str) -> Result<(), MacosError> {
     }
 }
 
+/// Whether an application whose localized name is `app_name` (ignoring case)
+/// is running right now.
+pub fn is_app_running(app_name: &str) -> bool {
+    NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .any(|app| app.localizedName().is_some_and(|name| name.to_string().eq_ignore_ascii_case(app_name)))
+}
+
 /// The apps installed on this Mac, by the name of their bundle ("Spotify",
 /// "Google Chrome"), sorted and without repeats.
 ///

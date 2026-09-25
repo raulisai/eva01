@@ -1,0 +1,1262 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EVA01</title>
+<style>
+  :root {
+    --bg: #f4f2ec; --side: #efece4; --card: #fbfaf7; --ink: #23211d; --muted: #77726a; --line: #e4e0d6;
+    --hover: #e7e3d8; --accent: #f5a134; --accent-ink: #2a1c05; --accent-line: #2a1c05; --link: #5b4bdb;
+    --ok: #1a8a45; --ok-bg: #e2f3e8; --warn: #a86a08; --warn-bg: #fbeed0; --fail: #c8322d; --fail-bg: #fbe4e2;
+    --code: #efece4; --dark: #16130f; --dark-ink: #f6f1e7; --logbg: #14120f; --logink: #d8d3c8; --shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141310; --side: #1a1915; --card: #1f1e19; --ink: #f1ede4; --muted: #9b968a; --line: #2f2d26;
+      --hover: #2a2822; --accent: #f5a134; --accent-ink: #1a1102; --accent-line: #f5a134; --link: #a79cff;
+      --ok: #4cd280; --ok-bg: #12301f; --warn: #f0b955; --warn-bg: #362a10; --fail: #ff6b64; --fail-bg: #3a1716;
+      --code: #26241e; --dark: #0c0b09; --dark-ink: #f6f1e7; --logbg: #0b0a08; --logink: #cfcabf; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: 250px 1fr; min-height: 100%; }
+  aside { background: var(--side); padding: 22px 14px; position: sticky; top: 0; height: 100vh; overflow: auto;
+    display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 22px; font-size: 21px; font-weight: 700; letter-spacing: -.02em; }
+  .logo { display: flex; align-items: center; gap: 2px; height: 22px; }
+  .logo i { display: block; width: 3px; border-radius: 2px; background: var(--ink); }
+  nav a { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px; color: var(--ink);
+    text-decoration: none; font-size: 15px; margin-bottom: 2px; }
+  nav a:hover { background: var(--hover); } nav a.on { background: var(--hover); font-weight: 600; }
+  nav a .ic { width: 20px; text-align: center; opacity: .85; }
+  nav .sep { height: 1px; background: var(--line); margin: 12px 8px; }
+  nav .badge { margin-left: auto; font-size: 11px; background: var(--fail); color: #fff; border-radius: 99px; padding: 1px 7px; }
+  .spacer { flex: 1; }
+  .side-note { font-size: 12.5px; color: var(--muted); padding: 12px; }
+
+  main { padding: 34px 40px 80px; max-width: 1180px; width: 100%; }
+  main > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+  h1 { font-size: 30px; margin: 0; letter-spacing: -.02em; font-weight: 650; }
+  h2 { font-size: 17px; margin: 0 0 10px; } h3 { font-size: 14px; margin: 22px 0 8px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); margin: 4px 0 0; font-size: 14px; }
+  .serif { font-family: ui-serif, "New York", Georgia, serif; font-weight: 500; letter-spacing: -.02em; }
+
+  .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  @media (max-width: 1000px) { .app { grid-template-columns: 1fr; } aside { position: static; height: auto; }
+    .grid2 { grid-template-columns: 1fr; } main { padding: 22px 16px 60px; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .card.flush { padding: 0; overflow: hidden; }
+  .hero { background: var(--dark); color: var(--dark-ink); border: 0; padding: 26px 28px; border-radius: 18px;
+    background-image: radial-gradient(circle at 85% 30%, rgba(245,161,52,.35), transparent 45%), radial-gradient(circle at 70% 90%, rgba(120,90,255,.25), transparent 40%); }
+  .hero h2 { font-family: ui-serif, "New York", Georgia, serif; font-size: 26px; font-weight: 500; margin: 0 0 6px; }
+  .hero p { margin: 0 0 16px; opacity: .8; }
+  .stat { margin-bottom: 14px; } .stat b { font-family: ui-serif, "New York", Georgia, serif; font-size: 34px; font-weight: 500; letter-spacing: -.02em; }
+  .stat span { color: var(--muted); margin-left: 6px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; margin-bottom: 18px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+  .kpi b { display: block; font-family: ui-serif, "New York", Georgia, serif; font-size: 34px; font-weight: 500; letter-spacing: -.02em; }
+  .kpi span { color: var(--muted); font-size: 13.5px; }
+
+  button, .btn { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: var(--card);
+    color: var(--ink); padding: 8px 14px; text-decoration: none; display: inline-block; }
+  button:hover { border-color: var(--muted); } button:disabled { opacity: .5; cursor: default; }
+  button.primary, .btn.primary { background: var(--accent); color: var(--accent-ink); border: 1.5px solid var(--accent-line); font-weight: 600; }
+  button.light { background: #f6f1e7; color: #23211d; border-color: transparent; font-weight: 600; }
+  button.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  button.icon { border: 0; background: transparent; padding: 6px 8px; font-size: 16px; color: var(--muted); border-radius: 8px; }
+  button.icon:hover { background: var(--hover); color: var(--ink); }
+  button.danger { color: var(--fail); }
+  input[type=text], input[type=number], textarea, select { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 12px; width: 100%; }
+  textarea { min-height: 84px; resize: vertical; } input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  label.f { display: block; font-size: 13.5px; font-weight: 600; margin: 14px 0 4px; }
+  .help { font-size: 12.5px; color: var(--muted); margin-top: 3px; font-weight: 400; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; } .row > input { flex: 1; min-width: 160px; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .toggle:last-child { border: 0; } .toggle .t { font-weight: 600; font-size: 14.5px; }
+  .switch { position: relative; width: 42px; height: 24px; flex: none; } .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 99px; transition: .15s; cursor: pointer; }
+  .switch span:before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .15s; }
+  .switch input:checked + span { background: var(--ok); } .switch input:checked + span:before { transform: translateX(18px); }
+
+  .day { font-size: 12.5px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; margin: 26px 0 10px; display: flex; justify-content: space-between; }
+  .item { display: grid; grid-template-columns: 78px 1fr auto; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); align-items: start; }
+  .item:last-child { border: 0; } .item:hover { background: rgba(127,127,127,.06); } .item .time { color: var(--muted); font-size: 13.5px; padding-top: 1px; }
+  .item .txt { word-break: break-word; cursor: pointer; } .item .acts { display: flex; opacity: 0; } .item:hover .acts, .item.open .acts { opacity: 1; }
+  .item.bad .txt:after { content: " ⚑"; color: var(--fail); }
+  .detail { grid-column: 2 / 4; background: var(--code); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; margin-top: 4px; }
+  .detail dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 8px; } .detail dt:first-child { margin: 0; }
+  .detail dd { margin: 2px 0 0; word-break: break-word; }
+  .w { cursor: pointer; border-radius: 5px; padding: 0 1px; } .w:hover { background: var(--accent); color: var(--accent-ink); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--code); border-radius: 99px; padding: 5px 6px 5px 13px; margin: 0 8px 8px 0; font-size: 14px; }
+  .chip button { border: 0; background: transparent; padding: 0 6px; color: var(--muted); font-size: 15px; }
+
+
+  /* --- reporte de un dictado que salió mal --- */
+  dialog.report { border: 1px solid var(--line); border-radius: 20px; background: var(--bg); color: var(--ink); padding: 0; width: min(760px, calc(100vw - 32px));
+    max-height: calc(100vh - 40px); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+  dialog.report::backdrop { background: rgba(10,9,7,.55); backdrop-filter: blur(3px); }
+  .rp-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 22px 8px; position: sticky; top: 0; background: var(--bg); z-index: 1; }
+  .rp-head h2 { margin: 0; font-size: 19px; } .rp-body { padding: 4px 22px 8px; overflow-y: auto; max-height: calc(100vh - 190px); }
+  .rp-foot { display: flex; gap: 10px; justify-content: flex-end; align-items: center; padding: 14px 22px 18px; border-top: 1px solid var(--line); }
+  .rp-step { margin: 18px 0 8px; font-weight: 650; font-size: 14.5px; } .rp-step small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .seg button { padding: 12px 14px; text-align: left; border-radius: 14px; } .seg button b { display: block; font-size: 15px; } .seg button span { color: var(--muted); font-size: 12.5px; }
+  .seg button.on { border: 1.5px solid var(--accent-line); background: var(--accent); color: var(--accent-ink); } .seg button.on span { color: var(--accent-ink); opacity: .75; }
+  .rp-said { background: var(--code); border-radius: 12px; padding: 10px 14px; font-size: 14px; word-break: break-word; }
+  .edit { display: grid; grid-template-columns: 1fr; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 11px 14px; margin-bottom: 9px; }
+  .edit .pair { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; } .edit .pair .arrow { color: var(--muted); }
+  .edit .heardw { background: var(--fail-bg); color: var(--fail); border-radius: 8px; padding: 6px 10px; font-weight: 600; word-break: break-word; }
+  .edit .heardw.none, .edit input.none { background: var(--code); color: var(--muted); }
+  .edit .tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; } .edit .why { color: var(--muted); font-size: 12.5px; }
+  .edit .opts { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13.5px; } .edit label.ck { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .edit.skip { opacity: .72; }
+  .pill.blue { background: rgba(91,75,219,.14); color: var(--link); }
+  .causes { display: flex; flex-wrap: wrap; gap: 8px; } .causes button { border-radius: 99px; padding: 6px 13px; font-size: 13.5px; } .causes button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .learned { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .learned:last-child { border-bottom: 0; } .learned code { background: var(--code); padding: 2px 7px; border-radius: 6px; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab { border-radius: 99px; padding: 6px 15px; font-size: 14px; color: var(--muted); } .tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .pill { display: inline-block; border-radius: 99px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.fail { background: var(--fail-bg); color: var(--fail); } .pill.mute { background: var(--code); color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; } td, th { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 14px; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  code, pre { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; } pre { background: var(--code); border-radius: 10px; padding: 10px 12px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .bars { display: flex; align-items: flex-end; gap: 6px; height: 150px; padding-top: 10px; }
+  .bars div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 11px; color: var(--muted); }
+  .bars i { display: block; width: 100%; background: var(--accent); border-radius: 6px 6px 2px 2px; min-height: 2px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  .banner { border-radius: 14px; padding: 12px 16px; margin-bottom: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); } .banner.fail { background: var(--fail-bg); color: var(--fail); } .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner .grow { flex: 1; }
+  .search { max-width: 260px; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 18px;
+    border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: .2s; z-index: 9; } #toast.on { opacity: 1; }
+
+  /* Doctor */
+  .dbanner { border-radius: 18px; padding: 20px 22px; display: flex; align-items: center; gap: 18px; background: var(--card); border: 1px solid var(--line); margin-bottom: 14px; }
+  .dbanner .dot { width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 25px; font-weight: 700; color: #fff; background: var(--muted); }
+  .dbanner.ok .dot { background: var(--ok); } .dbanner.warn .dot { background: var(--warn); } .dbanner.fail .dot { background: var(--fail); }
+  .dbanner.run .dot { background: var(--link); animation: pulse 1.1s ease-in-out infinite; }
+  .dbanner h2 { margin: 0; } .dbanner p { margin: 2px 0 0; color: var(--muted); font-size: 13.5px; }
+  @keyframes pulse { 50% { transform: scale(.88); opacity: .7; } }
+  .check { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 13px 16px; margin-bottom: 9px; display: grid; grid-template-columns: 28px 1fr; gap: 12px; }
+  .check .bd { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700; margin-top: 1px; }
+  .check.ok .bd { background: var(--ok-bg); color: var(--ok); } .check.warn .bd { background: var(--warn-bg); color: var(--warn); } .check.fail .bd { background: var(--fail-bg); color: var(--fail); }
+  .check.fail { border-color: var(--fail); } .check .nm { font-weight: 600; } .check .dt { color: var(--muted); font-size: 13.5px; word-break: break-word; }
+  .fix { margin-top: 10px; background: var(--code); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; }
+  .fix b { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 3px; }
+  .fix .row { margin-top: 8px; } .result { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .skeleton { height: 60px; border-radius: 14px; margin-bottom: 9px; border: 1px solid var(--line);
+    background: linear-gradient(90deg, var(--card) 25%, var(--line) 50%, var(--card) 75%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  #logs { background: var(--logbg); color: var(--logink); border-radius: 14px; padding: 12px 14px; height: 300px; overflow: auto;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+  #logs .WARN { color: #f0b955; } #logs .ERROR { color: #ff6b64; } #logs .src { opacity: .45; }
+  .live { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: pulse 1.6s infinite; margin-right: 6px; }
+  audio { height: 34px; max-width: 100%; }
+
+  /* --- órdenes propias: tarjetas y asistente --- */
+  .ord-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .ord { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
+  .ord.bad { border-color: var(--fail); }
+  .ord-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .ord-name { font-family: ui-serif, "New York", Georgia, serif; font-size: 21px; font-weight: 500; letter-spacing: -.02em; line-height: 1.2; }
+  .lvl { font-size: 12.5px; color: var(--muted); white-space: nowrap; background: var(--code); border-radius: 99px; padding: 3px 10px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .step-pill { background: var(--code); border-radius: 99px; padding: 4px 11px; font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phrase-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pc { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 99px; padding: 3px 5px 3px 11px; font-size: 13.5px; }
+  .pc.main { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-line); font-weight: 600; padding-right: 11px; }
+  .pc.learned { border-style: dashed; }
+  .pc button { border: 0; background: transparent; padding: 0 5px; color: var(--muted); font-size: 14px; }
+  .ord-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+  .ord-empty { text-align: center; padding: 46px 20px; border: 1.5px dashed var(--line); border-radius: 22px; background: var(--card); }
+  .ord-empty h2 { font-family: ui-serif, "New York", Georgia, serif; font-size: 26px; font-weight: 500; margin: 0 0 6px; }
+  .ord-empty .row { justify-content: center; margin-top: 16px; }
+
+  dialog.wizard { border: 1px solid var(--line); border-radius: 22px; background: var(--bg); color: var(--ink); padding: 0; width: min(780px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px); box-shadow: 0 24px 80px rgba(0,0,0,.35); overflow: hidden; }
+  dialog.wizard::backdrop { background: rgba(10,9,7,.55); backdrop-filter: blur(3px); }
+  .wz-head { padding: 18px 24px 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .wz-head h2 { margin: 0; font-size: 19px; }
+  .wz-dots { display: flex; gap: 8px; padding: 0 24px 6px; }
+  .wz-dot { flex: 1; text-align: center; font-size: 12.5px; color: var(--muted); }
+  .wz-dot i { display: block; height: 5px; border-radius: 99px; background: var(--line); margin-bottom: 5px; transition: .2s; }
+  .wz-dot.done i, .wz-dot.on i { background: var(--accent); } .wz-dot.on { color: var(--ink); font-weight: 600; }
+  .wz-body { padding: 8px 24px 6px; overflow-y: auto; height: 430px; max-height: calc(100vh - 230px); }
+  .wz-foot { display: flex; gap: 10px; justify-content: flex-end; align-items: center; padding: 14px 24px 18px; border-top: 1px solid var(--line); }
+  .wz-foot .grow { flex: 1; }
+  .wz-big { font-family: ui-serif, "New York", Georgia, serif; font-size: 27px; font-weight: 500; letter-spacing: -.02em; margin: 14px 0 4px; }
+  .wz-name { font-size: 20px; padding: 12px 16px; border-radius: 14px; }
+  .wz-kinds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 16px; }
+  @media (max-width: 640px) { .wz-kinds { grid-template-columns: 1fr; } }
+  .wz-kinds button { text-align: left; padding: 12px 14px; border-radius: 14px; } .wz-kinds button b { display: block; } .wz-kinds button span { color: var(--muted); font-size: 12.5px; }
+  .wz-kinds button.on { border: 1.5px solid var(--accent-line); background: var(--accent); color: var(--accent-ink); } .wz-kinds button.on span { color: var(--accent-ink); opacity: .75; }
+  .wz-step { display: grid; grid-template-columns: 30px 32px 1fr auto; gap: 10px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 9px 12px; margin-bottom: 8px; }
+  .wz-step .n { width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .wz-step .ic { font-size: 20px; text-align: center; } .wz-step .tx { word-break: break-word; } .wz-step .tx small { display: block; color: var(--muted); font-size: 12px; }
+  .wz-add { display: grid; grid-template-columns: 190px 1fr auto; gap: 8px; margin-top: 10px; }
+  @media (max-width: 640px) { .wz-add { grid-template-columns: 1fr; } }
+  .wz-arena { border: 1.5px dashed var(--line); border-radius: 20px; padding: 18px; text-align: center; margin: 12px 0; background: var(--card); }
+  .wz-mic { width: 84px; height: 84px; border-radius: 50%; border: 0; font-size: 34px; background: var(--accent); color: var(--accent-ink); cursor: pointer; position: relative; padding: 0; }
+  .wz-mic.live:before, .wz-mic.live:after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--accent); animation: wzring 1.5s ease-out infinite; }
+  .wz-mic.live:after { animation-delay: .75s; }
+  @keyframes wzring { from { transform: scale(.9); opacity: .9; } to { transform: scale(1.5); opacity: 0; } }
+  .wz-bar { height: 5px; border-radius: 99px; background: var(--line); overflow: hidden; max-width: 260px; margin: 14px auto 0; }
+  .wz-bar i { display: block; height: 100%; width: 0; background: var(--accent); animation: wzfill 4.5s linear forwards; }
+  @keyframes wzfill { to { width: 100%; } }
+  .wz-heard { display: flex; align-items: center; gap: 10px; justify-content: space-between; background: var(--card); border: 1.5px solid var(--accent); border-radius: 14px; padding: 10px 14px; margin-top: 10px; text-align: left; animation: wzpop .25s ease-out; }
+  @keyframes wzpop { from { transform: translateY(6px) scale(.98); opacity: 0; } }
+  .wz-meter { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 12px 16px; margin: 12px 0; }
+  .wz-meter .track { height: 9px; border-radius: 99px; background: var(--line); overflow: hidden; margin: 8px 0 4px; }
+  .wz-meter .track i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #ffcf70); border-radius: 99px; transition: width .4s; }
+  .wz-sugg { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .wz-sugg button { border-radius: 99px; padding: 5px 13px; font-size: 13.5px; border-style: dashed; }
+  .wz-sum { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 18px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><span class="logo" aria-hidden="true"><i style="height:9px"></i><i style="height:18px"></i><i style="height:12px"></i><i style="height:21px"></i><i style="height:10px"></i></span>EVA01</div>
+    <nav id="nav"></nav>
+    <div class="spacer"></div>
+    <div class="side-note">Todo se guarda en tu Mac. Sin cupos, sin plan: esto es tu Pro.</div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const token = new URLSearchParams(location.search).get('t') || '';
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = (n) => Number(n || 0).toLocaleString('es');
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+/* ---------- data ---------- */
+async function post(url, body) {
+  const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${encodeURIComponent(token)}`, {
+    method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+  if (!res.ok) throw new Error('la app no respondió (¿sigue abierta?)');
+  return res.json();
+}
+async function api(route, body = {}) {
+  const answer = await post(`/api/panel/${route}`, body);
+  if (!answer.ok) throw new Error(answer.error || 'error');
+  return answer.data;
+}
+async function getJson(path) {
+  const res = await fetch(`${path}${path.includes('?') ? '&' : '?'}t=${encodeURIComponent(token)}`);
+  if (!res.ok) throw new Error('la app no respondió (¿sigue abierta?)');
+  return res.json();
+}
+let toastTimer;
+function toast(message) {
+  const el = $('#toast'); el.textContent = message; el.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 2800);
+}
+async function guarded(work) { try { return await work(); } catch (e) { toast(e.message); } }
+
+function dayLabel(day) {
+  const today = new Date(); const iso = (d) => d.toLocaleDateString('sv');
+  const yesterday = new Date(today.getTime() - 864e5);
+  if (day === iso(today)) return 'Hoy';
+  if (day === iso(yesterday)) return 'Ayer';
+  return new Date(day + 'T12:00:00').toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+const wordsOf = (text) => String(text ?? '').split(/(\s+)/).map((t) => /^\s*$/.test(t) ? esc(t) : `<span class="w" data-a="pickword" data-word="${esc(t)}">${esc(t)}</span>`).join('');
+
+/* ---------- pages ---------- */
+const PAGES = [
+  ['dictado', '🎙', 'Dictado'], ['stats', '📊', 'Estadísticas'], ['diccionario', '📖', 'Diccionario'],
+  ['ordenes', '⌘', 'Órdenes'], ['tareas', '✅', 'Tareas'], ['estilo', 'Tт', 'Estilo'], ['calibracion', '🎯', 'Calibración'], ['revisar', '🎧', 'Revisar'], null,
+  ['config', '⚙️', 'Configuración'], ['dev', '🛠', 'Desarrollador'], ['doctor', '🩺', 'Doctor'], ['ayuda', '❔', 'Ayuda'],
+];
+let page = 'dictado', flaggedToday = 0;
+
+function renderNav() {
+  $('#nav').innerHTML = PAGES.map((p) => p === null ? '<div class="sep"></div>' :
+    `<a href="#${p[0]}" class="${p[0] === page ? 'on' : ''}"><span class="ic">${p[1]}</span>${p[2]}${p[0] === 'calibracion' && flaggedToday ? `<span class="badge">${flaggedToday}</span>` : ''}</a>`).join('');
+}
+async function go() {
+  const target = location.hash.replace('#', '') || 'dictado';
+  page = PAGES.some((p) => p && p[0] === target) ? target : 'dictado';
+  renderNav();
+  document.title = 'EVA01 · ' + (PAGES.find((p) => p && p[0] === page) || [])[2];
+  $('#main').innerHTML = '<div class="empty">Cargando…</div>';
+  await guarded(() => RENDER[page]());
+}
+window.addEventListener('hashchange', go);
+
+const RENDER = {};
+const head = (title, sub, right = '') => `<header><div><h1>${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div><div>${right}</div></header>`;
+
+/* --- Dictado (inicio) --- */
+let historyRows = [], historyQuery = '', overview = null;
+RENDER.dictado = async () => {
+  const [o, h] = await Promise.all([api('overview'), api('history', { limit: 400 })]);
+  overview = o; historyRows = h.records; flaggedToday = o.flagged_today; renderNav();
+  $('#main').innerHTML = head('Hola de nuevo', `Palabra de activación: <b>«${esc(o.wake_word)}»</b>`) + `
+  ${h.saving ? '' : `<div class="banner warn"><span class="grow">El historial está apagado: no se guarda lo que dictas.</span><button class="small" data-a="saveflag" data-key="history.save_transcripts" data-v="true">Activarlo</button></div>`}
+  <div class="grid2"><div>
+    <div class="card hero"><h2>Haz que EVA01 suene como tú</h2><p>Configura estilos de escritura distintos para cada aplicación.</p><a class="btn light" href="#estilo">Empezar ahora</a></div>
+    <div class="row" style="justify-content:space-between;margin-top:22px"><h3 style="margin:0">Historial</h3><input class="search" type="text" id="hq" placeholder="Buscar…" value="${esc(historyQuery)}"></div>
+    <div id="hist"></div>
+  </div><div>
+    <div class="card"><div class="stat"><b>${num(o.total_words)}</b><span>palabras totales</span></div>
+      <div class="stat"><b>${num(o.average_words)}</b><span>palabras por dictado</span></div>
+      <div class="stat" style="margin:0"><b>${num(o.streak_days)}</b><span>días seguidos</span></div></div>
+    <div class="card"><h2>Sin límites</h2><p class="sub" style="margin:0">Hoy: ${num(o.today_words)} palabras en ${num(o.today_dictations)} dictados. Tu historial, diccionario y estadísticas viven en este Mac: no hay cupo semanal.</p></div>
+    <div class="card"><h2>${o.flagged_today ? `Marcaste ${o.flagged_today} hoy` : 'Calibra con tu voz'}</h2><p class="sub" style="margin:0 0 12px">Lo que sale mal (⚑) lo cuentas una vez —comando o dictado, qué querías decir, qué palabras— y EVA01 lo aprende.</p><a class="btn primary" href="#calibracion">Abrir calibración</a></div>
+  </div></div>`;
+  paintHistory();
+};
+function paintHistory() {
+  const q = historyQuery.trim().toLowerCase();
+  const rows = historyRows.filter((r) => !q || (r.text + ' ' + r.raw).toLowerCase().includes(q));
+  if (!rows.length) { $('#hist').innerHTML = `<div class="card empty">${historyRows.length ? 'Nada coincide con la búsqueda.' : 'Todavía no hay dictados. Mantén fn y habla.'}</div>`; return; }
+  let html = '', last = '';
+  for (const r of rows) {
+    if (r.day !== last) { last = r.day; html += `<div class="day"><span>${esc(dayLabel(r.day))}</span></div><div class="card flush">`; }
+    html += itemHtml(r);
+    const next = rows[rows.indexOf(r) + 1];
+    if (!next || next.day !== r.day) html += '</div>';
+  }
+  $('#hist').innerHTML = html;
+}
+function itemHtml(r) {
+  return `<div class="item ${r.bad ? 'bad' : ''}" id="i-${r.id}" data-id="${r.id}"><div class="time">${esc(r.time)}</div>
+    <div class="txt" data-a="toggle" data-id="${r.id}">${r.text.trim() ? esc(r.text) : '<span class="sub">(vacío: no se entendió nada)</span>'}${r.bad ? ` <span class="pill warn" style="font-size:11px">${r.kind === 'command' ? 'reportado · comando' : 'reportado'}</span>` : ''}</div>
+    <div class="acts">${r.audio ? `<button class="icon" title="Escuchar" data-a="play" data-id="${r.id}">▶</button>` : ''}
+      <button class="icon" title="Copiar" data-a="copy" data-id="${r.id}">⧉</button>
+      <button class="icon" title="${r.bad ? 'Reportado: toca para editar el reporte' : 'Salió mal: contarle a EVA01 qué pasó'}" data-a="flag" data-id="${r.id}">⚑</button></div></div>`;
+}
+function detailHtml(r) {
+  return `<div class="detail"><dl style="margin:0"><dt>Lo que oyó el modelo</dt><dd>${esc(r.raw) || '—'}</dd>
+    <dt>Tras diccionario y muletillas</dt><dd>${esc(r.pre) || '—'}</dd>
+    <dt>Lo que se pegó — toca una palabra para añadirla al diccionario</dt><dd>${wordsOf(r.text)}</dd></dl>
+    <div class="row" style="margin-top:10px">${r.audio ? `<audio controls src="/audio/${r.id}.wav?t=${encodeURIComponent(token)}"></audio>` : ''}<span class="help">${r.words} palabras</span></div></div>`;
+}
+
+/* --- Estadísticas --- */
+RENDER.stats = async () => {
+  const o = await api('overview'); const max = Math.max(1, ...o.last_days.map((d) => d.words));
+  const rework = o.dictations ? ((o.flagged_total / o.dictations) * 100).toFixed(1) : '0';
+  const dec = { AutoApproved: ['Ejecutadas solas', 'ok'], UserConfirmed: ['Confirmadas por ti', 'ok'], UserRejected: ['Rechazadas por ti', 'warn'], Blocked: ['Bloqueadas', 'fail'] };
+  $('#main').innerHTML = head('Estadísticas', 'Calculadas en este Mac a partir de tu historial.') + `
+  <div class="kpis">
+    <div class="kpi"><b>${num(o.total_words)}</b><span>palabras dictadas</span></div><div class="kpi"><b>${num(o.dictations)}</b><span>dictados</span></div>
+    <div class="kpi"><b>${num(o.average_words)}</b><span>palabras por dictado</span></div><div class="kpi"><b>${num(o.streak_days)}</b><span>días seguidos</span></div>
+    <div class="kpi"><b>${num(o.active_days)}</b><span>días con actividad</span></div><div class="kpi"><b>${num(o.commands_run)}</b><span>órdenes registradas</span></div>
+    <div class="kpi"><b>${num(o.flagged_total)}</b><span>marcados como mal (${rework}%)</span></div></div>
+  <div class="card"><h2>Palabras por día · últimos 14 días</h2><div class="bars">${o.last_days.map((d) => `<div title="${esc(d.day)}: ${d.words} palabras, ${d.dictations} dictados"><i style="height:${Math.max(2, (d.words / max) * 100)}%"></i>${d.day.slice(8)}</div>`).join('')}</div></div>
+  <div class="card"><h2>Qué pasó con tus órdenes</h2>${Object.keys(o.decisions).length ? Object.entries(o.decisions).map(([k, n]) => `<div class="toggle"><span class="t">${(dec[k] || [k])[0]}</span><span class="pill ${(dec[k] || [0, 'mute'])[1]}">${n}</span></div>`).join('') : '<p class="sub">Aún no has dado órdenes.</p>'}</div>
+  <p class="help">No hay «palabras por minuto»: EVA01 no guarda cuánto duró cada dictado (solo su texto), y no lo inventa.</p>`;
+};
+
+/* --- Diccionario --- */
+RENDER.diccionario = async () => {
+  const d = await api('dictionary'); paintDictionary(d);
+};
+function paintDictionary(d) {
+  $('#main').innerHTML = head('Diccionario', 'Palabras que EVA01 debe escribir tal cual: nombres, marcas, jerga. Se aplican al siguiente dictado, sin reiniciar.') + `
+  <div class="card"><div class="row"><input type="text" id="newword" placeholder="Añade una palabra o nombre (p. ej. García, Kubernetes)"><button class="primary" data-a="addword">Añadir</button></div>
+    <div style="margin-top:16px">${d.words.length ? d.words.map((w) => `<span class="chip">${esc(w)}<button title="Quitar" data-a="rmword" data-word="${esc(w)}">×</button></span>`).join('') : '<p class="sub">Aún no hay palabras.</p>'}</div></div>
+  <h3>Cómo suenan tus apps</h3>
+  <div class="card"><p class="sub" style="margin-top:0">Si dices «abre wasap» y EVA01 sabe que es WhatsApp, lo recuerda aquí. Puedes enseñarle otras.</p>
+    <div class="row"><input type="text" id="heard" placeholder="Cómo suena (wasap)"><input type="text" id="app" placeholder="App (WhatsApp)"><button data-a="addalias">Enseñar</button></div>
+    <table style="margin-top:10px">${d.aliases.length ? d.aliases.map((a) => `<tr><td>«${esc(a.heard)}»</td><td>→ ${esc(a.app)}</td><td style="text-align:right"><button class="small danger" data-a="rmalias" data-heard="${esc(a.heard)}">Olvidar</button></td></tr>`).join('') : '<tr><td class="sub">Nada aprendido todavía.</td></tr>'}</table></div>`;
+}
+
+/* --- Órdenes --- */
+let ordTab = 'mine', ordData = null, ordAudit = null;
+RENDER.ordenes = async () => { ordData = await api('commands'); ordAudit = null; paintOrdenes(); };
+async function paintOrdenes() {
+  if (ordTab === 'log' && !ordAudit) ordAudit = (await api('audit', { limit: 200 })).records;
+  const tabs = [['mine', 'Mis órdenes'], ['log', 'Ejecutadas'], ['builtins', 'Integradas'], ['apps', `Apps (${ordData.apps.length})`], ['test', 'Probar']];
+  let body = '';
+  if (ordTab === 'mine') body = ordersMine();
+  else if (ordTab === 'log') body = ordersLog();
+  else if (ordTab === 'builtins') body = `<div class="card flush"><table><tr><th>Dices</th><th>Hace</th><th>Ejemplo</th></tr>${ordData.builtins.map((b) => `<tr><td><b>${esc(b.say)}</b></td><td>${esc(b.does)}</td><td><code>${esc(ordData.wake_word)}, ${esc(b.example)}</code></td></tr>`).join('')}</table></div>`;
+  else if (ordTab === 'apps') body = `<p class="sub">Di «${esc(ordData.wake_word)}, abre &lt;nombre&gt;». Si una no está instalada, EVA01 ofrece buscarla en la App Store.</p><div class="card">${ordData.apps.map((a) => `<span class="chip" style="padding-right:13px">${esc(a)}</span>`).join('')}</div>`;
+  else body = `<div class="card"><p class="sub" style="margin-top:0">Escribe una frase como si la dijeras. Se ve cómo se entendería, <b>sin ejecutar nada</b>.</p><div class="row"><input type="text" id="testtext" placeholder="${esc(ordData.wake_word)}, abre Brave"><button class="primary" data-a="testcmd">Probar</button></div><pre id="testout" style="margin-top:12px;display:none"></pre></div>`;
+  $('#main').innerHTML = head('Órdenes', `Lo que puedes decir después de «${esc(ordData.wake_word)}» y lo que ya se ejecutó.`) +
+    `<div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === ordTab ? 'on' : ''}" data-a="ordtab" data-tab="${k}">${l}</button>`).join('')}</div>` + body;
+}
+
+/* --- Asistente de órdenes: se crean hablando y jugando --- */
+const STEP_KINDS = {
+  app: ['🚀', 'Abrir una app', 'Brave, Spotify, Notas…'],
+  url: ['🌐', 'Abrir una página', 'youtube.com/@micanal'],
+  search: ['🔎', 'Buscar en la web', 'clima de mañana'],
+  youtube: ['▶️', 'Poner algo en YouTube', 'música chill'],
+  play: ['🎵', 'Reproducir música', 'Enlace de Spotify o playlist de Música (vacío: seguir con lo que sonaba)'],
+  pause: ['⏸', 'Pausar la música', 'no necesita nada'],
+  next: ['⏭', 'Siguiente canción', 'no necesita nada'],
+  previous: ['⏮', 'Canción anterior', 'no necesita nada'],
+};
+const NO_VALUE = ['pause', 'next', 'previous'];
+const LEVELS = [[1, '🌱', 'Semilla'], [3, '🌿', 'Brote'], [5, '🌳', 'Árbol'], [8, '🏆', 'Maestro']];
+const levelOf = (forms) => LEVELS.filter(([from]) => forms >= from).pop() || LEVELS[0];
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const foldPhrase = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+/** What was said, without the wake word in front and the full stop behind. */
+function stripWake(said) {
+  let t = String(said ?? '').normalize('NFC').trim();
+  const wake = foldPhrase(ordData.wake_word);
+  const folded = foldPhrase(t);
+  if (wake && (folded === wake || folded.startsWith(wake + ' '))) {
+    const m = t.match(/^\S+[\s,.:;!¿¡-]*/); t = m ? t.slice(m[0].length) : t;
+  }
+  return t.replace(/[.!?¡¿\s]+$/g, '').replace(/^[¡¿\s]+/, '').trim();
+}
+const STEP_VERBS = { search: 'buscar', youtube: 'youtube', play: 'reproducir', pause: 'pausar', next: 'siguiente', previous: 'anterior' };
+function stepToml(s) { return STEP_VERBS[s.kind] ? `${STEP_VERBS[s.kind]}: ${s.value || ''}`.trimEnd() : s.value; }
+const YT_SEARCH = /^https:\/\/www\.youtube\.com\/results\?search_query=(.+)$/;
+function stepLabel(s) {
+  const yt = s.kind === 'url' && YT_SEARCH.exec(s.value);
+  if (yt) { let q = yt[1]; try { q = decodeURIComponent(q.replace(/\+/g, ' ')); } catch { /* se deja como está */ } return ['▶️', 'Buscar en YouTube', q]; }
+  const [icon] = STEP_KINDS[s.kind] || STEP_KINDS.app;
+  if (s.kind === 'play') return [icon, s.value ? 'Reproducir' : 'Reanudar la música', s.value];
+  if (NO_VALUE.includes(s.kind)) return [icon, STEP_KINDS[s.kind][1], ''];
+  const what = { app: 'Abrir', url: 'Abrir la página', search: 'Buscar en la web', youtube: 'Poner en YouTube' }[s.kind] || 'Abrir';
+  return [icon, what, s.value];
+}
+
+let wz = null, wzTimer = null, wzNext = 0, wzSpoke = false;
+
+function newWizard(x, presetName) {
+  return { step: 0, fresh: !x, replace: x ? x.origin : '', name: x ? x.say : (presetName || ''), kind: x && x.kind !== 'invalid' ? x.kind : 'open',
+    steps: x && x.kind === 'open' ? x.steps.map((s) => ({ ...s })) : [], text: x && x.kind !== 'open' && typeof x.target === 'string' ? x.target : '',
+    phrases: x ? [...x.also] : [], learned: x ? x.learned.map((l) => ({ ...l })) : [], suggestions: null, queue: [],
+    mode: null, listening: false, ready: false, round: 0, saved: false, busy: false, ran: '' };
+}
+function wizardDialog() {
+  let d = $('#wizard'); if (d) return d;
+  d = document.createElement('dialog'); d.id = 'wizard'; d.className = 'wizard'; document.body.appendChild(d);
+  d.addEventListener('click', (e) => { if (e.target === d) closeWizard(); const el = e.target.closest('[data-wz]'); if (el) guarded(() => WZ[el.dataset.wz](el)); });
+  d.addEventListener('change', (e) => { const el = e.target.closest('[data-wzc]'); if (el) guarded(() => WZ[el.dataset.wzc](el)); });
+  d.addEventListener('cancel', (e) => { e.preventDefault(); closeWizard(); });
+  d.addEventListener('input', (e) => {
+    const el = e.target; if (!wz) return;
+    if (el.id === 'wz-name') wz.name = el.value;
+    else if (el.id === 'wz-text') wz.text = el.value;
+  });
+  d.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName === 'TEXTAREA') return;
+    if (e.target.id === 'wz-name') { e.preventDefault(); guarded(() => WZ.next()); }
+    else if (e.target.id === 'wz-stepval') { e.preventDefault(); guarded(() => WZ.addstep()); }
+    else if (e.target.id === 'wz-phrase') { e.preventDefault(); guarded(() => WZ.addphrase()); }
+  });
+  return d;
+}
+function openWizard(x, presetName) {
+  wz = newWizard(x, presetName); wzSpoke = false;
+  const d = wizardDialog(); paintWizard(); if (!d.open) d.showModal();
+  const first = $('#wz-name'); if (first && !wz.name) first.focus();
+}
+async function closeWizard() {
+  await teachStop(); wz = null; try { speechSynthesis.cancel(); } catch { /* sin voz */ }
+  const d = $('#wizard'); if (d && d.open) d.close();
+  ordData = await api('commands'); if (page === 'ordenes') paintOrdenes();
+}
+const WZ_TITLES = ['Nombre', 'Receta', 'Frases', 'Listo'];
+function paintWizard() {
+  const d = $('#wizard'); if (!d || !wz) return;
+  const dots = WZ_TITLES.map((t, i) => `<div class="wz-dot ${i === wz.step ? 'on' : i < wz.step ? 'done' : ''}"><i></i>${i + 1} · ${t}</div>`).join('');
+  const body = [wzName, wzRecipe, wzPhrases, wzDone][wz.step]();
+  const last = wz.step === WZ_TITLES.length - 1;
+  d.innerHTML = `<div class="wz-head"><h2>${wz.fresh ? 'Nueva orden' : 'Editar orden'}</h2><button class="icon" data-wz="close" title="Cerrar">✕</button></div>
+    <div class="wz-dots">${dots}</div><div class="wz-body" id="wz-body">${body}</div>
+    <div class="wz-foot">${wz.step > 0 && !wz.saved ? '<button data-wz="back">← Atrás</button>' : ''}<span class="grow"></span>
+      ${last ? (wz.saved ? '<button class="primary" data-wz="close">Terminar</button>' : `<button class="primary" data-wz="save" ${wz.busy ? 'disabled' : ''}>Guardar orden</button>`)
+        : '<button class="primary" data-wz="next">Siguiente →</button>'}</div>`;
+}
+
+/* 1 · nombre */
+function wzName() {
+  const examples = ['Ver mi canal favorito', 'Modo enfoque', 'Mi correo', 'Revisar los tests'];
+  const listening = wz.listening && wz.mode === 'name';
+  return `<div class="wz-big">¿Cómo se llama tu orden?</div>
+    <p class="sub" style="margin-top:0">Es lo que dirás después de «${esc(ordData.wake_word)}». Escríbelo o díctalo.</p>
+    <div class="row"><input type="text" id="wz-name" class="wz-name" placeholder="Ver mi canal favorito" value="${esc(wz.name)}" autocomplete="off">
+      <button data-wz="${listening ? 'teachstop' : 'listenname'}" title="Decirlo con la voz">${listening ? (wz.ready ? '● Escuchando…' : 'Preparando…') : '🎙 Dilo'}</button></div>
+    ${wz.name ? '' : `<div class="wz-sugg">${examples.map((e) => `<button data-wz="example" data-name="${esc(e)}">${esc(e)}</button>`).join('')}</div>`}`;
+}
+
+/* 2 · receta */
+function wzRecipe() {
+  const kinds = [['open', '🚀', 'Abrir cosas', 'apps, páginas, búsquedas'], ['insert', '📋', 'Pegar un texto', 'un correo, una firma…'], ['task', '🤖', 'Tarea para un agente', 'Codex o Claude Code']];
+  let content;
+  if (wz.kind === 'open') {
+    const list = wz.steps.length ? wz.steps.map((s, i) => {
+      const [icon, what, value] = stepLabel(s);
+      return `<div class="wz-step"><span class="n">${i + 1}</span><span class="ic">${icon}</span><span class="tx">${esc(what)} <b>${esc(value)}</b></span>
+        <span class="row" style="gap:2px"><button class="icon" data-wz="up" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button><button class="icon" data-wz="down" data-i="${i}" ${i === wz.steps.length - 1 ? 'disabled' : ''}>↓</button><button class="icon danger" data-wz="rmstep" data-i="${i}">✕</button></span></div>`;
+    }).join('') : '<div class="empty" style="padding:22px 10px">Aún no hay pasos. Añade el primero abajo.</div>';
+    const pick = wz.pick || 'app';
+    content = `<div class="rp-step" style="margin-top:0">Se hará en este orden<small>las páginas se abren en tu navegador predeterminado · la música se controla en Spotify o Música</small></div>${list}
+      <div class="wz-add"><select id="wz-stepkind" data-wzc="pickkind">${Object.entries(STEP_KINDS).map(([k, [ic, l]]) => `<option value="${k}" ${k === pick ? 'selected' : ''}>${ic} ${l}</option>`).join('')}</select>
+        <input type="text" id="wz-stepval" placeholder="${esc(STEP_KINDS[pick][2])}" ${pick === 'app' ? 'list="wz-apps"' : ''} ${NO_VALUE.includes(pick) ? 'disabled' : ''} autocomplete="off"><button class="primary" data-wz="addstep">＋ Añadir</button></div>
+      <datalist id="wz-apps">${ordData.apps.map((a) => `<option value="${esc(a)}">`).join('')}</datalist>`;
+  } else {
+    content = `<div class="rp-step" style="margin-top:0">${wz.kind === 'insert' ? 'El texto que se pega donde tengas el cursor' : 'Lo que se le pide al agente, tal cual'}</div>
+      <textarea id="wz-text" placeholder="${wz.kind === 'insert' ? 'yo@ejemplo.com' : 'corre los tests y dime cuáles fallan'}">${esc(wz.text)}</textarea>`;
+  }
+  return `<div class="wz-big">¿Qué hace «${esc(wz.name)}»?</div>
+    <div class="wz-kinds">${kinds.map(([k, ic, t, s]) => `<button data-wz="kind" data-k="${k}" class="${wz.kind === k ? 'on' : ''}"><b>${ic} ${t}</b><span>${s}</span></button>`).join('')}</div>${content}`;
+}
+
+/* 3 · frases: el juego */
+function wzMeter() {
+  const forms = 1 + wz.phrases.length + wz.learned.length, [, icon, label] = levelOf(forms);
+  const next = LEVELS.find(([from]) => from > forms), pct = Math.min(100, Math.round((forms / LEVELS[LEVELS.length - 1][0]) * 100));
+  return `<div class="wz-meter"><div class="row" style="justify-content:space-between"><b>${icon} ${label}</b><span class="sub">Te entiendo de ${plural(forms, 'forma', 'formas')}</span></div>
+    <div class="track"><i style="width:${pct}%"></i></div>
+    <div class="help">${next ? `${plural(next[0] - forms, 'forma más', 'formas más')} para llegar a ${next[1]} ${next[2]}.` : '¡Nivel máximo! Te entiendo de casi cualquier manera.'}</div></div>`;
+}
+function wzArena() {
+  const live = wz.listening && wz.mode === 'phrases';
+  const state = !live ? '<div class="sub">Pulsa el micrófono y dime cómo pedirías esta orden con tus palabras.<br>Puedes decir varias, una tras otra.</div>'
+    : !wz.ready ? '<div class="sub">Preparando el micrófono…</div>'
+    : `<div><b>Te escucho… dilo ahora</b><div class="wz-bar"><i key="${wz.round}"></i></div><div class="help">Di «${esc(ordData.wake_word)}» o solo la frase, como prefieras.</div></div>`;
+  const queue = wz.queue.map((q, i) => `<div class="wz-heard"><div>Oí: <b>«${esc(q)}»</b></div><div class="row" style="gap:6px"><button class="small primary" data-wz="accept" data-i="${i}">✔ Añadir</button><button class="small" data-wz="reject" data-i="${i}">✕</button></div></div>`).join('');
+  return `<div class="wz-arena" id="wz-arena"><button class="wz-mic ${live ? 'live' : ''}" data-wz="${live ? 'teachstop' : 'teachstart'}" title="${live ? 'Detener' : 'Empezar a escuchar'}">${live ? '■' : '🎙'}</button>
+    <div style="margin-top:12px">${state}</div>${live ? '<div style="margin-top:10px"><button class="small" data-wz="teachstop">Ya está</button></div>' : ''}${queue}</div>`;
+}
+function wzDeck() {
+  const chips = [`<span class="pc main">⭐ ${esc(wz.name)}</span>`,
+    ...wz.phrases.map((p, i) => `<span class="pc">${esc(p)}<button data-wz="rmphrase" data-i="${i}" title="Quitar">✕</button></span>`),
+    ...wz.learned.map((l, i) => `<span class="pc learned" title="La aprendí sola: ${esc(l.how === 'confirmed' ? 'me dijiste que sí' : 'me la enseñaste')}">✨ ${esc(l.phrase)}<button data-wz="rmlearned" data-i="${i}" title="Olvidar">✕</button></span>`)];
+  return `<div class="phrase-chips">${chips.join('')}</div>`;
+}
+function wzPhrases() {
+  if (wz.suggestions === null) { wz.suggestions = []; guarded(async () => { wz.suggestions = (await api('commands.suggest', { name: wz.name })).phrases; if (wz.step === 2) paintWizard(); }); }
+  const taken = new Set([foldPhrase(wz.name), ...wz.phrases.map(foldPhrase), ...wz.learned.map((l) => foldPhrase(l.phrase)), ...wz.queue.map(foldPhrase)]);
+  const sugg = (wz.suggestions || []).filter((s) => !taken.has(foldPhrase(s)));
+  return `<div class="wz-big">¿De qué otras formas lo pedirías?</div>
+    <p class="sub" style="margin-top:0">Ya te entiendo con «${esc(ordData.wake_word)}, ${esc(wz.name)}». Cuantas más formas me enseñes, menos tendrás que acordarte de la exacta.</p>
+    ${wzMeter()}<div id="wz-arena-box">${wzArena()}</div>
+    <div class="rp-step">Tus formas de decirlo</div><div id="wz-deck">${wzDeck()}</div>
+    ${sugg.length ? `<div class="rp-step">Ideas<small>toca para añadir</small></div><div class="wz-sugg">${sugg.map((s) => `<button data-wz="usesugg" data-s="${esc(s)}">＋ ${esc(s)}</button>`).join('')}</div>` : ''}
+    <div class="rp-step">O escríbela</div><div class="row"><input type="text" id="wz-phrase" placeholder="ponme mi canal" autocomplete="off"><button data-wz="addphrase">Añadir</button></div>`;
+}
+
+/* 4 · listo */
+function wzRecipeText() {
+  if (wz.kind === 'open') return wz.steps.map((s) => { const [ic, what, value] = stepLabel(s); return `${ic} ${what} <b>${esc(value)}</b>`; }).join('<br>');
+  return `${wz.kind === 'insert' ? '📋 Pega' : '🤖 Pide al agente'}: <b>${esc(wz.text)}</b>`;
+}
+function wzDone() {
+  const forms = 1 + wz.phrases.length + wz.learned.length, [, icon, label] = levelOf(forms);
+  const saved = wz.saved ? `<div class="banner ok"><span class="grow">Guardada. Ya funciona: di «${esc(ordData.wake_word)}, ${esc(wz.name)}». No hace falta reiniciar.</span></div>` : '';
+  return `<div class="wz-big">${wz.saved ? '¡Lista!' : 'Todo listo para guardar'}</div>${saved}
+    <div class="wz-sum"><div class="ord-name">${esc(wz.name)}</div><div class="help" style="margin:2px 0 10px">${icon} ${label} · ${plural(forms, 'forma', 'formas')} de pedirla</div>
+      <div style="margin-bottom:10px">${wzRecipeText()}</div>${wzDeck()}</div>
+    ${wz.saved ? `<div class="row"><button class="primary" data-wz="run">▶ Probar ahora</button><span class="help">Ejecuta la orden de verdad, como si la dijeras.</span></div>
+      ${wz.ran ? `<pre style="margin-top:12px">${esc(wz.ran)}</pre>` : ''}` : '<p class="sub">Al guardarla, funciona al instante.</p>'}`;
+}
+
+/* voz: el trabajo `eva teach` escucha y el panel lee lo que oyó */
+async function teachStart(mode) {
+  if (wz.listening) return;
+  wz.mode = mode; wz.listening = true; wz.ready = false; paintWizard();
+  const begin = async () => {
+    if (!wz || !wz.listening) return; // se detuvo mientras hablaba
+    const r = await post('/api/teach/start');
+    if (!r.ok) { wz.listening = false; paintWizard(); return toast(r.error); }
+    wzNext = 0; clearInterval(wzTimer); wzTimer = setInterval(() => guarded(teachPoll), 450);
+  };
+  // La voz de EVA01 va antes de abrir el micrófono, para que no se oiga a sí misma.
+  if (mode === 'phrases' && !wzSpoke) { wzSpoke = true; sayThen(`Dime cómo pedirías ${wz.name}. Con tus palabras.`, () => guarded(begin)); return; }
+  await begin();
+}
+async function teachStop() {
+  clearInterval(wzTimer); wzTimer = null;
+  if (wz) { wz.listening = false; wz.ready = false; }
+  try { await post('/api/teach/stop'); } catch { /* ya terminó */ }
+}
+async function teachPoll() {
+  if (!wz || !wz.listening) return;
+  const r = await getJson(`/api/teach/poll?from=${wzNext}`); wzNext = r.next;
+  let changed = false;
+  for (const line of r.lines) {
+    if (line === 'escuchando') { wz.ready = true; wz.round++; changed = true; }
+    else if (line === 'silencio') { wz.ready = true; changed = true; }
+    else if (line.startsWith('oí: ')) {
+      const said = stripWake(line.slice(4));
+      if (!said) continue;
+      changed = true;
+      if (wz.mode === 'name') { wz.name = said.charAt(0).toUpperCase() + said.slice(1); wz.suggestions = null; await teachStop(); }
+      else if (!wz.queue.map(foldPhrase).includes(foldPhrase(said))) wz.queue.push(said);
+    } else if (/^error/i.test(line)) { toast(line.replace(/^error(\s*\(fatal\))?:\s*/i, '')); await teachStop(); changed = true; }
+  }
+  if (!r.running && wz.listening) { await teachStop(); changed = true; if (!r.lines.length) toast('No pude escuchar: revisa el micrófono en «Doctor».'); }
+  if (!changed) return; // repintar reinicia la barra de la ronda: solo cuando algo cambió
+  const box = wz.step === 2 && $('#wz-arena-box');
+  if (box) box.innerHTML = wzArena(); else paintWizard();
+}
+function sayThen(text, then) {
+  let done = false; const once = () => { if (!done) { done = true; then(); } };
+  try {
+    const u = new SpeechSynthesisUtterance(text); u.lang = 'es-ES'; u.rate = 1.02;
+    const voice = speechSynthesis.getVoices().find((v) => v.lang.toLowerCase().startsWith('es')); if (voice) u.voice = voice;
+    u.onend = once; u.onerror = once; speechSynthesis.cancel(); speechSynthesis.speak(u);
+    setTimeout(once, 6000);
+  } catch { once(); }
+}
+
+function addPhrase(text) {
+  const p = stripWake(text); if (!p) return false;
+  const norm = foldPhrase(p);
+  if ([wz.name, ...wz.phrases, ...wz.learned.map((l) => l.phrase)].some((x) => foldPhrase(x) === norm)) { toast('Esa forma ya la tienes'); return false; }
+  wz.phrases.push(p); return true;
+}
+const WZ = {
+  close() { return closeWizard(); },
+  example(el) { wz.name = el.dataset.name; paintWizard(); },
+  listenname() { return teachStart('name'); },
+  teachstart() { return teachStart('phrases'); },
+  async teachstop() { await teachStop(); paintWizard(); },
+  async next() {
+    if (wz.step === 0) {
+      wz.name = wz.name.trim(); if (foldPhrase(wz.name).length < 2) return toast('Ponle un nombre a la orden');
+      wz.suggestions = null;
+    }
+    if (wz.step === 1) {
+      if (wz.kind === 'open' && !wz.steps.length) return toast('Añade al menos un paso');
+      if (wz.kind !== 'open' && !wz.text.trim()) return toast(wz.kind === 'insert' ? 'Escribe el texto que se pega' : 'Escribe la tarea');
+    }
+    await teachStop(); wz.step++; paintWizard();
+  },
+  async back() { await teachStop(); wz.step--; paintWizard(); },
+  kind(el) { wz.kind = el.dataset.k; paintWizard(); },
+  pickkind(el) { wz.pick = el.value; paintWizard(); const i = $('#wz-stepval'); if (i) i.focus(); },
+  addstep() {
+    const kind = wz.pick || 'app', input = $('#wz-stepval'), value = NO_VALUE.includes(kind) ? '' : input.value.trim();
+    if (!value && kind !== 'play' && !NO_VALUE.includes(kind)) return toast('Escribe qué abrir o qué buscar');
+    wz.steps.push({ kind, value });
+    paintWizard(); const again = $('#wz-stepval'); if (again && !again.disabled) again.focus();
+  },
+  rmstep(el) { wz.steps.splice(+el.dataset.i, 1); paintWizard(); },
+  up(el) { const i = +el.dataset.i; [wz.steps[i - 1], wz.steps[i]] = [wz.steps[i], wz.steps[i - 1]]; paintWizard(); },
+  down(el) { const i = +el.dataset.i; [wz.steps[i + 1], wz.steps[i]] = [wz.steps[i], wz.steps[i + 1]]; paintWizard(); },
+  accept(el) { const [said] = wz.queue.splice(+el.dataset.i, 1); addPhrase(said); paintWizard(); },
+  reject(el) { wz.queue.splice(+el.dataset.i, 1); paintWizard(); },
+  usesugg(el) { addPhrase(el.dataset.s); paintWizard(); },
+  addphrase() { const i = $('#wz-phrase'); if (addPhrase(i.value)) { paintWizard(); const again = $('#wz-phrase'); if (again) again.focus(); } },
+  rmphrase(el) { wz.phrases.splice(+el.dataset.i, 1); paintWizard(); },
+  async rmlearned(el) { const [gone] = wz.learned.splice(+el.dataset.i, 1); await api('commands.forget_phrase', { phrase: gone.phrase }); paintWizard(); },
+  async save() {
+    wz.busy = true; paintWizard();
+    try {
+      const r = await api('commands.save', { say: wz.name, also: wz.phrases, kind: wz.kind, text: wz.text, open: wz.steps.map(stepToml), replace: wz.replace });
+      wz.replace = r.file; wz.saved = true; wz.ran = '';
+    } finally { wz.busy = false; paintWizard(); }
+    ordData = await api('commands');
+  },
+  async run() {
+    wz.ran = 'Ejecutando…'; paintWizard();
+    const r = await api('commands.run', { say: wz.name });
+    wz.ran = r.output || (r.ok ? 'Hecho.' : 'No se pudo ejecutar.'); paintWizard();
+  },
+};
+
+/* --- Órdenes propias: tarjetas --- */
+function orderCard(x, i) {
+  const forms = 1 + x.also.length + x.learned.length, [, icon, label] = levelOf(forms);
+  const steps = x.kind === 'open' ? x.steps.map((s) => { const [ic, what, value] = stepLabel(s); return `<span class="step-pill" title="${esc(what)} ${esc(value)}">${ic} ${esc(value || what)}</span>`; }).join('')
+    : x.kind === 'insert' ? `<span class="step-pill">📋 ${esc(x.target)}</span>` : x.kind === 'task' ? `<span class="step-pill">🤖 ${esc(x.target)}</span>` : '';
+  const chips = [`<span class="pc main">${esc(x.say)}</span>`, ...x.also.map((p) => `<span class="pc">${esc(p)}</span>`),
+    ...x.learned.map((l) => `<span class="pc learned" title="La aprendí sola">✨ ${esc(l.phrase)}<button data-a="forgetphrase" data-phrase="${esc(l.phrase)}" title="Olvidar">✕</button></span>`)].join('');
+  return `<div class="ord ${x.error ? 'bad' : ''}"><div class="ord-top"><div class="ord-name">${esc(x.say)}</div><span class="lvl" title="Formas de pedirla que entiendo">${icon} ${plural(forms, 'forma', 'formas')}</span></div>
+    ${x.error ? `<span class="pill fail">${esc(x.error)}</span>` : `<div class="pills">${steps}</div>`}
+    <div class="phrase-chips">${chips}</div>
+    <div class="ord-acts">${x.error ? '' : `<button class="small primary" data-a="runcmd" data-say="${esc(x.say)}">▶ Probar ahora</button>`}
+      ${x.editable ? `<button class="small" data-a="editcmd" data-i="${i}">✎ Editar</button><button class="small danger" data-a="delcmd" data-file="${esc(x.origin)}">Borrar</button>` : `<span class="help">escrita a mano en ${esc(x.origin)}</span>`}</div></div>`;
+}
+function ordersMine() {
+  const c = ordData.custom, examples = ['Ver mi canal favorito', 'Modo enfoque', 'Mi correo'];
+  const warn = ordData.warnings.map((w) => `<div class="banner warn">${esc(w)}</div>`).join('');
+  if (!c.length) return `${warn}<div class="ord-empty"><h2>Crea tu primera orden</h2><p class="sub" style="max-width:520px;margin:0 auto">Una orden es algo que EVA01 hace cuando la dices: abrir tu canal, preparar tu espacio de trabajo, pegar tu correo… Yo te voy guiando y tú me enseñas cómo la pedirías.</p>
+    <div class="row"><button class="primary" data-a="newcmd">＋ Crear una orden</button></div><div class="wz-sugg" style="justify-content:center">${examples.map((e) => `<button data-a="newcmd" data-name="${esc(e)}">${esc(e)}</button>`).join('')}</div></div>`;
+  return `${warn}<div class="row" style="justify-content:space-between;margin-bottom:14px"><span class="sub">Cada orden se activa con «${esc(ordData.wake_word)}, …» y entiende todas las formas que le enseñes. Las ✨ las aprendió sola, con tu visto bueno.</span><button class="primary" data-a="newcmd">＋ Nueva orden</button></div>
+    <div class="ord-grid">${c.map(orderCard).join('')}</div>`;
+}
+
+function intentSummary(j) {
+  if (!j || typeof j !== 'object') return String(j);
+  const kind = j.kind || Object.keys(j)[0] || '?';
+  const rest = Object.entries(j).filter(([k, v]) => k !== 'kind' && v !== null && typeof v !== 'object').map(([, v]) => v);
+  return [kind, ...rest].join(' · ');
+}
+const DECISION = { AutoApproved: ['Ejecutada', 'ok'], UserConfirmed: ['Confirmada', 'ok'], UserRejected: ['Rechazada', 'warn'], Blocked: ['Bloqueada', 'fail'] };
+function ordersLog() {
+  if (!ordAudit.length) return '<div class="card empty">Aún no se ha ejecutado ninguna orden.</div>';
+  let last = '', html = '';
+  for (const a of ordAudit) {
+    if (a.day !== last) { last = a.day; html += `<div class="day"><span>${esc(dayLabel(a.day))}</span></div>`; }
+    const [label, cls] = DECISION[a.decision] || [a.decision, 'mute'];
+    html += `<div class="card" style="padding:12px 16px"><div class="row" style="justify-content:space-between;cursor:pointer" data-a="auditopen" data-id="${a.id}">
+      <div><span class="sub">${esc(a.time)}</span> &nbsp; <b>${esc(intentSummary(a.intent))}</b></div><span class="pill ${cls}">${label}</span></div>
+      ${a.result ? `<div class="sub" style="margin-top:4px">→ ${esc(a.result)}</div>` : ''}
+      <div class="detail" id="au-${a.id}" style="display:none;grid-column:auto"><dl style="margin:0">${a.heard ? `<dt>Lo que dijiste</dt><dd>${esc(a.heard)}</dd>` : ''}${a.final ? `<dt>Transcripción final</dt><dd>${esc(a.final)}</dd>` : ''}<dt>Intención (JSON)</dt><dd><pre>${esc(JSON.stringify(a.intent, null, 2))}</pre></dd></dl></div></div>`;
+  }
+  return html;
+}
+
+/* --- Tareas --- */
+RENDER.tareas = async () => {
+  const { tasks } = await api('tasks');
+  const running = tasks.filter((t) => t.state === 'running'), done = tasks.filter((t) => t.state !== 'running');
+  const name = (p) => ({ claude_code: 'Claude', codex: 'Codex' }[p] || p);
+  const dur = (s) => (s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
+  const row = (t) => `<div class="card" style="padding:14px 18px"><div class="row" style="justify-content:space-between"><b>${esc(name(t.provider))} · ${esc(t.time)}</b>
+    <span class="pill ${t.state === 'ok' ? 'ok' : t.state === 'failed' ? 'fail' : 'warn'}">${t.state === 'ok' ? 'Terminó bien' : t.state === 'failed' ? 'Falló' : 'En curso'} · ${dur(t.seconds)}</span></div>
+    <div style="margin:6px 0">${esc(t.prompt)}</div>${t.summary ? `<div class="sub">→ ${esc(t.summary)}</div>` : ''}
+    <div class="help" style="margin-top:6px">${esc(t.project)}${t.branch ? ` · rama <code>${esc(t.branch)}</code>` : ''}</div></div>`;
+  let html = '', last = '';
+  for (const t of done) { if (t.day !== last) { last = t.day; html += `<div class="day"><span>${esc(dayLabel(t.day))}</span></div>`; } html += row(t); }
+  $('#main').innerHTML = head('Tareas', 'Lo que le pediste a Codex o Claude Code, y cómo terminó.', '<button data-a="fix" data-id="open_logs">Abrir carpeta de registros</button>') +
+    `<h3>En curso</h3>${running.length ? running.map(row).join('') : '<div class="card empty">Ninguna tarea en curso.</div>'}<h3>Recientes</h3>${html || '<div class="card empty">Aún no hay tareas. Di «Adán, arregla…» y aparecerán aquí.</div>'}
+    <p class="help">Los registros técnicos en vivo están en <a href="#doctor" style="color:var(--link)">Doctor</a>.</p>`;
+};
+
+/* --- Estilo --- */
+let styleRules = [];
+const STYLES = ['default', 'casual', 'formal', 'terminal'];
+const PRESETS = [['Slack', 'com.tinyspeck.slackmacgap', 'casual'], ['WhatsApp', 'net.whatsapp.WhatsApp', 'casual'], ['Mensajes', 'com.apple.MobileSMS', 'casual'],
+  ['Discord', 'com.hnc.Discord', 'casual'], ['Mail', 'com.apple.mail', 'formal'], ['Outlook', 'com.microsoft.Outlook', 'formal'], ['Terminal', 'com.apple.Terminal', 'terminal'], ['iTerm', 'com.googlecode.iterm2', 'terminal']];
+RENDER.estilo = async () => { const c = await api('config'); styleRules = (c.values.styles && c.values.styles.apps) || []; paintStyle(c); };
+function paintStyle(c) {
+  $('#main').innerHTML = head('Estilo', 'Cómo se escribe según la aplicación en la que dictas.') + `
+  <div class="card"><h2>Estilos</h2><table><tr><td><b>default</b></td><td>Texto normal, bien puntuado.</td></tr><tr><td><b>casual</b></td><td>Más suelto, para chats.</td></tr>
+  <tr><td><b>formal</b></td><td>Cuidado y completo, para correo y documentos.</td></tr><tr><td><b>terminal</b></td><td>Sin adornos ni espacio final, para comandos.</td></tr></table></div>
+  <div class="card"><h2>Reglas por aplicación</h2><p class="sub" style="margin-top:0">Se miran antes que las reglas integradas. Añade un preajuste o escribe el identificador de la app.</p>
+    <div style="margin-bottom:12px">${PRESETS.map((p) => `<button class="small" style="margin:0 6px 6px 0" data-a="preset" data-b="${p[1]}" data-s="${p[2]}">+ ${p[0]} → ${p[2]}</button>`).join('')}</div>
+    <table id="rules">${styleRules.map((r, i) => `<tr><td><input type="text" data-a="rulebundle" data-i="${i}" value="${esc(r.bundle_id)}"></td><td style="width:150px"><select data-a="rulestyle" data-i="${i}">${STYLES.map((s) => `<option ${s === r.style ? 'selected' : ''}>${s}</option>`).join('')}</select></td><td style="width:50px"><button class="icon danger" data-a="rmrule" data-i="${i}">×</button></td></tr>`).join('') || '<tr><td class="sub">Sin reglas propias.</td></tr>'}</table>
+    <div class="row" style="margin-top:12px"><button data-a="addrule">+ Regla vacía</button><button class="primary" data-a="saverules">Guardar reglas</button></div></div>
+  <div class="card"><div class="toggle"><div><div class="t">Espacio tras cada dictado</div><div class="help">Evita que el siguiente dictado se pegue a la última palabra. Nunca se añade en una terminal.</div></div>
+    <label class="switch"><input type="checkbox" data-a="setflag" data-key="dictation.trailing_space" ${c.values.dictation.trailing_space ? 'checked' : ''}><span></span></label></div></div>`;
+}
+
+/* --- Calibración --- */
+function feedbackHtml(f) {
+  const bad = (f.words || []).filter((w) => w.heard || w.meant);
+  return `<div style="margin:6px 0 10px"><span class="pill ${f.kind === 'command' ? 'blue' : 'mute'}">${f.kind === 'command' ? '⌘ era una orden' : '🎙 era un dictado'}</span>
+    ${(f.causes || []).map((c) => `<span class="pill mute">${esc((CAUSES.find((x) => x[0] === c) || [])[1] || c)}</span>`).join(' ')}
+    ${f.note ? `<p class="help" style="margin:6px 0 0">${esc(f.note)}</p>` : ''}
+    ${bad.length ? `<div style="margin-top:8px">${bad.map((w) => `<div class="learned"><span><code>${esc(w.heard || '(nada)')}</code> → <code>${esc(w.meant || '(sobra)')}</code> <span class="help">${esc(w.category || '')}${STAGES[w.stage] ? ' · ' + STAGES[w.stage][0] : ''}</span></span><span class="help">${w.learn ? 'aprendida' : w.dict ? 'diccionario' : 'solo registro'}</span></div>`).join('')}</div>` : ''}</div>`;
+}
+async function paintLearned() {
+  const l = await api('corrections'); const box = $('#learned'); if (!box) return;
+  const rows = l.corrections.map((c) => `<div class="learned"><span>«${esc(c.heard)}» → <code>${esc(c.meant)}</code> ${c.hits > 1 ? `<span class="help">×${c.hits}</span>` : ''}</span><button class="small" data-a="unlearn" data-heard="${esc(c.heard)}">Olvidar</button></div>`)
+    .concat(l.wake_variants.map((w) => `<div class="learned"><span>«${esc(w)}» cuenta como «${esc(l.wake_word)}» <span class="help">(palabra de activación)</span></span><button class="small" data-a="unlearn" data-wake="1" data-heard="${esc(w)}">Olvidar</button></div>`));
+  box.innerHTML = rows.length ? rows.join('') : '<p class="help" style="margin:0">Todavía nada. Cuando reportes un dictado y confirmes palabras, aparecerán aquí y se aplicarán solas.</p>';
+}
+RENDER.calibracion = async () => {
+  const [c, l] = await Promise.all([api('calibration'), api('learned')]); flaggedToday = c.flagged_today; renderNav();
+  $('#main').innerHTML = head('Calibración', 'Enséñale a EVA01 tu voz y corrige lo que salió mal.') + calCard(l) + learnedCard(l) + `<h3>Dictados marcados con ⚑</h3><p class="sub" style="margin-top:0">Los que marcaste (o con ⌃⌥⌘M): escúchalos, dinos cómo debían salir y añade lo que falte al diccionario.</p>` + `
+  <div class="kpis"><div class="kpi"><b>${num(c.flagged.length)}</b><span>marcados en total</span></div><div class="kpi"><b>${num(c.flagged_today)}</b><span>en las últimas 24 h</span></div>
+    <div class="kpi"><b>${esc(c.padding)}</b><span>relleno de audio (stt.padding)</span></div><div class="kpi"><b>${c.second_opinion ? 'sí' : 'no'}</b><span>segunda opinión</span></div></div>
+  <div class="card"><h2>Ajustes de reconocimiento</h2><div class="row"><div style="flex:1;min-width:180px"><label class="f" style="margin-top:0">Relleno de audio</label><select data-a="setsel" data-key="stt.padding">${['auto', 'silence', 'none'].map((v) => `<option ${v === c.padding ? 'selected' : ''}>${v}</option>`).join('')}</select><div class="help">«auto» es lo medido como mejor; prueba con tus marcados.</div></div>
+    <div style="flex:1;min-width:180px"><label class="f" style="margin-top:0">Idioma</label><input type="text" value="${esc(c.language)}" data-a="settext" data-key="stt.language"><div class="help">Código ISO: es, en…</div></div></div>
+    <div class="toggle" style="margin-top:8px"><div><div class="t">Segunda opinión en frases cortas</div><div class="help">Carga el modelo pequeño para comprobar la palabra de activación (~250 MB más).</div></div><label class="switch"><input type="checkbox" data-a="setflag" data-key="stt.second_opinion" ${c.second_opinion ? 'checked' : ''}><span></span></label></div></div>
+  <div class="card"><h2>Lo que EVA01 ya aprendió de ti</h2><p class="sub" style="margin-top:0">Se aplica a cada dictado y a cada orden. Si una corrección estorba, olvídala.</p><div id="learned"></div></div>
+  ${c.flagged.length ? c.flagged.map((r) => `<div class="card" id="cal-${r.id}"><div class="row" style="justify-content:space-between"><b>${esc(dayLabel(r.day))} · ${esc(r.time)}</b>${r.expected ? '<span class="pill ok">con corrección</span>' : '<span class="pill warn">falta corrección</span>'}</div>
+    ${r.audio ? `<div style="margin:10px 0"><audio controls src="/audio/${r.id}.wav?t=${encodeURIComponent(token)}"></audio></div>` : '<p class="help">Sin audio guardado para este dictado.</p>'}
+    ${r.feedback ? feedbackHtml(r.feedback) : ''}
+    <dl style="margin:0"><dt class="help">Oído</dt><dd style="margin:0 0 8px">${esc(r.raw) || '—'}</dd><dt class="help">Pegado — toca una palabra para el diccionario</dt><dd style="margin:0 0 8px">${wordsOf(r.text)}</dd></dl>
+    <label class="f" style="margin-top:6px">Cómo debía salir</label><textarea id="exp-${r.id}" placeholder="Escribe el texto correcto">${esc(r.expected || '')}</textarea>
+    <div style="margin-top:8px"><button class="primary small" data-a="saveexp" data-id="${r.id}">Guardar como muestra</button> <button class="small" data-a="flag" data-id="${r.id}">Detallar qué falló</button></div></div>`).join('') : '<div class="card empty">Nada marcado. Cuando un dictado salga mal, pulsa ⚑ en el historial o ⌃⌥⌘M.</div>'}
+  <div class="card"><h2>Corpus</h2><p class="sub" style="margin-top:0">Cada corrección guardada deja el par audio + texto en <code>${esc(c.harvest_dir)}</code>. Con eso se mide y se mejora el reconocimiento:<br><code>cargo run --release -p eva-eval -- --corpus "${esc(c.harvest_dir)}" --padding auto</code></p><button data-a="fix" data-id="open_harvest">Abrir carpeta</button></div>`;
+  paintLearned();
+};
+
+/* Calibración guiada: `eva calibrate`, en vivo */
+let calTimer = null, calNext = 0, calTotal = 0;
+const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('es', { dateStyle: 'long', timeStyle: 'short' }) : null);
+function calCard(l) {
+  const last = fmtWhen(l.last_calibration);
+  return `<div class="card"><h2>Calibrar mi voz</h2>
+    <p class="sub" style="margin-top:0">EVA01 te pide unas frases y oye cómo salen: así aprende cómo se escribe «${esc(l.wake_word)}» y tus aplicaciones cuando las dices tú. Dura cerca de un minuto, usa el micrófono de EVA01 y <b>no ejecuta nada</b>.</p>
+    <div class="row"><button class="primary" id="calbtn" data-a="calstart">Calibrar mi voz</button><button id="calstop" data-a="calstop" hidden>Detener</button>
+      <span class="help" id="callast">${last ? `Última calibración: ${esc(last)}` : 'Aún no has calibrado.'}</span></div>
+    <div id="calrun" hidden style="margin-top:16px"><div id="calbar" style="height:6px;border-radius:99px;background:var(--code);overflow:hidden"><i id="calfill" style="display:block;height:100%;width:0;background:var(--accent);transition:width .3s"></i></div>
+      <div id="calnow" class="serif" style="font-size:26px;margin:14px 0 2px"></div><div id="calheard" class="sub" style="min-height:1.5em"></div><pre id="callog" style="max-height:220px;margin-top:10px"></pre></div></div>`;
+}
+function learnedCard(l) {
+  const row = (main, sub, kind, key) => `<tr><td>${main}</td><td class="sub">${sub}</td><td style="text-align:right"><button class="small danger" data-a="forget" data-kind="${kind}" data-key="${esc(key)}">Olvidar</button></td></tr>`;
+  const rows = [
+    ...l.wake_variants.map((v) => row(`«${esc(v.word)}» cuenta como «${esc(l.wake_word)}»`, `oída ${v.hits} ${v.hits === 1 ? 'vez' : 'veces'}`, 'wake', v.word)),
+    ...(l.phrases || []).map((p) => row(`«${esc(p.phrase)}» → orden «${esc(p.command)}»`, 'orden', 'phrase', p.phrase)),
+    ...l.aliases.map((a) => row(`«${esc(a.heard)}» → ${esc(a.app)}`, 'app', 'alias', a.heard)),
+    ...l.corrections.map((c) => row(`«${esc(c.heard)}» → «${esc(c.meant)}»`, `corrección · ${c.hits} ${c.hits === 1 ? 'vez' : 'veces'}`, 'correction', c.heard)),
+  ];
+  return `<div class="card" id="learned"><h2>Lo aprendido</h2><p class="sub" style="margin-top:0">Se aplica en el siguiente dictado, sin reiniciar. Olvida lo que no te sirva.</p>
+    ${rows.length ? `<table>${rows.join('')}</table>` : '<p class="sub" style="margin:0">Todavía nada. Calibra tu voz o marca un dictado como mal.</p>'}</div>`;
+}
+function calShow(running) {
+  const run = $('#calrun'); if (!run) return;
+  run.hidden = false; $('#calbtn').disabled = running; $('#calstop').hidden = !running;
+}
+function calAppend(lines) {
+  const log = $('#callog'); if (!log) return;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, ''); if (!line.trim()) continue;
+    const m = line.match(/^\s*(\d+)\/(\d+)\s+Di:\s*(.*)$/);
+    if (m) { calTotal = +m[2]; $('#calnow').textContent = m[3]; $('#calheard').textContent = 'Habla ahora…'; $('#calfill').style.width = `${((+m[1] - 1) / calTotal) * 100}%`; }
+    else if (/^\s*oí:/.test(line)) { $('#calheard').textContent = line.trim(); }
+    else if (/^\s*Aprendido:/.test(line)) { $('#calheard').textContent = '✓ ' + line.trim(); }
+    log.textContent += line + '\n'; log.scrollTop = log.scrollHeight;
+  }
+}
+async function calPoll() {
+  try {
+    const r = await getJson(`/api/calibrate/poll?from=${calNext}`);
+    calNext = r.next; calAppend(r.lines); calShow(r.running);
+    if (!r.running) {
+      clearInterval(calTimer); calTimer = null;
+      if (r.exit === 0) {
+        $('#calfill').style.width = '100%'; $('#calnow').textContent = 'Calibración lista';
+        await api('calibration.done'); const l = await api('learned');
+        $('#learned').outerHTML = learnedCard(l); $('#callast').textContent = `Última calibración: ${fmtWhen(l.last_calibration)}`;
+        toast('Calibración terminada');
+      } else if (r.exit !== null) { $('#calheard').textContent = 'La calibración no terminó bien; revisa el registro de arriba.'; }
+    }
+  } catch (e) { clearInterval(calTimer); calTimer = null; calShow(false); toast(e.message); }
+}
+function calWatch() { clearInterval(calTimer); calTimer = setInterval(calPoll, 700); calPoll(); }
+async function calResume() {
+  // Coming back to the page while a calibration is running: pick it up from the start.
+  try { const r = await getJson('/api/calibrate/poll?from=0'); if (r.running) { calNext = 0; $('#callog').textContent = ''; calShow(true); calWatch(); } } catch { /* nothing to resume */ }
+}
+
+/* --- Configuración --- */
+const SECTIONS = [
+  ['General', [['wake', 'Palabra de activación', 'text', 'La que va antes de una orden («Adán, abre Brave»).'],
+    ['hotkey.dictation', 'Tecla de dictado', 'text', '«fn» o una combinación: cmd+shift+space, alt+space…'],
+    ['hotkey.confirm', 'Tecla «sí» a una pregunta', 'text', ''], ['hotkey.cancel', 'Tecla «no» / cancelar', 'text', ''], ['hotkey.flag_bad', 'Tecla «esto salió mal»', 'text', '']]],
+  ['Sonido al dictar', [['dictation.pause_media', 'Pausar la música y silenciar el Mac mientras hablas', 'bool', 'Al mantener la tecla: Spotify o Música (si suenan) se pausan y el volumen del Mac baja a cero, para que el micrófono te oiga solo a ti. Al soltar, todo vuelve. La primera vez macOS pide permiso para controlar Spotify o Música.']]],
+  ['Historial', [['history.save_transcripts', 'Guardar el texto de cada dictado', 'bool', 'Apagado: nada de lo que dices se escribe en disco.'],
+    ['history.keep_days', 'Días que se conservan', 'int', '0 = para siempre. Los marcados con ⚑ nunca se borran.']]],
+  ['Agentes', [['agents.priority', 'Prioridad', 'list', 'Separados por comas: codex, claude_code'],
+    ['agents.worktree', 'Cada tarea en una rama desechable de git', 'bool', ''], ['agents.default_project', 'Proyecto por defecto', 'text', 'Cuando la pantalla no dice cuál.'],
+    ['agents.project_roots', 'Carpetas de proyectos', 'lines', 'Una por línea; sus subcarpetas son proyectos.']]],
+  ['Avisos', [['feedback.voice', 'Voz para anunciar resultados', 'text', 'Una voz de `say`: Mónica, Paulina…'],
+    ['feedback.speak_task_results', 'Decir en voz alta cuando una tarea termina', 'bool', ''], ['feedback.notify_task_results', 'Notificación cuando una tarea termina', 'bool', ''],
+    ['feedback.task_timeout_secs', 'Segundos máximos por tarea', 'int', '0 = sin límite.'],
+    ['feedback.send_animation_ms', 'Espera antes de pegar (ms)', 'int', 'La flecha de la isla se ve un instante antes de que aparezca el texto. 0 = pegar al instante, sin esperar nada.']]],
+  ['Modelo remoto (apagado por defecto)', [['remote.enabled', 'Usar un modelo remoto', 'bool', 'Si lo activas, lo que dictas SALE de tu Mac hacia ese servicio.'],
+    ['remote.base_url', 'Dirección de la API', 'text', 'https://api.openai.com/v1'], ['remote.api_key_env', 'Variable de entorno de la clave', 'text', 'La clave nunca se guarda aquí.'],
+    ['remote.model', 'Modelo', 'text', ''], ['remote.use_for', 'Para qué', 'list', 'edit, format']]],
+];
+let cfg = null, dirty = {};
+const at = (o, path) => path.split('.').reduce((v, k) => (v == null ? v : v[k]), o);
+RENDER.config = async () => { cfg = await api('config'); dirty = {}; paintConfig(); };
+function fieldHtml([key, label, kind, help]) {
+  let cur = key === 'wake' ? cfg.wake_word : at(cfg.values, key);
+  if (key in dirty) cur = dirty[key];
+  const h = help ? `<div class="help">${esc(help)}</div>` : '';
+  if (kind === 'bool') return `<div class="toggle"><div><div class="t">${label}</div>${h}</div><label class="switch"><input type="checkbox" data-a="cfg" data-key="${key}" data-kind="bool" ${cur ? 'checked' : ''}><span></span></label></div>`;
+  const val = kind === 'list' ? (cur || []).join(', ') : kind === 'lines' ? (cur || []).join('\n') : (cur ?? '');
+  const input = kind === 'lines' ? `<textarea data-a="cfg" data-key="${key}" data-kind="lines">${esc(val)}</textarea>`
+    : `<input type="${kind === 'int' ? 'number' : 'text'}" data-a="cfg" data-key="${key}" data-kind="${kind}" value="${esc(val)}">`;
+  return `<label class="f">${label}</label>${input}${h}`;
+}
+function paintConfig() {
+  const policies = cfg.gateway.map((g) => `<tr><td><b>${esc(g.kind)}</b></td>${['voice', 'agent'].map((o) => { const key = `gateway.${o}.${g.kind}`; const cur = key in dirty ? dirty[key] : (g[o + '_overridden'] ? g[o] : 'default');
+    return `<td><select data-a="cfg" data-key="${key}" data-kind="policy">${['default', 'auto', 'confirm', 'block'].map((p) => `<option value="${p}" ${p === cur ? 'selected' : ''}>${p === 'default' ? `predeterminada (${g[o]})` : p}</option>`).join('')}</select></td>`; }).join('')}</tr>`).join('');
+  $('#main').innerHTML = head('Configuración', `Se guarda en <code>${esc(cfg.path)}</code> sin perder tus comentarios. Cada cambio deja una copia <code>.bak</code>.`,
+    `<button class="primary" id="savecfg" data-a="savecfg">Guardar cambios</button>`) +
+    `<div id="cfgmsg">${cfg.warnings.map((w) => `<div class="banner warn">${esc(w)}</div>`).join('')}</div>` +
+    SECTIONS.map(([t, fields]) => `<div class="card"><h2>${t}</h2>${fields.map(fieldHtml).join('')}</div>`).join('') +
+    `<div class="card"><h2>Seguridad: qué puede hacer cada quien</h2><p class="sub" style="margin-top:0">Por acción: <b>auto</b> la ejecuta, <b>confirm</b> te pregunta (⌘↩ / ⌘⎋, nunca por voz), <b>block</b> la rechaza. Hay pisos de seguridad que no se pueden aflojar.</p>
+    <table><tr><th>Acción</th><th>Tú, por voz</th><th>Un agente (MCP)</th></tr>${policies}</table>
+    <label class="f">Segundos que espera una confirmación</label><input type="number" data-a="cfg" data-key="gateway.confirm_timeout_secs" data-kind="int" value="${esc(dirty['gateway.confirm_timeout_secs'] ?? cfg.confirm_timeout_secs ?? '')}" placeholder="30"></div>
+    <div class="card"><h2>Archivos</h2><div class="row"><button data-a="fix" data-id="open_config">Abrir config.toml</button><button data-a="fix" data-id="open_commands">Abrir carpeta de órdenes</button><button data-a="fix" data-id="open_logs">Abrir registros</button></div></div>`;
+}
+function readCfgInput(el) {
+  const kind = el.dataset.kind;
+  if (kind === 'bool') return el.checked;
+  if (kind === 'int') return el.value.trim() === '' ? (el.dataset.key === 'gateway.confirm_timeout_secs' ? null : 0) : Number(el.value);
+  if (kind === 'list') return el.value.split(',').map((s) => s.trim()).filter(Boolean);
+  if (kind === 'lines') return el.value.split('\n').map((s) => s.trim()).filter(Boolean);
+  return el.value;
+}
+async function saveConfig() {
+  const changes = { ...dirty }; const wake = changes.wake; delete changes.wake;
+  if (!Object.keys(changes).length && wake === undefined) return toast('No hay cambios.');
+  let result = { warnings: [] };
+  if (wake !== undefined) await api('wake_word.set', { word: wake });
+  if (Object.keys(changes).length) result = await api('config.set', { changes });
+  dirty = {};
+  const fresh = await api('config'); cfg = fresh;
+  paintConfig();
+  $('#cfgmsg').innerHTML = `<div class="banner ok"><span class="grow">Guardado. Reinicia EVA01 para aplicarlo.</span><button class="small" data-a="fix" data-id="restart_app">Reiniciar EVA01</button></div>` +
+    (result.warnings || []).map((w) => `<div class="banner warn">${esc(w)}</div>`).join('');
+}
+
+/* --- Desarrollador: qué modelos corren y cómo cambiarlos --- */
+const gb = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
+const hint = (cmd, label = 'Copiar comando') => `<button class="small" data-a="copyhint" data-hint="\`${esc(cmd)}\`" title="${esc(cmd)}">${label}</button>`;
+const dot = (ok, warn) => `<span class="pill ${ok ? 'ok' : warn ? 'warn' : 'mute'}">${ok ? 'activo' : warn ? 'atención' : 'apagado'}</span>`;
+RENDER.dev = async () => {
+  const [m, i] = await Promise.all([api('models'), api('info')]);
+  const s = m.stt, f = m.formatter, r = m.resolver;
+  const kindName = { canary: 'Canary (NVIDIA NeMo, ONNX)', whisper: 'Whisper', none: 'ninguno' }[s.kind];
+  const activeId = (s.models.find((x) => x.active) || {}).id;
+  const options = [`<option value="" ${!s.override ? 'selected' : ''}>Automático (el mejor instalado)</option>`]
+    .concat(s.models.map((x) => `<option value="${esc(x.path)}" ${s.override === x.path ? 'selected' : ''} ${x.installed ? '' : 'disabled'}>${esc(x.id)}${x.installed ? '' : ' — no instalado'}</option>`)).join('');
+  const sel = r.installed ? r.installed.map((x) => x.name) : [];
+  const modelOptions = (sel.includes(r.model) ? sel : [r.model].concat(sel))
+    .map((n) => `<option value="${esc(n)}" ${n === r.model ? 'selected' : ''}>${esc(n)}${sel.includes(n) ? '' : ' — no descargado'}</option>`).join('');
+  const toInstall = r.suggested.filter((n) => !sel.includes(n));
+  $('#main').innerHTML = head('Desarrollador', 'Qué modelos usa EVA01 ahora mismo, y cómo cambiarlos. Los cambios se guardan en config.toml y se aplican al reiniciar.',
+    `<button data-a="fix" data-id="restart_app">Reiniciar EVA01</button>`) + `
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Voz a texto</h2>${dot(s.kind !== 'none', s.kind === 'none')}</div>
+    <p class="sub" style="margin:6px 0 12px">En uso: <b>${esc(activeId || kindName)}</b> · ${esc(kindName)}${s.active_path ? `<br><code>${esc(s.active_path)}</code>` : ''}</p>
+    <label class="f" style="margin-top:0">Modelo principal</label>
+    <select data-a="devset" data-key="stt.canary_dir">${options}</select>
+    <div class="help">«Automático» prueba canary-1b-flash y luego canary-180m-flash. Elegir uno fuerza ese.</div>
+    <table style="margin-top:12px"><tr><th>Modelo</th><th>Tamaño</th><th>Estado</th><th></th></tr>
+    ${s.models.map((x) => `<tr><td><b>${esc(x.id)}</b><div class="help">${esc(x.description)}</div></td><td>${gb(x.bytes)}</td>
+      <td>${x.active ? '<span class="pill ok">en uso</span>' : x.installed ? '<span class="pill mute">instalado</span>' : '<span class="pill warn">no instalado</span>'}</td>
+      <td style="text-align:right">${x.installed ? '' : hint('eva model install ' + x.id, 'Copiar «instalar»')}</td></tr>`).join('')}</table>
+    <div class="toggle" style="margin-top:12px"><div><div class="t">Segunda opinión en frases cortas</div><div class="help">${s.second_opinion.active ? 'Cargada: canary-180m-flash comprueba las frases cortas.' : !s.second_opinion.installed ? 'Necesita canary-180m-flash instalado.' : s.second_opinion.wanted ? 'Activada, pero el modelo principal ya es el pequeño.' : 'Apagada.'}</div></div>
+      <label class="switch"><input type="checkbox" data-a="devflag" data-key="stt.second_opinion" ${s.second_opinion.wanted ? 'checked' : ''}><span></span></label></div>
+    <div class="row" style="margin-top:8px"><div style="flex:1;min-width:160px"><label class="f" style="margin-top:0">Idioma</label><input type="text" value="${esc(s.language)}" data-a="devset" data-key="stt.language"></div>
+      <div style="flex:1;min-width:160px"><label class="f" style="margin-top:0">Relleno de audio</label><select data-a="devset" data-key="stt.padding">${['auto', 'silence', 'none'].map((v) => `<option ${v === s.padding ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div></div>
+
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Formato del texto</h2>${dot(f.apple_intelligence, true)}</div>
+    <p class="sub" style="margin:6px 0 0">${f.apple_intelligence ? '<b>Apple Intelligence</b> (Foundation Models, en el equipo): puntuación, mayúsculas y estilo por app.' : '<b>Solo reglas</b>: Apple Intelligence no está disponible en este Mac (Ajustes del Sistema → Apple Intelligence y Siri).'}</p>
+    <p class="sub" style="margin:8px 0 0">Modelo remoto: ${f.remote.enabled ? `<b>activado</b> (${esc(f.remote.model)} en ${esc(f.remote.base_url)} para ${esc(f.remote.use_for.join(', ') || '—')}). Esos textos salen de este Mac.` : 'apagado: nada sale de tu Mac.'}
+      <a href="#config">Cambiar en Configuración</a></p></div>
+
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Resolvedor de apps (modelo local)</h2>${dot(r.enabled && r.running && r.model_ready, r.enabled)}</div>
+    <p class="sub" style="margin:6px 0 12px">Cuando «abre <i>algo</i>» no coincide con ninguna app por nombre ni por sonido, este modelo decide cuál de tus apps quisiste decir y EVA01 lo recuerda. Solo se usa un servidor de este Mac.</p>
+    <div class="toggle"><div><div class="t">Usar el modelo local</div><div class="help">Si no responde, se omite sin error.</div></div>
+      <label class="switch"><input type="checkbox" data-a="devflag" data-key="resolver.enabled" ${r.enabled ? 'checked' : ''}><span></span></label></div>
+    ${!r.local_address ? '<div class="banner warn">La dirección no es de este Mac: se ignora. Usa http://127.0.0.1:11434/v1</div>' : ''}
+    ${r.running ? `<p class="sub" style="margin:8px 0">Ollama responde en ${esc(r.base_url)} · ${sel.length} modelo${sel.length === 1 ? '' : 's'} descargado${sel.length === 1 ? '' : 's'}${r.installed.some((x) => x.loaded) ? ' · cargado en memoria: <b>' + esc(r.installed.filter((x) => x.loaded).map((x) => x.name).join(', ')) + '</b>' : ''}.</p>`
+      : `<div class="banner warn"><span class="grow">No responde nada en ${esc(r.base_url)}. Arranca Ollama para usarlo.</span>${hint('brew services start ollama', 'Copiar «arrancar Ollama»')}</div>`}
+    <label class="f">Modelo</label><select data-a="devset" data-key="resolver.model">${modelOptions}</select>
+    <div class="help">${r.model_ready ? 'Listo.' : `«${esc(r.model)}» no está descargado.`} ${toInstall.length ? 'Otros que aguanta tu Mac: ' + toInstall.map((n) => `<code>${esc(n)}</code>`).join(', ') + '.' : ''}</div>
+    ${r.model_ready ? '' : `<div style="margin-top:8px">${hint('ollama pull ' + r.model, 'Copiar «descargar modelo»')}</div>`}
+    ${toInstall.length ? `<div style="margin-top:8px" class="row">${toInstall.filter((n) => n !== r.model).map((n) => hint('ollama pull ' + n, 'Copiar: pull ' + n)).join(' ')}</div>` : ''}
+    <label class="f">Dirección (Ollama)</label><input type="text" value="${esc(r.base_url)}" data-a="devset" data-key="resolver.base_url"><div class="help">Debe ser 127.0.0.1 o localhost.</div>
+    <label class="f">Probarlo con tus apps reales</label>
+    <div class="row"><input type="text" id="rt-heard" placeholder="Cómo lo oye EVA01: breve, zafarí, wasap…" style="flex:1;min-width:200px"><button class="primary" data-a="rtest">Probar</button></div><div id="rt-out" class="help" style="margin-top:8px"></div></div>
+
+  <div class="card"><h2>Versión y archivos</h2>
+    <p class="sub" style="margin-top:0">EVA01 ${esc(i.version)}</p>
+    <table><tr><td>Configuración</td><td><code>${esc(i.config_path)}</code></td></tr><tr><td>Base de datos</td><td><code>${esc(i.database)}</code></td></tr>
+    <tr><td>Muestras y audio</td><td><code>${esc(i.harvest_dir)}</code></td></tr><tr><td>Carpeta de datos</td><td><code>${esc(i.support_dir)}</code></td></tr></table>
+    <div class="row" style="margin-top:12px"><button data-a="fix" data-id="open_config">Abrir config.toml</button><button data-a="fix" data-id="open_logs">Abrir registros</button></div></div>`;
+};
+
+/* --- Ayuda --- */
+RENDER.ayuda = async () => {
+  const i = await api('info');
+  $('#main').innerHTML = head('Ayuda', `EVA01 ${esc(i.version)}`) + `
+  <div class="card flush"><table><tr><th>Haces</th><th>Pasa</th></tr>
+  <tr><td><b>Mantienes fn</b> y hablas</td><td>El texto aparece donde tengas el cursor.</td></tr>
+  <tr><td>«Adán, abre Brave»</td><td>Abre la app (y «cierra Spotify», «busca el clima»).</td></tr>
+  <tr><td>«Adán, arregla el bug del login»</td><td>Tarea para Codex o Claude Code en una rama <code>eva/xxxx</code>.</td></tr>
+  <tr><td>Seleccionas texto, «Adán, hazlo más corto»</td><td>Reescribe la selección.</td></tr>
+  <tr><td><b>⌘↩ / ⌘⎋</b></td><td>Contestas sí / no cuando EVA01 pregunta.</td></tr>
+  <tr><td><b>⌃⌥⌘M</b></td><td>Marca el último dictado como mal transcrito (guarda su audio).</td></tr></table></div>
+  <div class="card"><h2>Dónde está todo</h2><table>${[['Datos y modelos', i.support_dir], ['Configuración', i.config_path], ['Órdenes propias', i.commands_dir], ['Audios marcados', i.harvest_dir], ['Base de datos', i.database]].map(([k, v]) => `<tr><td>${k}</td><td><code>${esc(v)}</code></td></tr>`).join('')}</table></div>
+  <div class="card"><h2>Lo que este panel no tiene</h2><p class="sub" style="margin:0">Notas, «Transforms» y planes de pago: EVA01 no los tiene, así que no hay pantalla que simule que existen.</p></div>`;
+};
+
+/* --- Doctor --- */
+let lastReport = null, filter = 'all', running = false;
+const FIXES = { reset_accessibility: ['Restablecer permiso', 'Quita el permiso viejo de EVA01 y abre Ajustes'], open_accessibility: ['Abrir Ajustes', 'Privacidad y seguridad → Accesibilidad'],
+  open_microphone: ['Abrir Ajustes', 'Privacidad y seguridad → Micrófono'], restart_app: ['Reiniciar EVA01', 'Cierra y vuelve a abrir la app'],
+  install_model: ['Instalar modelo de voz', 'Descarga ~940 MB'], enable_startup: ['Abrir al iniciar sesión', ''], open_logs: ['Abrir registros', ''] };
+RENDER.doctor = async () => {
+  $('#main').innerHTML = head('Doctor', 'Diagnóstico, soluciones y registros en vivo', '<button id="run" class="primary" data-a="rundoc">Ejecutar diagnóstico</button> <button id="smoke" data-a="rundoc" data-smoke="1" title="Hace que cada agente responda algo de verdad">Probar agentes</button>') + `
+  <div id="dbanner" class="dbanner"><div class="dot">…</div><div><h2>Sin ejecutar</h2><p>Pulsa «Ejecutar diagnóstico».</p></div></div>
+  <div class="row" id="dfilters" hidden style="margin-bottom:12px"><button class="tab on" data-a="dfilter" data-f="all">Todo</button><button class="tab" data-a="dfilter" data-f="problems">Solo problemas</button></div>
+  <div id="checks"></div>
+  <h3><span class="live"></span>Registros en vivo</h3><div id="logs">Cargando…</div>`;
+  tailLogs(); runDoctor(false);
+};
+function setBanner(kind, mark, title, sub) { const b = $('#dbanner'); if (!b) return; b.className = 'dbanner ' + kind; b.innerHTML = `<div class="dot">${mark}</div><div><h2>${esc(title)}</h2><p>${esc(sub)}</p></div>`; }
+function paintChecks() {
+  const box = $('#checks'); if (!box || !lastReport) return;
+  const checks = lastReport.checks.filter((c) => filter === 'all' || c.verdict !== 'ok');
+  box.innerHTML = checks.map((c) => {
+    const actions = c.actions || (c.action ? [c.action] : []); const mark = c.verdict === 'ok' ? '✓' : c.verdict === 'warn' ? '!' : '✕';
+    const cmd = c.hint && /`|^[a-z][a-z-]* [a-z-]+/.test(c.hint) && c.hint.length < 90;
+    const buttons = actions.filter((a) => FIXES[a]).map((a) => `<button class="small" data-a="fix" data-id="${a}" title="${esc(FIXES[a][1])}">${esc(FIXES[a][0])}</button>`).join('');
+    const copy = cmd ? `<button class="small" data-a="copyhint" data-hint="${esc(c.hint)}">Copiar</button>` : '';
+    const fix = c.hint ? `<div class="fix"><b>Cómo arreglarlo</b>${esc(c.hint).replace(/`([^`]+)`/g, '<code>$1</code>')}${(buttons || copy) ? `<div class="row">${buttons}${copy}</div>` : ''}<div class="result" data-result></div></div>` : '';
+    return `<div class="check ${c.verdict}"><div class="bd">${mark}</div><div><div class="nm">${esc(c.name)}</div><div class="dt">${esc(c.detail)}</div>${fix}</div></div>`;
+  }).join('') || '<p class="sub">Nada que mostrar con este filtro.</p>';
+}
+async function runDoctor(smoke) {
+  if (running) return; running = true;
+  document.querySelectorAll('[data-a=rundoc]').forEach((b) => (b.disabled = true));
+  setBanner('run', '…', smoke ? 'Probando los agentes de verdad…' : 'Revisando este equipo…', smoke ? 'Cada agente hace una tarea mínima; puede tardar.' : 'Suele tardar 2-4 segundos.');
+  $('#checks').innerHTML = '<div class="skeleton"></div>'.repeat(6);
+  try {
+    const report = await getJson(`/api/run?smoke=${smoke ? 1 : 0}`);
+    if (report.error) throw new Error(report.error);
+    lastReport = report; const { failed, warned } = report; const took = `${report.seconds ?? '?'} s${report.smoke ? ' · con prueba de agentes' : ''}`;
+    if (failed) setBanner('fail', '✕', `${failed} problema${failed > 1 ? 's' : ''} que impide${failed > 1 ? 'n' : ''} usar EVA01 como debe`, `Las soluciones están en cada tarjeta roja · ${took}`);
+    else if (warned) setBanner('warn', '!', `Funciona, con ${warned} aviso${warned > 1 ? 's' : ''}`, `Mejoras opcionales abajo · ${took}`);
+    else setBanner('ok', '✓', 'Todo en orden', `${report.checks.length} comprobaciones · ${took}`);
+    const f = $('#dfilters'); if (f) f.hidden = false; paintChecks();
+  } catch (e) { setBanner('fail', '✕', 'No se pudo diagnosticar', e.message); const c = $('#checks'); if (c) c.innerHTML = ''; }
+  finally { running = false; document.querySelectorAll('[data-a=rundoc]').forEach((b) => (b.disabled = false)); }
+}
+async function tailLogs() {
+  const el = $('#logs'); if (!el || page !== 'doctor') return;
+  try {
+    const { lines } = await getJson('/api/logs'); const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = lines.map((l) => `<div class="${l.level}"><span class="src">${l.source.replace('eva-', '')}</span> ${esc(l.text.slice(0, 600))}</div>`).join('') || 'Sin registros todavía.';
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch { el.textContent = 'Sin conexión con EVA01 (¿está abierta?).'; }
+}
+setInterval(tailLogs, 2500);
+
+/* ---------- reporte: qué salió mal, qué querías, qué palabras ---------- */
+const CAUSES = [['heard', 'Palabra mal oída'], ['cut', 'Se cortó el inicio o el final'], ['noise', 'Ruido o eco de fondo'], ['punct', 'Puntuación o mayúsculas'],
+  ['nocmd', 'No detectó mi comando'], ['wrongcmd', 'Entendió otro comando'], ['unwanted', 'Se ejecutó sin querer'], ['other', 'Otra cosa']];
+const STAGES = { model: ['El modelo de voz', 'blue'], dictionary: ['Diccionario / muletillas', 'warn'], format: ['Formateo', 'mute'] };
+let report = null, analyzeTimer = 0;
+function reportDialog() {
+  let d = $('#report'); if (d) return d;
+  d = document.createElement('dialog'); d.id = 'report'; d.className = 'report'; document.body.appendChild(d);
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+  d.addEventListener('close', () => { report = null; });
+  d.addEventListener('click', (e) => { const el = e.target.closest('[data-rp]'); if (el) guarded(() => RP[el.dataset.rp](el)); });
+  d.addEventListener('input', (e) => {
+    const el = e.target;
+    if (el.id === 'rp-intended') { report.intended = el.value; clearTimeout(analyzeTimer); analyzeTimer = setTimeout(() => guarded(analyzeReport), 700); }
+    else if (el.id === 'rp-note') report.note = el.value;
+    else if (el.dataset.rpf) { report.edits[+el.dataset.i][el.dataset.rpf] = el.type === 'checkbox' ? el.checked : el.value; }
+  });
+  d.addEventListener('change', (e) => { if (e.target.type === 'checkbox' && e.target.dataset.rpf) paintEdits(); });
+  return d;
+}
+async function openReport(id) {
+  const r = await api('feedback.get', { id });
+  const b = r.before;
+  report = { id, raw: r.raw, pre: r.pre, text: r.text, audio: r.audio, time: r.time, kind: b ? b.kind : 'dictation', intended: b ? b.intended : r.text,
+    causes: new Set(b ? b.causes : []), note: b ? b.note : '', edits: [], wake: null, wakeWord: '', wakeOn: true, before: !!b };
+  paintReport(); reportDialog().showModal();
+  if (b) report.edits = b.words.map((w) => ({ ...w })), paintEdits(); else if (report.intended.trim() && report.intended !== report.text) await analyzeReport();
+}
+function paintReport() {
+  const r = report, cmd = r.kind === 'command';
+  reportDialog().innerHTML = `<div class="rp-head"><h2>${r.before ? 'Tu reporte de las ' : 'Salió mal · '}${esc(r.time)}</h2><button class="icon" data-rp="close" title="Cerrar">✕</button></div>
+  <div class="rp-body">
+    <div class="rp-step" style="margin-top:6px">Lo que EVA01 escribió</div><div class="rp-said">${r.text.trim() ? esc(r.text) : '<span class="sub">(vacío)</span>'}</div>
+    ${r.audio ? `<div style="margin-top:8px"><audio controls src="/audio/${r.id}.wav?t=${encodeURIComponent(token)}" style="width:100%"></audio></div>` : ''}
+    <div class="rp-step">1 · ¿Qué estabas haciendo?</div>
+    <div class="seg"><button data-rp="kind" data-k="dictation" class="${cmd ? '' : 'on'}"><b>🎙 Dictaba</b><span>Quería que se escribiera lo que dije</span></button>
+      <button data-rp="kind" data-k="command" class="${cmd ? 'on' : ''}"><b>⌘ Daba una orden</b><span>Quería que EVA01 hiciera algo («${esc(overview ? overview.wake_word : 'Adán')}, abre Brave»)</span></button></div>
+    <div class="rp-step">2 · ¿Qué quisiste decir?<small>${cmd ? 'la orden completa, como la dijiste' : 'el texto tal como debía salir'}</small></div>
+    <textarea id="rp-intended" placeholder="${cmd ? 'Adán, abre Brave' : 'Escribe el texto correcto'}">${esc(r.intended)}</textarea>
+    <div class="rp-step">3 · Palabras que fallaron<small>EVA01 compara y te dice en qué etapa se torció cada una</small></div>
+    <div id="rp-edits"></div>
+    <button class="small" data-rp="addword">＋ Añadir una palabra mal oída a mano</button>
+    <div class="rp-step">4 · ¿Qué crees que pasó?<small>elige las que apliquen</small></div>
+    <div class="causes">${CAUSES.map(([k, l]) => `<button data-rp="cause" data-c="${k}" class="${r.causes.has(k) ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="rp-step">5 · Algo más<small>opcional</small></div>
+    <textarea id="rp-note" style="min-height:60px" placeholder="Estaba lejos del micrófono, hablaba rápido, había música…">${esc(r.note)}</textarea>
+  </div>
+  <div class="rp-foot"><span class="help grow" id="rp-msg">Se guarda con su audio y queda en Calibración.</span><button data-rp="close">Cancelar</button><button class="primary" data-rp="save">Guardar y aprender</button></div>`;
+  paintEdits();
+}
+function paintEdits() {
+  const box = $('#rp-edits'); if (!box) return;
+  const r = report; let html = '';
+  if (r.wake) html += `<div class="edit"><label class="ck"><input type="checkbox" data-wake="1" ${r.wakeOn ? 'checked' : ''}> Cuenta <b>«${esc(r.wake)}»</b> como tu palabra de activación («${esc(r.wakeWord)}»)</label><div class="why">Así, la próxima vez que te oiga decir «${esc(r.wake)}» al empezar, lo tomará por una orden.</div></div>`;
+  if (!r.edits.length) html += `<div class="card empty" style="margin:0 0 9px">${r.intended.trim() && r.intended !== r.text ? 'No hay diferencias de palabras.' : 'Escribe arriba qué querías decir y aquí aparecerán las diferencias.'}</div>`;
+  r.edits.forEach((e, i) => {
+    const stage = STAGES[e.stage]; const learnable = e.op === 'replace' && e.heard && e.meant;
+    html += `<div class="edit ${e.learn || e.dict ? '' : 'skip'}"><div class="tags"><span class="pill mute">${esc(e.category || 'A mano')}</span>${stage ? `<span class="pill ${stage[1]}">${stage[0]}</span>` : ''}${e.manual ? `<button class="icon" data-rp="dropedit" data-i="${i}" title="Quitar" style="margin-left:auto">✕</button>` : ''}</div>
+      <div class="pair">${e.manual ? `<input type="text" data-rpf="heard" data-i="${i}" value="${esc(e.heard)}" placeholder="Lo que salió">` : `<div class="heardw ${e.heard ? '' : 'none'}">${e.heard ? esc(e.heard) : '(nada)'}</div>`}<span class="arrow">→</span>
+        ${e.op === 'extra' ? '<div class="heardw none">(sobra)</div>' : `<input type="text" data-rpf="meant" data-i="${i}" value="${esc(e.meant)}" placeholder="Lo que debía salir">`}</div>
+      ${e.why ? `<div class="why">${esc(e.why)}</div>` : ''}
+      <div class="opts">${learnable ? `<label class="ck"><input type="checkbox" data-rpf="learn" data-i="${i}" ${e.learn ? 'checked' : ''}> Corregir siempre así</label>` : ''}
+        ${e.meant && e.op !== 'punct' && e.op !== 'format' ? `<label class="ck"><input type="checkbox" data-rpf="dict" data-i="${i}" ${e.dict ? 'checked' : ''}> Añadir «${esc(e.meant)}» al diccionario</label>` : ''}</div></div>`;
+  });
+  box.innerHTML = html;
+  const wk = box.querySelector('[data-wake]'); if (wk) wk.addEventListener('change', () => { r.wakeOn = wk.checked; });
+}
+async function analyzeReport() {
+  const r = report; if (!r || !r.intended.trim()) return;
+  const a = await api('feedback.analyze', { id: r.id, intended: r.intended });
+  if (report !== r) return;
+  const manual = r.edits.filter((e) => e.manual);
+  const fold = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  r.wake = a.wake_variant; r.wakeWord = a.wake_word;
+  // The wake word has its own, safer lesson: don't also turn every "adam" into "Adán".
+  r.edits = a.edits.map((e) => ({ ...e, dict: false, learn: e.learn && !(r.wake && fold(e.heard).split(/\s+/).includes(r.wake)) })).concat(manual);
+  if (r.wake && r.kind !== 'command') r.wakeOn = false; else if (r.wake) r.wakeOn = true;
+  paintEdits();
+}
+const RP = {
+  close() { $('#report').close(); },
+  kind(el) { report.kind = el.dataset.k; const t = $('#rp-intended').value, n = $('#rp-note').value; paintReport(); $('#rp-intended').value = t; $('#rp-note').value = n; },
+  cause(el) { const c = el.dataset.c; report.causes.has(c) ? report.causes.delete(c) : report.causes.add(c); el.classList.toggle('on'); },
+  addword() { report.edits.push({ op: 'replace', heard: '', meant: '', category: 'Añadida a mano', stage: '', why: '', learn: true, dict: false, manual: true }); paintEdits(); },
+  dropedit(el) { report.edits.splice(+el.dataset.i, 1); paintEdits(); },
+  async save() {
+    const r = report; if (!r.intended.trim()) { $('#rp-msg').textContent = 'Escribe qué querías decir.'; return; }
+    const words = r.edits.filter((e) => e.heard || e.meant).map(({ op, heard, meant, category, stage, learn, dict }) => ({ op, heard, meant, category, stage, learn: !!learn, dict: !!dict }));
+    const out = await api('feedback.save', { id: r.id, kind: r.kind, intended: r.intended, causes: [...r.causes], note: r.note, words, wake_variant: r.wake && r.wakeOn ? r.wake : null });
+    const learned = []; if (out.corrections) learned.push(`${out.corrections} corrección${out.corrections > 1 ? 'es' : ''}`); if (out.dictionary) learned.push(`${out.dictionary} en el diccionario`); if (out.wake) learned.push(`«${out.wake}» como activación`);
+    const row = historyRows.find((x) => x.id === r.id); if (row) { row.bad = true; row.kind = r.kind; const el = $('#i-' + r.id); if (el) el.outerHTML = itemHtml(row); }
+    $('#report').close(); toast(learned.length ? 'Guardado. Aprendido: ' + learned.join(', ') : 'Guardado en Calibración');
+    if (page === 'calibracion') go(); else { flaggedToday++; renderNav(); }
+  },
+};
+
+/* ---------- actions ---------- */
+/* --- Revisar: tus grabaciones, contra lo que salió --- */
+let trData = null, trFilter = 'pending';
+RENDER.revisar = async () => { trData = await api('training', { filter: trFilter }); paintRevisar(); };
+async function trReload() { trData = await api('training', { filter: trFilter }); paintRevisar(); }
+const TR_KIND = { dictation: ['🎙', 'dictado', 'mute'], command: ['⌘', 'orden', 'blue'], empty: ['⚠', 'no se entendió nada', 'warn'] };
+function trWhen(r) {
+  const d = r.at && /^\d{4}-/.test(r.at) ? new Date(r.at) : new Date((r.modified || 0) * 1000);
+  return d.toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function trCard(r) {
+  const [icon, label, cls] = TR_KIND[r.kind] || TR_KIND.dictation;
+  const value = r.reference ?? (r.formatted || '');
+  const lost = r.kind === 'empty';
+  return `<div class="card" id="tr-${esc(r.id)}"><div class="row" style="justify-content:space-between"><b>${esc(trWhen(r))}</b>
+      <span><span class="pill ${cls}">${icon} ${label}</span> <span class="pill mute">${r.seconds ?? '?'} s</span> ${r.reviewed ? '<span class="pill ok">✔ revisado</span>' : ''}</span></div>
+    <audio controls preload="none" src="/audio/${esc(r.id)}.wav?t=${encodeURIComponent(token)}" style="width:100%;margin-top:10px"></audio>
+    ${lost ? '<div class="banner warn" style="margin:10px 0 0">EVA01 no puso nada de esto. Escucha el audio y escribe lo que dijiste: es de lo más útil para mejorar.</div>' : `<dl class="detail" style="margin:10px 0 0;grid-column:auto"><dt>Se oyó</dt><dd>${esc(r.raw) || '<span class="sub">(nada)</span>'}</dd>${r.formatted != null ? `<dt>Se pegó</dt><dd>${esc(r.formatted) || '<span class="sub">(nada)</span>'}</dd>` : '<dt>Era una orden</dt><dd>no se pegó nada</dd>'}</dl>`}
+    <label class="f">Lo que dije</label><textarea id="trt-${esc(r.id)}" style="min-height:64px" placeholder="Escribe lo que dijiste, tal como debería haber salido">${esc(value)}</textarea>
+    <div class="row" style="margin-top:10px">${!r.reviewed && !lost && r.formatted ? `<button class="primary small" data-a="trapprove" data-id="${esc(r.id)}">✔ Estaba bien</button>` : ''}
+      <button class="small ${r.reviewed || lost || !r.formatted ? 'primary' : ''}" data-a="trsave" data-id="${esc(r.id)}">${r.reviewed ? 'Actualizar' : 'Guardar lo que dije'}</button>
+      <button class="small danger" data-a="trdiscard" data-id="${esc(r.id)}">Descartar</button></div></div>`;
+}
+function paintRevisar() {
+  const t = trData, pct = Math.min(100, Math.round((t.reviewed / t.goal) * 100)), pending = t.samples - t.reviewed;
+  const tabs = [['pending', `Por revisar (${pending})`], ['reviewed', `Revisados (${t.reviewed})`], ['all', `Todos (${t.samples})`]];
+  $('#main').innerHTML = head('Revisar', 'Tus dictados y órdenes, con tu voz, contra lo que EVA01 escribió. Es la única forma de medir cómo te oye <b>a ti</b>.') + `
+    <div class="card"><div class="toggle"><div><div class="t">Modo entrenamiento</div><div class="help">Guarda el audio de cada dictado y orden <b>en este Mac</b> (nunca sale de aquí) junto con lo que se oyó. Lo que no revises se borra a los ${t.keep_days} días; lo que revises es tu corpus y se queda. Nada se guarda si hay un campo de contraseña enfocado.</div></div>
+      <label class="switch"><input type="checkbox" data-a="trtoggle" ${t.enabled ? 'checked' : ''}><span></span></label></div>
+      <div class="row" style="margin-top:8px"><span class="help">${num(t.samples)} audios · ${(t.bytes / 1048576).toFixed(1)} MB</span><span class="grow"></span><button class="small" data-a="fix" data-id="open_training">Abrir carpeta</button></div></div>
+    <div class="card"><div class="row" style="justify-content:space-between"><b>${t.reviewed >= t.goal ? '🏆' : '🎯'} ${t.reviewed} de ${t.goal} revisados</b><span class="sub">${t.reviewed >= t.goal ? 'Ya se puede medir con tu voz' : `faltan ${t.goal - t.reviewed} para poder comparar modelos con tu voz`}</span></div>
+      <div class="wz-meter" style="border:0;padding:0;margin:8px 0 0"><div class="track"><i style="width:${pct}%"></i></div></div>
+      <p class="help" style="margin:8px 0 0">Medir: <code>cargo run --release -p eva-eval -- --corpus "${esc(t.dir)}" --raw</code></p></div>
+    <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === trFilter ? 'on' : ''}" data-a="trtab" data-tab="${k}">${l}</button>`).join('')}</div>
+    ${t.records.length ? t.records.map(trCard).join('') : `<div class="card empty">${t.enabled ? (trFilter === 'pending' ? 'Nada por revisar. Dicta algo y aparecerá aquí.' : 'Todavía no hay nada aquí.') : 'Activa el modo entrenamiento y usa EVA01 con normalidad: tus dictados aparecerán aquí para que los revises.'}</div>`}`;
+}
+
+const ACTIONS = {
+  async toggle(el) {
+    const row = el.closest('.item'); const open = row.classList.toggle('open');
+    const old = row.querySelector('.detail'); if (old) old.remove();
+    if (open) row.insertAdjacentHTML('beforeend', detailHtml(historyRows.find((r) => r.id === el.dataset.id)));
+  },
+  async copy(el) { const r = historyRows.find((x) => x.id === el.dataset.id); try { await navigator.clipboard.writeText(r.text); toast('Copiado'); } catch { toast('No se pudo copiar'); } },
+  async flag(el) { await openReport(el.dataset.id); },
+  play(el) {
+    const row = el.closest('.item'); if (!row.classList.contains('open')) row.querySelector('.txt').click();
+    const audio = row.querySelector('audio'); if (audio) audio.play();
+  },
+  async pickword(el) { const w = el.dataset.word.replace(/^[¿¡"'(]+|[.,;:!?"')]+$/g, ''); if (!w) return; await api('dictionary.add', { word: w }); toast(`«${w}» añadida al diccionario`); },
+  async saveflag(el) { await api('config.set', { changes: { [el.dataset.key]: el.dataset.v === 'true' } }); toast('Guardado (reinicia para aplicar)'); go(); },
+  async addword() { const i = $('#newword'); if (!i.value.trim()) return; paintDictionary(await api('dictionary.add', { word: i.value })); },
+  async rmword(el) { paintDictionary(await api('dictionary.remove', { word: el.dataset.word })); },
+  async addalias() { paintDictionary(await api('alias.add', { heard: $('#heard').value, app: $('#app').value })); },
+  async rmalias(el) { paintDictionary(await api('alias.forget', { heard: el.dataset.heard })); },
+  ordtab(el) { ordTab = el.dataset.tab; paintOrdenes(); },
+  async trtoggle(el) { await api('training.set', { enabled: el.checked }); toast(el.checked ? 'Modo entrenamiento activado: desde ahora se guarda el audio' : 'Modo entrenamiento apagado: ya no se guarda audio'); await trReload(); },
+  async trtab(el) { trFilter = el.dataset.tab; await trReload(); },
+  async trapprove(el) { await api('training.approve', { id: el.dataset.id }); toast('Guardado como referencia'); await trReload(); },
+  async trsave(el) { await api('training.review', { id: el.dataset.id, text: $('#trt-' + el.dataset.id).value }); toast('Guardado como referencia'); await trReload(); },
+  async trdiscard(el) { if (!confirm('¿Borrar este audio?')) return; await api('training.discard', { id: el.dataset.id }); await trReload(); },
+  newcmd(el) { openWizard(null, el.dataset.name); },
+  editcmd(el) { openWizard(ordData.custom[+el.dataset.i]); },
+  async runcmd(el) {
+    toast('Ejecutando…'); const r = await api('commands.run', { say: el.dataset.say });
+    toast((r.output || (r.ok ? 'Hecho' : 'No se pudo ejecutar')).split('\n').filter(Boolean).pop());
+  },
+  async forgetphrase(el) { ordData = await api('commands.forget_phrase', { phrase: el.dataset.phrase }); toast('Olvidada'); paintOrdenes(); },
+  async delcmd(el) { if (!confirm('¿Borrar esta orden?')) return; await api('commands.delete', { file: el.dataset.file }); ordData = await api('commands'); paintOrdenes(); },
+  auditopen(el) { const d = $('#au-' + el.dataset.id); d.style.display = d.style.display === 'none' ? 'block' : 'none'; },
+  async testcmd() { const out = $('#testout'); out.style.display = 'block'; out.textContent = 'Probando…'; out.textContent = (await api('commands.test', { text: $('#testtext').value })).output || '(sin salida)'; },
+  preset(el) { styleRules.push({ bundle_id: el.dataset.b, style: el.dataset.s }); paintStyle({ values: { dictation: { trailing_space: $('[data-key="dictation.trailing_space"]').checked } } }); },
+  rulebundle(el) { styleRules[+el.dataset.i].bundle_id = el.value; },
+  rulestyle(el) { styleRules[+el.dataset.i].style = el.value; },
+  rmrule(el) { styleRules.splice(+el.dataset.i, 1); paintStyle({ values: { dictation: { trailing_space: $('[data-key="dictation.trailing_space"]').checked } } }); },
+  addrule() { styleRules.push({ bundle_id: '', style: 'casual' }); paintStyle({ values: { dictation: { trailing_space: $('[data-key="dictation.trailing_space"]').checked } } }); },
+  async saverules() { const r = await api('config.set', { changes: { 'styles.apps': styleRules } }); toast(r.warnings.length ? r.warnings[0] : 'Reglas guardadas. Reinicia EVA01 para aplicarlas.'); },
+  async setflag(el) { await api('config.set', { changes: { [el.dataset.key]: el.checked } }); toast('Guardado. Reinicia EVA01 para aplicarlo.'); },
+  async setsel(el) { await api('config.set', { changes: { [el.dataset.key]: el.value } }); toast('Guardado. Reinicia EVA01 para aplicarlo.'); },
+  async settext(el) { await api('config.set', { changes: { [el.dataset.key]: el.value } }); toast('Guardado. Reinicia EVA01 para aplicarlo.'); },
+  async devset(el) { await api('config.set', { changes: { [el.dataset.key]: el.value } }); toast('Guardado. Reinicia EVA01 para aplicarlo.'); await RENDER.dev(); },
+  async devflag(el) { await api('config.set', { changes: { [el.dataset.key]: el.checked } }); toast('Guardado. Reinicia EVA01 para aplicarlo.'); await RENDER.dev(); },
+  async rtest() {
+    const out = $('#rt-out'); out.textContent = 'Preguntando al modelo…';
+    try { const t = await api('resolver.test', { heard: $('#rt-heard').value });
+      out.innerHTML = t.answer ? `Entendió <b>${esc(t.answer)}</b> · ${t.ms} ms · ${t.apps} apps · ${esc(t.model)}` : `No reconoció ninguna app (${t.ms} ms). Puede que el modelo no esté cargado, que no responda, o que no se parezca a nada de tus ${t.apps} apps.`;
+    } catch (e) { out.textContent = e.message; }
+  },
+  async unlearn(el) { await api('corrections.forget', { heard: el.dataset.heard, wake: el.dataset.wake === '1' }); toast('Olvidado'); paintLearned(); },
+  async calstart() {
+    const r = await post('/api/calibrate/start'); if (!r.ok) return toast(r.error);
+    calNext = 0; $('#callog').textContent = ''; $('#calnow').textContent = 'Preparando…'; $('#calheard').textContent = ''; $('#calfill').style.width = '0';
+    calShow(true); calWatch();
+  },
+  async calstop() { await post('/api/calibrate/stop'); toast('Deteniendo…'); },
+  async forget(el) {
+    const l = await api('learned.forget', { kind: el.dataset.kind, key: el.dataset.key });
+    $('#learned').outerHTML = learnedCard(l); toast('Olvidado');
+  },
+  async saveexp(el) { await api('calibration.correct', { id: el.dataset.id, text: $('#exp-' + el.dataset.id).value }); toast('Guardado como muestra del corpus'); },
+  cfg(el) { dirty[el.dataset.key] = readCfgInput(el); const b = $('#savecfg'); if (b) b.textContent = `Guardar cambios (${Object.keys(dirty).length})`; },
+  savecfg() { return saveConfig(); },
+  async fix(el) {
+    const result = el.closest('.fix') && el.closest('.fix').querySelector('[data-result]'); if (result) result.textContent = 'Un momento…';
+    const r = await post(`/api/fix?id=${el.dataset.id}`); if (result) result.textContent = r.message; else toast(r.message);
+  },
+  rundoc(el) { runDoctor(el.dataset.smoke === '1'); },
+  dfilter(el) { filter = el.dataset.f; document.querySelectorAll('[data-a=dfilter]').forEach((c) => c.classList.toggle('on', c === el)); paintChecks(); },
+  async copyhint(el) { const t = el.dataset.hint.replace(/^.*?`([^`]+)`.*$/, '$1').split('   (')[0]; try { await navigator.clipboard.writeText(t); el.textContent = 'Copiado ✓'; } catch { el.textContent = 'No se pudo copiar'; } },
+};
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-a]'); if (!el || ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName)) return;
+  const action = ACTIONS[el.dataset.a]; if (action) guarded(() => action(el));
+});
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-a]'); if (!el) return;
+  if (['cfg', 'setflag', 'setsel', 'settext', 'rulebundle', 'rulestyle', 'ckind', 'trtoggle', 'devset', 'devflag'].includes(el.dataset.a)) guarded(() => ACTIONS[el.dataset.a](el));
+});
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'hq') { historyQuery = e.target.value; paintHistory(); }
+  else if (e.target.dataset && e.target.dataset.a === 'cfg') ACTIONS.cfg(e.target);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'newword') guarded(() => ACTIONS.addword());
+  if (e.key === 'Enter' && e.target.id === 'testtext') guarded(() => ACTIONS.testcmd());
+});
+
+go();
+</script>
+</body>
+</html>

@@ -35,8 +35,11 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
         | WorkerToShell::StateChanged { .. }
         | WorkerToShell::ConfirmationRequested { .. }
         | WorkerToShell::ConfirmationClosed { .. }
+        | WorkerToShell::WakeWordHeard { .. }
+        | WorkerToShell::AboutToPaste { .. }
         | WorkerToShell::FollowUp { .. }
         | WorkerToShell::Pong { .. } => None,
+        WorkerToShell::TextNotPasted { text, reason, .. } => Line::out(format!("{reason}; el texto: {text}")),
         WorkerToShell::DictationFlagged { message, .. } | WorkerToShell::Notice { message, .. } => {
             Line::out(message.clone())
         }

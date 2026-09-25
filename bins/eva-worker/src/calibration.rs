@@ -29,7 +29,7 @@ const PREFERRED_APPS: &[&str] = &[
     "Messages",
     "Finder",
 ];
-/// How many "abre <app>" commands are asked for.
+/// How many "abre `<app>`" commands are asked for.
 const APPS_ASKED: usize = 5;
 /// Pause after showing what to say, so it is read before the microphone opens.
 const LEAD_IN: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_millis(1_400) };
@@ -124,6 +124,12 @@ async fn run(ctx: &Arc<WorkerContext>, request_id: Uuid) {
 /// Listens for [`WINDOW`] and returns what the speech models made of it
 /// (empty for silence).
 async fn listen(ctx: &Arc<WorkerContext>) -> Result<String, String> {
+    listen_for(ctx, WINDOW).await
+}
+
+/// Listens for `window` and returns what the speech models made of it (empty
+/// for silence). Also what teaching mode listens with.
+pub(crate) async fn listen_for(ctx: &Arc<WorkerContext>, window: Duration) -> Result<String, String> {
     let Some(audio) = &ctx.audio else { return Err("el modelo de voz ya no está disponible".to_string()) };
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&buffer);
@@ -140,7 +146,7 @@ async fn listen(ctx: &Arc<WorkerContext>) -> Result<String, String> {
     .await
     .map_err(|e| format!("no se pudo abrir el micrófono: {e}"))?
     .map_err(|e| e.to_string())?;
-    tokio::time::sleep(WINDOW).await;
+    tokio::time::sleep(window).await;
     let _ = tokio::task::spawn_blocking(move || handle.stop()).await;
 
     #[allow(clippy::unwrap_used)] // as above
@@ -231,8 +237,8 @@ mod tests {
     async fn a_calibration_learns_how_the_wake_word_and_an_app_come_out_and_uses_it_at_once() {
         let apps = crate::apps::AppCatalog::fixed(AppIndex::new(vec![AppEntry::new("Spotify")]));
         let texts = [
-            "Adam, abre Spotifi.",
-            "Adam, cierra Spotifi.",
+            "Adam, abre Spotifly.",
+            "Adam, cierra Spotifly.",
             "Adam busca el clima de mañana.",
             "Adán, abre el navegador.",
             "Adán, abre la calculadora.",
@@ -250,16 +256,16 @@ mod tests {
             .collect();
         assert!(notices.iter().any(|m| m.contains("Di: «Adán, abre Spotify»")), "{notices:?}");
         assert!(notices.iter().any(|m| m.contains("Aprendido") && m.contains("«adam»")), "{notices:?}");
-        assert!(notices.iter().any(|m| m.contains("«spotifi» es Spotify")), "{notices:?}");
+        assert!(notices.iter().any(|m| m.contains("«spotifly» es Spotify")), "{notices:?}");
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
 
         // Remembered for good, and in force in the running worker.
         assert_eq!(rig.ctx.store.trusted_wake_variants(3).unwrap(), vec!["adam".to_string()]);
-        assert_eq!(rig.ctx.store.list_app_aliases().unwrap(), vec![("spotifi".to_string(), "Spotify".to_string())]);
+        assert_eq!(rig.ctx.store.list_app_aliases().unwrap(), vec![("spotifly".to_string(), "Spotify".to_string())]);
         let taken = crate::dictation::interpret_text_for_test(&rig.ctx, "Adam agrega tests al login");
         assert_eq!(taken["kind"], "agent_task", "a trusted spelling is the wake word for anything");
-        let opened = crate::dictation::interpret_text_for_test(&rig.ctx, "Adán, abre Spotifi");
-        assert_eq!(opened["kind"], "open_app", "and Spotifi no longer needs a question");
+        let opened = crate::dictation::interpret_text_for_test(&rig.ctx, "Adán, abre Spotifly");
+        assert_eq!(opened["kind"], "open_app", "and Spotifly no longer needs a question");
     }
 
     #[tokio::test]

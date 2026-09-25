@@ -122,6 +122,16 @@ pub enum ShellToWorker {
         /// Correlates this request with its responses.
         request_id: uuid::Uuid,
     },
+    /// Teaching mode: the worker listens over and over — each time with the very
+    /// microphone and speech models real use goes through — and reports what it
+    /// heard as [`WorkerToShell::Notice`]s (`escuchando` before each window,
+    /// `oí: …` after, `silencio` when nothing was said), until the process ends.
+    /// Nothing is pasted or executed: it is how the panel learns the ways the
+    /// user says a command of their own.
+    Teach {
+        /// Correlates this request with its responses.
+        request_id: uuid::Uuid,
+    },
     /// "Are you still there?" — answered at once by [`WorkerToShell::Pong`]
     /// from the worker's command loop itself, so an answer proves the loop is
     /// not stuck, not merely that the process exists.
@@ -252,6 +262,32 @@ pub enum WorkerToShell {
     ConfirmationClosed {
         /// The confirmation that ended.
         confirmation_id: uuid::Uuid,
+    },
+    /// The dictated text is ready and will be pasted in `in_ms` milliseconds:
+    /// the island shows "Listo" and sends it off, finishing as the text lands.
+    AboutToPaste {
+        /// The dictation.
+        request_id: uuid::Uuid,
+        /// Milliseconds until the paste.
+        in_ms: u64,
+    },
+    /// The dictated text did not reach a text field (nothing to paste into, or
+    /// the paste failed). The island keeps it, with a Copy button, so what the
+    /// user said is never lost. Sent before the request's own `Done`.
+    TextNotPasted {
+        /// The dictation.
+        request_id: uuid::Uuid,
+        /// Everything that was said, as it would have been pasted.
+        text: String,
+        /// Why, in a few words for the island ("No hay dónde pegar").
+        reason: String,
+    },
+    /// While the user is still speaking: the first words of the recording
+    /// were the wake word, so what follows is a command. Lets the island say
+    /// so before the key is released.
+    WakeWordHeard {
+        /// The recording.
+        request_id: uuid::Uuid,
     },
     /// Response to [`ShellToWorker::Ping`].
     Pong {
@@ -417,6 +453,7 @@ mod tests {
             ShellToWorker::ConfirmationResponse { confirmation_id: request_id, approved: true },
             ShellToWorker::FlagLastDictation { request_id },
             ShellToWorker::Calibrate { request_id },
+            ShellToWorker::Teach { request_id },
             ShellToWorker::Ping { request_id },
             ShellToWorker::Shutdown,
         ];
@@ -496,6 +533,9 @@ mod tests {
             WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
             WorkerToShell::Notice { request_id, message: "copiado".into() },
             WorkerToShell::FollowUp { request_id, secs: 5 },
+            WorkerToShell::WakeWordHeard { request_id },
+            WorkerToShell::AboutToPaste { request_id, in_ms: 600 },
+            WorkerToShell::TextNotPasted { request_id, text: "hola".into(), reason: "No hay dónde pegar".into() },
             WorkerToShell::Pong { request_id },
         ];
 

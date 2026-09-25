@@ -30,4 +30,8 @@ pub enum MacosError {
     /// macOS refused to show a notification.
     #[error("no se pudo mostrar la notificación: {0}")]
     NotificationFailed(String),
+
+    /// The music player (Spotify or Music) could not do what was asked.
+    #[error("{0}")]
+    MediaFailed(String),
 }

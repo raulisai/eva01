@@ -1100,6 +1100,7 @@ dependencies = [
  "eva-text",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "tokio",
  "toml",
@@ -1210,6 +1211,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]
@@ -1280,6 +1282,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

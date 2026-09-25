@@ -52,6 +52,8 @@ pub struct Config {
     pub styles: StylesConfig,
     /// The optional remote (OpenAI-compatible) text model.
     pub remote: RemoteConfig,
+    /// The local model that works out which app a misheard name means.
+    pub resolver: ResolverConfig,
     /// The user's own voice commands (`[[commands]]`).
     pub commands: Vec<CommandConfig>,
 }
@@ -173,6 +175,10 @@ pub struct FeedbackConfig {
     pub notify_task_results: bool,
     /// Seconds an agent task may run before it is stopped; `0` means never.
     pub task_timeout_secs: u64,
+    /// Milliseconds the island's arrow shows before the dictated text lands in
+    /// the field (it keeps rising for a moment after). `0` pastes at once — no
+    /// waiting at all — and the arrow still flies as the text appears.
+    pub send_animation_ms: u64,
 }
 
 impl Default for FeedbackConfig {
@@ -182,6 +188,7 @@ impl Default for FeedbackConfig {
             speak_task_results: true,
             notify_task_results: true,
             task_timeout_secs: 30 * 60,
+            send_animation_ms: 120,
         }
     }
 }
@@ -194,11 +201,15 @@ pub struct DictationConfig {
     /// glue itself to the last word ("Hola.Cómo estás"). Never added in a
     /// terminal, where a trailing space is a stray character in a command.
     pub trailing_space: bool,
+    /// While the dictation key is held: pause Spotify / Music if they are
+    /// playing and silence the rest of the Mac's sound, so the microphone
+    /// hears only the user; everything comes back when the key is released.
+    pub pause_media: bool,
 }
 
 impl Default for DictationConfig {
     fn default() -> Self {
-        DictationConfig { trailing_space: true }
+        DictationConfig { trailing_space: true, pause_media: true }
     }
 }
 
@@ -292,11 +303,16 @@ pub struct HistoryConfig {
     /// Days to keep them. Older ones are deleted at startup — except those
     /// you flagged as wrong, which are the eval corpus. `0` keeps everything.
     pub keep_days: u32,
+    /// Training mode: also keep the *audio* of each dictation and command in
+    /// `training/`, to check against what came out and measure the recognizer
+    /// with your own voice. Off by default; the panel's switch (page «Revisar»)
+    /// wins over this. Unreviewed audio is deleted after `keep_days`.
+    pub save_audio: bool,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        HistoryConfig { save_transcripts: true, keep_days: 30 }
+        HistoryConfig { save_transcripts: true, keep_days: 30, save_audio: false }
     }
 }
 
@@ -337,6 +353,39 @@ pub struct RemoteConfig {
     /// What the remote model may be used for: `"edit"` (rewrite selected
     /// text) and/or `"format"` (every dictation).
     pub use_for: Vec<String>,
+}
+
+/// The small local model asked, only when the quick matching found no app,
+/// which installed app a misheard name means ("breve" → Brave). Ollama by
+/// default; only an address on this Mac is accepted, so what was said never
+/// leaves it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResolverConfig {
+    /// Ask the model at all. It is silently skipped when nothing answers.
+    pub enabled: bool,
+    /// The OpenAI-compatible API root on this Mac.
+    pub base_url: String,
+    /// The model to ask.
+    pub model: String,
+    /// Also ask it to plan what no rule understood ("abre YouTube y busca
+    /// música chill" → the steps), instead of handing that to an agent.
+    pub planner: bool,
+    /// Show the plan and wait for a yes before running it. Off, a plan runs
+    /// at once (each step is still ruled on by the gateway).
+    pub confirm_plans: bool,
+}
+
+impl Default for ResolverConfig {
+    fn default() -> Self {
+        ResolverConfig {
+            enabled: true,
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            model: "qwen2.5:3b".to_string(),
+            planner: true,
+            confirm_plans: true,
+        }
+    }
 }
 
 /// The result of [`Config::load`].

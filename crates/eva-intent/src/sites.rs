@@ -12,7 +12,7 @@ use eva_text::fold_diacritics;
 pub struct Site {
     /// How it is said, folded (no accents, lowercase).
     pub names: &'static [&'static str],
-    /// Where "abre <site>" goes.
+    /// Where "abre `<site>`" goes.
     pub home: &'static str,
     /// Hosts that are this site (an address ending in one of them is it).
     pub hosts: &'static [&'static str],
@@ -118,7 +118,7 @@ pub fn by_spoken_name(name: &str) -> Option<&'static Site> {
     SITES.iter().find(|site| site.names.contains(&folded))
 }
 
-/// The site an address belongs to ("https://www.youtube.com/watch?v=…").
+/// The site an address belongs to (`https://www.youtube.com/watch?v=…`).
 pub fn by_url(url: &str) -> Option<&'static Site> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest).to_lowercase();
     let rest = rest.strip_prefix("www.").unwrap_or(&rest);

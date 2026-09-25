@@ -13,7 +13,7 @@ use std::path::Path;
 /// The schema version this build of `eva-store` expects. Bumped whenever
 /// [`migrate`] gains a new step. Stored in SQLite's own `PRAGMA user_version`,
 /// so no extra table is needed to track it.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Opens (or creates) the database at `path`, verifying its integrity first.
 ///
@@ -152,6 +152,12 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
     if current_version < 5 {
         migrate_to_v5(conn)?;
     }
+    if current_version < 6 {
+        migrate_to_v6(conn)?;
+    }
+    if current_version < 7 {
+        migrate_to_v7(conn)?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -242,6 +248,47 @@ fn migrate_to_v3(conn: &Connection) -> Result<(), StoreError> {
         );
         CREATE INDEX IF NOT EXISTS idx_agent_tasks_started_at ON agent_tasks(started_at);
         ",
+    )?;
+    Ok(())
+}
+
+/// v6: `feedback` (what the user said a flagged dictation should have been,
+/// and why it failed) and `corrections` (the word-level "heard → meant"
+/// pairs learned from it, applied to every later dictation and command).
+fn migrate_to_v6(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS feedback (
+            transcript_id TEXT PRIMARY KEY,
+            kind          TEXT NOT NULL,
+            intended      TEXT NOT NULL,
+            causes        TEXT NOT NULL,
+            note          TEXT NOT NULL,
+            words         TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS corrections (
+            heard TEXT PRIMARY KEY,
+            meant TEXT NOT NULL,
+            hits  INTEGER NOT NULL DEFAULT 1
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+/// v7: `command_phrases`, the other ways the user says their own commands —
+/// each one taught in the panel or confirmed with a "sí" — so the next time it
+/// is as exact as the phrase they wrote.
+fn migrate_to_v7(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS command_phrases (
+            phrase TEXT PRIMARY KEY,
+            command TEXT NOT NULL,
+            how TEXT NOT NULL DEFAULT 'confirmed',
+            learned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );",
     )?;
     Ok(())
 }
@@ -392,6 +439,20 @@ mod tests {
     }
 
     #[test]
+    fn a_v5_database_gains_the_feedback_and_corrections_tables() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        drop(open_checked(&path).expect("fresh"));
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch("DROP TABLE feedback; DROP TABLE corrections; PRAGMA user_version = 5;")
+                .expect("back to v5");
+        }
+        let conn = open_checked(&path).expect("upgrade must succeed");
+        conn.execute("INSERT INTO corrections (heard, meant) VALUES ('adam', 'Adán')", []).expect("the table exists");
+    }
+
+    #[test]
     fn a_v4_database_gains_the_wake_variants_table() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("eva.sqlite3");
@@ -402,6 +463,20 @@ mod tests {
         }
         let conn = open_checked(&path).expect("upgrade must succeed");
         conn.execute("INSERT INTO wake_variants (heard, hits) VALUES ('adam', 1)", []).expect("the table exists");
+    }
+
+    #[test]
+    fn a_v6_database_gains_the_command_phrases_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("eva.sqlite3");
+        drop(open_checked(&path).expect("fresh"));
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch("DROP TABLE command_phrases; PRAGMA user_version = 6;").expect("back to v6");
+        }
+        let conn = open_checked(&path).expect("upgrade must succeed");
+        conn.execute("INSERT INTO command_phrases (phrase, command) VALUES ('mi canal', 'ver mi canal')", [])
+            .expect("the table exists");
     }
 
     #[test]

@@ -43,6 +43,7 @@ impl Action {
             ActionKind::ReadSelection => "Leer el texto que tienes seleccionado".to_string(),
             ActionKind::Notify => format!("Mostrar la notificación «{subject}»"),
             ActionKind::Speak => format!("Decir en voz alta «{subject}»"),
+            ActionKind::Media => format!("Música: {subject}"),
         }
     }
 

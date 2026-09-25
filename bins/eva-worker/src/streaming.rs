@@ -80,7 +80,17 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid, buffer: Arc<Mutex<Vec<f
                 let stt = Arc::clone(&stt);
                 match tokio::task::spawn_blocking(move || stt.transcribe(&piece)).await {
                     Ok(Ok(transcript)) if !transcript.text.trim().is_empty() => done.texts.push(transcript.text),
-                    Ok(Ok(_)) => {}
+                    // A voice the model answered with nothing is not "done": it is a stretch
+                    // that failed. Counting it as done would lose it for good, so the stream
+                    // stops here and the key coming up transcribes everything after the last
+                    // good stretch (where the second model gets its chance too).
+                    Ok(Ok(_)) => {
+                        tracing::warn!(
+                            seconds = length as f32 / 16_000.0,
+                            "un trozo con voz salió vacío; se vuelve a intentar al soltar"
+                        );
+                        break;
+                    }
                     // What is not done here is simply done when the key comes up.
                     Ok(Err(e)) => {
                         tracing::warn!("la transcripción por trozos falló; se hará al soltar: {e}");
@@ -177,6 +187,44 @@ mod tests {
         assert!(after_release[1] < 9 * RATE, "only the last ~8 s: {after_release:?}");
         assert!(
             events.iter().any(|e| matches!(e, WorkerToShell::Transcript { raw, .. } if raw == "trozo 1. trozo 2.")),
+            "{events:?}"
+        );
+    }
+
+    /// Answers nothing the first time it is given a long audio (a stretch lost),
+    /// "resto" after; remembers how long each audio it got was.
+    struct LosesTheFirst(Arc<Mutex<Vec<usize>>>);
+    impl SpeechToText for LosesTheFirst {
+        fn transcribe(&self, samples: &[f32]) -> Result<Transcript, TranscribeError> {
+            if samples.len() <= 2 * 20_800 {
+                return Ok(Transcript { text: String::new() });
+            }
+            let mut heard = self.0.lock().unwrap();
+            heard.push(samples.len());
+            Ok(Transcript { text: if heard.len() == 1 { String::new() } else { "resto.".to_string() } })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stretch_the_model_answers_with_nothing_is_transcribed_again_when_the_key_comes_up() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let audio = AudioContext {
+            source: Arc::new(eva_audio::capture::mock::ScriptedSource::new(speech(26, &[(9.0, 9.5), (18.0, 18.5)]))),
+            stt: Arc::new(LosesTheFirst(Arc::clone(&heard))),
+            model_id: "mock".to_string(),
+        };
+        let mut rig = Rig::builder().audio(audio).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartRecording { request_id }).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(heard.lock().unwrap().len(), 1, "the first stretch was tried, and came back empty");
+
+        let events = rig.run(ShellToWorker::StopRecording { request_id }).await;
+        let lengths = heard.lock().unwrap().clone();
+        assert_eq!(lengths.len(), 2, "{lengths:?}");
+        assert!(lengths[1] >= 25 * RATE, "the whole recording again, not only its tail: {lengths:?}");
+        assert!(
+            events.iter().any(|e| matches!(e, WorkerToShell::Transcript { raw, .. } if raw == "resto.")),
             "{events:?}"
         );
     }

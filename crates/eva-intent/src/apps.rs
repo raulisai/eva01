@@ -114,6 +114,9 @@ const GENERIC_WORDS: &[&str] = &["app", "the", "for", "de", "pro", "us", "mac", 
 enum Tier {
     /// A misheard name: close in spelling, same first letter.
     Fuzzy,
+    /// It sounds like the name to a Spanish ear ("Breve" for Brave, "Zafarí"
+    /// for Safari) without being spelled like it.
+    Sound,
     /// The query is a distinctive word (or run of words) of the name:
     /// "chrome" in "Google Chrome", "code" in "Visual Studio Code".
     Word,
@@ -213,25 +216,71 @@ impl AppIndex {
         if query.is_empty() {
             return None;
         }
-        self.apps
+        let ranked: Vec<(&AppEntry, Tier, f64)> = self
+            .apps
             .iter()
             .filter_map(|app| {
                 let (tier, score) = app.match_keys().filter_map(|key| rank(&query, &words(key))).max_by(compare)?;
                 Some((app, tier, score))
             })
-            .max_by(|a, b| {
-                compare(&(a.1, a.2), &(b.1, b.2))
-                    // Equally good: the shorter name is the more exact one
-                    // ("Visual Studio Code" over "…Code - Insiders").
-                    .then_with(|| b.0.canonical_name.len().cmp(&a.0.canonical_name.len()))
+            .collect();
+        let best = ranked.iter().copied().max_by(|a, b| {
+            compare(&(a.1, a.2), &(b.1, b.2))
+                // Equally good: the shorter name is the more exact one
+                // ("Visual Studio Code" over "…Code - Insiders").
+                .then_with(|| b.0.canonical_name.len().cmp(&a.0.canonical_name.len()))
+        })?;
+        // Two apps that sound the same as what was said: not for us to pick.
+        let ambiguous = best.1 == Tier::Sound
+            && ranked.iter().any(|o| {
+                o.0.canonical_name != best.0.canonical_name && o.1 == Tier::Sound && (o.2 - best.2).abs() < 0.05
+            });
+        Some((best.0, best.1 == Tier::Fuzzy || ambiguous))
+    }
+
+    /// The installed app that `query` most nearly sounds like, when nothing
+    /// matched well enough to open: what to offer with "¿quisiste decir…?".
+    /// Sounds alike up to one consonant ("braille", "bravo" for Brave).
+    pub fn suggest(&self, query: &str) -> Option<&AppEntry> {
+        let heard = crate::sound::sound_of(query);
+        let mut scored: Vec<(&AppEntry, f64)> = self
+            .apps
+            .iter()
+            .filter_map(|app| {
+                let best = app
+                    .match_keys()
+                    .flat_map(|key| {
+                        let name = words(key);
+                        let mut parts = vec![name.join(" ")];
+                        parts.extend(name.iter().filter(|w| w.len() >= 4).cloned());
+                        parts
+                    })
+                    .filter_map(|part| crate::sound::sounds_close(&heard, &crate::sound::sound_of(&part)))
+                    .max_by(f64::total_cmp)?;
+                Some((app, best))
             })
-            .map(|(app, tier, _)| (app, tier == Tier::Fuzzy))
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        match scored.as_slice() {
+            [(app, _)] => Some(*app),
+            [(app, top), (_, second), ..] if top - second >= 0.1 => Some(*app),
+            _ => None,
+        }
     }
 
     /// Makes `heard` an exact name of `canonical_name` from now on — how the
     /// user says it, confirmed. `false` if no such app is installed.
     pub fn teach(&mut self, heard: &str, canonical_name: &str) -> bool {
-        let Some(app) = self.apps.iter_mut().find(|a| a.canonical_name == canonical_name) else { return false };
+        // The name may come typed by hand or stored by an older version
+        // ("brave" for "Brave Browser"): resolve it to the installed app.
+        let canonical = self
+            .apps
+            .iter()
+            .find(|a| a.canonical_name == canonical_name)
+            .or_else(|| self.find_guess(canonical_name).filter(|(_, guess)| !guess).map(|(app, _)| app))
+            .map(|a| a.canonical_name.clone());
+        let Some(canonical) = canonical else { return false };
+        let Some(app) = self.apps.iter_mut().find(|a| a.canonical_name == canonical) else { return false };
         if !app.match_keys().any(|key| words(key) == words(heard)) {
             app.aliases.push(heard.to_string());
         }
@@ -265,6 +314,14 @@ fn rank(query: &[String], key: &[String]) -> Option<(Tier, f64)> {
     if distinctive && contained {
         // A larger share of the name said is a better match.
         return Some((Tier::Word, query.len() as f64 / key.len() as f64));
+    }
+    let heard = crate::sound::sound_of(&query.join(" "));
+    let by_sound = std::iter::once(key.join(" "))
+        .chain(key.windows(query.len()).map(|run| run.join(" ")))
+        .filter_map(|part| crate::sound::sounds_like(&heard, &crate::sound::sound_of(&part)))
+        .max_by(f64::total_cmp);
+    if let Some(score) = by_sound {
+        return Some((Tier::Sound, score));
     }
     let (said, name) = (query.join(" "), key.join(" "));
     let same_start = said.chars().next() == name.chars().next();
@@ -305,6 +362,40 @@ mod tests {
     fn matches_are_accent_and_case_insensitive() {
         let index = sample_index();
         assert_eq!(index.find("BRAVE").map(|a| a.canonical_name.as_str()), Some("Brave Browser"));
+    }
+
+    #[test]
+    fn a_name_said_the_way_it_sounds_opens_the_app_without_asking() {
+        let index =
+            AppIndex::new(vec![AppEntry::new("Brave Browser"), AppEntry::new("Safari"), AppEntry::new("Spotify")]);
+        for (said, app) in
+            [("breve", "Brave Browser"), ("brive", "Brave Browser"), ("zafarí", "Safari"), ("espotifai", "Spotify")]
+        {
+            let (found, guess) = index.find_guess(said).unwrap_or_else(|| panic!("{said}"));
+            assert_eq!((found.canonical_name.as_str(), guess), (app, false), "{said}");
+        }
+    }
+
+    #[test]
+    fn two_apps_that_sound_the_same_are_asked_about_not_picked() {
+        let index = AppIndex::new(vec![AppEntry::new("Brave"), AppEntry::new("Breve")]);
+        assert!(index.find_guess("brive").is_some_and(|(_, guess)| guess));
+    }
+
+    #[test]
+    fn what_sounds_a_consonant_off_is_suggested() {
+        let index =
+            AppIndex::new(vec![AppEntry::new("Brave Browser"), AppEntry::new("Safari"), AppEntry::new("Notes")]);
+        assert_eq!(index.suggest("bravo").map(|a| a.canonical_name.as_str()), Some("Brave Browser"));
+        assert!(index.suggest("photoshop").is_none());
+    }
+
+    #[test]
+    fn a_name_taught_loosely_still_reaches_the_installed_app() {
+        let mut index = AppIndex::new(vec![AppEntry::new("Brave Browser"), AppEntry::new("Safari")]);
+        assert!(index.teach("braille", "brave"), "«brave» is the app «Brave Browser»");
+        assert!(!index.teach("x", "Photoshop"));
+        assert_eq!(index.find("braille").map(|a| a.canonical_name.as_str()), Some("Brave Browser"));
     }
 
     #[test]

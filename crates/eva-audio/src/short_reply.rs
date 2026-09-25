@@ -28,7 +28,7 @@ pub fn is_short_reply(samples: &[f32]) -> bool {
     !samples.is_empty() && samples.len() <= MAX_LEN
 }
 
-/// `samples` [`REPEATS`] times over, a pause between each copy.
+/// `samples` `REPEATS` times over, a pause between each copy.
 pub fn repeated(samples: &[f32]) -> Vec<f32> {
     let mut audio = Vec::with_capacity(REPEATS * samples.len() + (REPEATS - 1) * GAP);
     for copy in 0..REPEATS {
