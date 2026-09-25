@@ -84,6 +84,11 @@ struct Cli {
     #[arg(long)]
     streaming: bool,
 
+    /// No aplica el glosario técnico (por defecto sí, como EVA01): «book» → «bug»,
+    /// «u i» → «UI». Sirve para medir cuánto aporta.
+    #[arg(long)]
+    no_tech_glossary: bool,
+
     /// Muestra también lo que devolvió el modelo de voz antes de formatear,
     /// para saber si un error es del oído o del formato.
     #[arg(long)]
@@ -168,6 +173,7 @@ fn main() {
     }
 
     let dictionary = Dictionary::new(cli.custom_words);
+    let dictionary = if cli.no_tech_glossary { dictionary } else { dictionary.with_tech_glossary() };
     let results: Vec<SampleResult> = samples
         .iter()
         .filter_map(|sample| run_one_sample(sample, &stt, &dictionary, &formatter, cli.strict, cli.streaming))

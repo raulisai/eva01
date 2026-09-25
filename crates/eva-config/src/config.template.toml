@@ -80,6 +80,9 @@
 [dictation]
 # Un espacio después de cada dictado, para que el siguiente no se pegue.
 # trailing_space = true
+# Corrige el inglés técnico que el modelo escribe como español: «book» → «bug»,
+# «dash board» → «dashboard», «u i» → «UI». Solo grafías que no son palabras del español.
+# tech_glossary = true
 # pause_media = true      # pausa la música y silencia el Mac mientras dictas; lo devuelve al soltar
 
 [history]

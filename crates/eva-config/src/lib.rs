@@ -205,11 +205,15 @@ pub struct DictationConfig {
     /// playing and silence the rest of the Mac's sound, so the microphone
     /// hears only the user; everything comes back when the key is released.
     pub pause_media: bool,
+    /// Correct technical English that the Spanish speech model writes as
+    /// Spanish: «book» → «bug», «dash board» → «dashboard», «u i» → «UI»,
+    /// «git hub» → «GitHub». Only spellings that are not Spanish words.
+    pub tech_glossary: bool,
 }
 
 impl Default for DictationConfig {
     fn default() -> Self {
-        DictationConfig { trailing_space: true, pause_media: true }
+        DictationConfig { trailing_space: true, pause_media: true, tech_glossary: true }
     }
 }
 

@@ -373,6 +373,11 @@ function paintDictionary(d) {
   $('#main').innerHTML = head('Diccionario', 'Palabras que EVA01 debe escribir tal cual: nombres, marcas, jerga. Se aplican al siguiente dictado, sin reiniciar.') + `
   <div class="card"><div class="row"><input type="text" id="newword" placeholder="Añade una palabra o nombre (p. ej. García, Kubernetes)"><button class="primary" data-a="addword">Añadir</button></div>
     <div style="margin-top:16px">${d.words.length ? d.words.map((w) => `<span class="chip">${esc(w)}<button title="Quitar" data-a="rmword" data-word="${esc(w)}">×</button></span>`).join('') : '<p class="sub">Aún no hay palabras.</p>'}</div></div>
+  <h3>Inglés técnico y palabras mal oídas</h3>
+  <div class="card"><p class="sub" style="margin-top:0">El modelo escucha en español: cuando dices «bug» escribe «book», y «UI» sale «u i». EVA01 ya corrige ${d.glossary.length} términos técnicos comunes (${d.glossary.slice(0, 6).map((g) => `<code>${esc(g.term)}</code>`).join(', ')}…) ${d.glossary_on ? '' : '— <b>apagado</b> en la configuración'}. Aquí enseñas los tuyos: cómo lo escribe el modelo y cómo debe quedar.</p>
+    <div class="row"><input type="text" id="term-heard" placeholder="Cómo lo escribe (ese book)"><input type="text" id="term-meant" placeholder="Cómo debe quedar (ese bug)"><button class="primary" data-a="addterm">Enseñar</button></div>
+    <table style="margin-top:10px">${d.terms.length ? d.terms.map((t) => `<tr><td>«${esc(t.heard)}»</td><td>→ ${esc(t.meant)}</td><td class="sub">${t.hits} ${t.hits === 1 ? 'vez' : 'veces'}</td><td style="text-align:right"><button class="small danger" data-a="rmterm" data-heard="${esc(t.heard)}">Olvidar</button></td></tr>`).join('') : '<tr><td class="sub">Nada enseñado todavía. También se aprende solo al corregir un dictado en «Revisar».</td></tr>'}</table>
+    <details style="margin-top:12px"><summary class="sub" style="cursor:pointer">Ver los términos que ya corrige</summary><table>${d.glossary.map((g) => `<tr><td><b>${esc(g.term)}</b></td><td class="sub">${g.heard.map(esc).join(' · ')}</td></tr>`).join('')}</table></details></div>
   <h3>Cómo suenan tus apps</h3>
   <div class="card"><p class="sub" style="margin-top:0">Si dices «abre wasap» y EVA01 sabe que es WhatsApp, lo recuerda aquí. Puedes enseñarle otras.</p>
     <div class="row"><input type="text" id="heard" placeholder="Cómo suena (wasap)"><input type="text" id="app" placeholder="App (WhatsApp)"><button data-a="addalias">Enseñar</button></div>
@@ -1183,12 +1188,18 @@ const ACTIONS = {
   async addword() { const i = $('#newword'); if (!i.value.trim()) return; paintDictionary(await api('dictionary.add', { word: i.value })); },
   async rmword(el) { paintDictionary(await api('dictionary.remove', { word: el.dataset.word })); },
   async addalias() { paintDictionary(await api('alias.add', { heard: $('#heard').value, app: $('#app').value })); },
+  async addterm() { paintDictionary(await api('term.add', { heard: $('#term-heard').value, meant: $('#term-meant').value })); toast('Enseñado: se aplica desde el siguiente dictado'); },
+  async rmterm(el) { paintDictionary(await api('term.forget', { heard: el.dataset.heard })); },
   async rmalias(el) { paintDictionary(await api('alias.forget', { heard: el.dataset.heard })); },
   ordtab(el) { ordTab = el.dataset.tab; paintOrdenes(); },
   async trtoggle(el) { await api('training.set', { enabled: el.checked }); toast(el.checked ? 'Modo entrenamiento activado: desde ahora se guarda el audio' : 'Modo entrenamiento apagado: ya no se guarda audio'); await trReload(); },
   async trtab(el) { trFilter = el.dataset.tab; await trReload(); },
   async trapprove(el) { await api('training.approve', { id: el.dataset.id }); toast('Guardado como referencia'); await trReload(); },
-  async trsave(el) { await api('training.review', { id: el.dataset.id, text: $('#trt-' + el.dataset.id).value }); toast('Guardado como referencia'); await trReload(); },
+  async trsave(el) {
+    const r = await api('training.review', { id: el.dataset.id, text: $('#trt-' + el.dataset.id).value });
+    toast(r.taught && r.taught.length ? `Guardado. Aprendí: ${r.taught.map((t) => `«${t.heard}» → «${t.meant}»`).join(', ')}` : 'Guardado como referencia');
+    await trReload();
+  },
   async trdiscard(el) { if (!confirm('¿Borrar este audio?')) return; await api('training.discard', { id: el.dataset.id }); await trReload(); },
   newcmd(el) { openWizard(null, el.dataset.name); },
   editcmd(el) { openWizard(ordData.custom[+el.dataset.i]); },

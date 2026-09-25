@@ -185,6 +185,15 @@ avisan, nunca tumban), arranque al iniciar sesión (LaunchAgent), confirmaciones
     modelo local (Qwen vía Ollama): propone pasos, se validan contra lo dicho y contra las apps instaladas, se
     muestran y solo con un sí se ejecutan por el gateway.
 
+27. **Spanglish técnico.** El modelo es español primero: «bug» sale «book», «UI» sale «u i», «dashboard» «Dash Board»
+    (casos reales de este usuario). `eva-text::glossary` corrige, sin modelo y sin tocar frases normales, (a) lo que
+    el modelo escribe para 52 términos técnicos (solo grafías que no son palabras del español, con una prueba que lo
+    vigila) y (b) letras dichas una a una que forman una sigla de una lista cerrada («u i» → UI, «a p i» → API;
+    «a i» no está: es la preposición «a» y una letra). Sobre los 149 dictados reales de este usuario cambia 9 y los 9
+    son correctos (`cargo run -p eva-text --example glossary_check`). Lo que ningún glosario puede saber se enseña:
+    al corregir un dictado en «Revisar» se aprenden los cambios seguros, y en «Diccionario» se añaden a mano.
+    `[dictation] tech_glossary` lo apaga; `eva-eval --no-tech-glossary` mide cuánto aporta.
+
 ### Lo que falta y por qué
 
 Verificado de verdad (no solo con pruebas unitarias): el `.app` firmado con un certificado local arranca y `eva

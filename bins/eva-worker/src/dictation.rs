@@ -64,7 +64,14 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
 fn learned_dictionary(ctx: &WorkerContext) -> Dictionary {
     let replacements: Vec<(String, String)> =
         ctx.store.list_corrections().unwrap_or_default().into_iter().map(|(heard, meant, _)| (heard, meant)).collect();
-    Dictionary::new(ctx.store.list_custom_words().unwrap_or_default()).with_replacements(replacements)
+    let dictionary = Dictionary::new(ctx.store.list_custom_words().unwrap_or_default()).with_replacements(replacements);
+    // Technical English the Spanish model writes as Spanish ("book" → "bug"); what the
+    // user taught above wins where the two overlap.
+    if ctx.config.dictation.tech_glossary {
+        dictionary.with_tech_glossary()
+    } else {
+        dictionary
+    }
 }
 
 /// What `text` is: dictation, or a command (the user's own phrases included).
@@ -379,6 +386,23 @@ mod tests {
     fn typed(rig: &Rig, text: &str) -> ShellToWorker {
         let _ = rig;
         ShellToWorker::RunIntentText { request_id: Uuid::new_v4(), text: text.to_string() }
+    }
+
+    #[tokio::test]
+    async fn technical_english_the_model_wrote_as_spanish_is_fixed_before_pasting() {
+        let mut rig = Rig::new();
+        let command = typed(&rig, "arregla ese book en la u i del dash board");
+        rig.run(command).await;
+        assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Arregla ese bug en la UI del dashboard. ".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn the_glossary_can_be_turned_off_and_what_the_user_taught_still_applies() {
+        let mut rig = Rig::builder().configure(|c| c.dictation.tech_glossary = false).build();
+        rig.ctx.store.learn_correction("ese book", "ese libro").unwrap();
+        let command = typed(&rig, "arregla ese book en la u i");
+        rig.run(command).await;
+        assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Arregla ese libro en la u i. ".to_string())]);
     }
 
     fn app(bundle_id: &str) -> RunningAppInfo {

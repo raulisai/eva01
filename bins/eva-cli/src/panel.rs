@@ -47,6 +47,8 @@ fn dispatch(route: &str, body: &Value) -> Result<Value, String> {
         "dictionary" => dictionary(),
         "dictionary.add" => dictionary_change(body, true),
         "dictionary.remove" => dictionary_change(body, false),
+        "term.add" => term_add(body),
+        "term.forget" => term_forget(body),
         "alias.add" => alias(body, true),
         "alias.forget" => alias(body, false),
         "commands" => commands(),
@@ -459,7 +461,51 @@ fn dictionary() -> Result<Value, String> {
         .into_iter()
         .map(|(heard, app)| json!({ "heard": heard, "app": app }))
         .collect();
-    Ok(json!({ "words": store.list_custom_words().map_err(|e| e.to_string())?, "aliases": aliases }))
+    let terms: Vec<Value> = store
+        .list_corrections()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(heard, meant, hits)| json!({ "heard": heard, "meant": meant, "hits": hits }))
+        .collect();
+    let glossary: Vec<Value> =
+        eva_text::glossary::TERMS.iter().map(|t| json!({ "term": t.term, "heard": t.heard })).collect();
+    Ok(json!({
+        "words": store.list_custom_words().map_err(|e| e.to_string())?,
+        "aliases": aliases,
+        "terms": terms,
+        "glossary": glossary,
+        "glossary_on": Config::load().config.dictation.tech_glossary,
+    }))
+}
+
+/// «The model writes X, it should say Y»: a replacement taught by hand, for the
+/// technical English no shipped glossary can know.
+fn term_add(body: &Value) -> Result<Value, String> {
+    let (heard, meant) = (text_of(body, "heard"), text_of(body, "meant"));
+    let key = crate::analysis::key_of(heard);
+    let words = key.split_whitespace().count();
+    if key.is_empty() || meant.is_empty() {
+        return Err("escribe cómo lo escribe el modelo y cómo debe quedar".to_string());
+    }
+    if words > 5 {
+        return Err("como mucho cinco palabras".to_string());
+    }
+    if key == crate::analysis::key_of(meant) {
+        return Err("es lo mismo: solo cambian las mayúsculas o los acentos".to_string());
+    }
+    // A short word alone is common enough that changing it everywhere breaks other dictations.
+    if words == 1 && key.chars().count() < 5 {
+        return Err(format!(
+            "«{heard}» es demasiado corta para cambiarla sola: añádela con la palabra de al lado («ese {heard}»)"
+        ));
+    }
+    store()?.learn_correction(&key, meant).map_err(|e| e.to_string())?;
+    dictionary()
+}
+
+fn term_forget(body: &Value) -> Result<Value, String> {
+    store()?.forget_correction(text_of(body, "heard")).map_err(|e| e.to_string())?;
+    dictionary()
 }
 
 fn dictionary_change(body: &Value, add: bool) -> Result<Value, String> {
@@ -901,10 +947,46 @@ fn write_reference(id: &str, text: &str) -> Result<(), String> {
         .map_err(|e| format!("no se pudo guardar: {e}"))
 }
 
+/// What reviewing a sample teaches, as `(heard, meant)`: the replacements the
+/// word-by-word analysis marks as safe (the mistake is the speech model's, and
+/// not a short word that would change other dictations). A reference that has
+/// little to do with what was heard — a different sentence, not a correction —
+/// teaches nothing.
+fn learnable(raw: &str, formatted: &str, reference: &str) -> Vec<(String, String)> {
+    let taught: Vec<(String, String)> = crate::analysis::edits(raw, raw, formatted, reference)
+        .iter()
+        .filter(|edit| edit["op"] == "replace" && edit["learn"] == true)
+        .filter_map(|edit| Some((edit["heard"].as_str()?.to_string(), edit["meant"].as_str()?.to_string())))
+        .filter(|(heard, meant)| {
+            let key = crate::analysis::key_of(heard);
+            !key.is_empty() && key != crate::analysis::key_of(meant) && meant.split_whitespace().count() <= 3
+        })
+        .collect();
+    if taught.len() > 3 {
+        return Vec::new();
+    }
+    taught
+}
+
 fn training_review(body: &Value) -> Result<Value, String> {
     let id = sample_id(body)?;
-    write_reference(&id, text_of(body, "text"))?;
-    training_list(&json!({}))
+    let reference = text_of(body, "text");
+    write_reference(&id, reference)?;
+
+    // Reviewing is also teaching: what the model wrote wrong and can be fixed everywhere.
+    let mut taught = Vec::new();
+    if let (Some(sample), Ok(store)) = (read_sample(&training_dir(), &id), store()) {
+        let raw = sample["raw"].as_str().unwrap_or("");
+        let formatted = sample["formatted"].as_str().unwrap_or(raw);
+        for (heard, meant) in learnable(raw, formatted, reference) {
+            if store.learn_correction(&crate::analysis::key_of(&heard), &meant).is_ok() {
+                taught.push(json!({ "heard": heard, "meant": meant }));
+            }
+        }
+    }
+    let mut list = training_list(&json!({}))?;
+    list["taught"] = Value::Array(taught);
+    Ok(list)
 }
 
 /// «Estaba bien»: what was pasted is what was said.
@@ -1405,6 +1487,24 @@ mod tests {
         let of = |id: &str| samples.iter().find(|s| s["id"] == id).unwrap();
         assert_eq!((of(&a)["reviewed"].clone(), of(&a)["reference"].clone()), (json!(true), json!("Hola.")));
         assert_eq!((of(&b)["reviewed"].clone(), of(&b)["kind"].clone()), (json!(false), json!("empty")));
+    }
+
+    #[test]
+    fn a_correction_is_taught_only_when_it_is_a_safe_fix_of_what_the_model_wrote() {
+        // A short word is learned with the one before it, so «book» is not «bug» everywhere.
+        assert_eq!(
+            learnable("arregla ese book", "Arregla ese book.", "Arregla ese bug."),
+            vec![("ese book".to_string(), "ese bug".to_string())]
+        );
+        // A longer word is safe alone.
+        assert_eq!(
+            learnable("dime del quentum", "Dime del quentum.", "Dime del Qwen."),
+            vec![("quentum".to_string(), "Qwen".to_string())]
+        );
+        // The same words with different punctuation teach nothing; neither does a different sentence.
+        assert!(learnable("hola que tal", "Hola, ¿qué tal?", "Hola, ¿qué tal?").is_empty());
+        assert!(learnable("uno dos tres cuatro", "Uno dos tres cuatro.", "una frase totalmente distinta y larga aquí")
+            .is_empty());
     }
 
     #[test]

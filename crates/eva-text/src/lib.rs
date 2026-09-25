@@ -15,6 +15,7 @@ pub mod dictionary;
 mod faithfulness;
 pub mod filler;
 pub mod formatter;
+pub mod glossary;
 mod normalize;
 mod pieces;
 pub mod planner;

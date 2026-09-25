@@ -61,6 +61,9 @@ pub struct Dictionary {
     words: Vec<CustomWord>,
     /// Phrases the user reported as misheard, with what they meant.
     replacements: Vec<Replacement>,
+    /// Also correct technical English the model writes as Spanish
+    /// ([`crate::glossary`]).
+    tech: bool,
 }
 
 /// "Heard X, meant Y", taught by reporting a dictation.
@@ -95,7 +98,7 @@ impl Dictionary {
                 Some(CustomWord { display, fold_key, distinctive })
             })
             .collect();
-        Dictionary { words, replacements: Vec::new() }
+        Dictionary { words, replacements: Vec::new(), tech: false }
     }
 
     /// Adds what the user taught by reporting mistakes: each `(heard, meant)`
@@ -120,12 +123,31 @@ impl Dictionary {
         self
     }
 
+    /// Also corrects technical English said in Spanish speech: what the model
+    /// writes for "bug", "dashboard" or "GitHub" ([`crate::glossary::TERMS`]) and
+    /// letters said one by one that spell an acronym ("u i" → "UI"). What the
+    /// user taught wins over the shipped glossary where they overlap.
+    #[must_use]
+    pub fn with_tech_glossary(mut self) -> Self {
+        self.tech = true;
+        // Appended after the user's own, and the sort by length is stable: on a
+        // tie the user's replacement is found first.
+        self.with_replacements(crate::glossary::replacements())
+    }
+
     /// Applies only the learned replacements (no fuzzy dictionary matching):
     /// what a command is read with before it is interpreted.
     pub fn replace_learned(&self, text: &str) -> String {
         if self.replacements.is_empty() || text.trim().is_empty() {
             return text.to_string();
         }
+        let spelled;
+        let text = if self.tech {
+            spelled = crate::glossary::expand_spelled_acronyms(text);
+            spelled.as_str()
+        } else {
+            text
+        };
         let tokens: Vec<&str> = text.split_whitespace().collect();
         let folded: Vec<String> = tokens.iter().map(|t| fold_word(split_punctuation(t).1)).collect();
         let mut out: Vec<String> = Vec::with_capacity(tokens.len());
@@ -431,5 +453,58 @@ mod tests {
             let dict = Dictionary::new(Vec::<String>::new());
             proptest::prop_assert_eq!(dict.correct(&text, threshold), text);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests are exempt from the workspace error-handling rule, see docs/ENGINEERING.md #2
+mod glossary_tests {
+    use super::*;
+
+    fn tech() -> Dictionary {
+        Dictionary::new(Vec::<String>::new()).with_tech_glossary()
+    }
+
+    #[test]
+    fn what_the_model_writes_for_english_terms_becomes_the_term() {
+        let d = tech();
+        assert_eq!(d.correct("Así que arregla ese book.", 0.9), "Así que arregla ese bug.");
+        assert_eq!(d.correct("mira el Dash Board de Eva", 0.9), "mira el dashboard de Eva");
+        assert_eq!(d.correct("sube el código a git hub", 0.9), "sube el código a GitHub");
+        assert_eq!(d.correct("usa Whisper Flaw igual", 0.9), "usa Wispr Flow igual");
+        assert_eq!(d.correct("el back end y el front end", 0.9), "el backend y el frontend");
+    }
+
+    #[test]
+    fn spelled_letters_and_terms_work_together_and_keep_punctuation() {
+        let d = tech();
+        assert_eq!(d.correct("ayuda a mejorar la u i de la app", 0.9), "ayuda a mejorar la UI de la app");
+        assert_eq!(d.correct("Agrega la a p i, y el dash board.", 0.9), "Agrega la API, y el dashboard.");
+    }
+
+    #[test]
+    fn ordinary_spanish_is_left_exactly_as_it_was() {
+        let d = tech();
+        for text in [
+            "Necesito tres archivos y dos carpetas para mañana.",
+            "Bueno, voy a leer un libro y luego una revista.",
+            "Me gusta más como se ve, pero no quiero perder los seis segundos.",
+            "Dile a María que la reunión se movió a las tres.",
+            "Es un texto sin ningún término técnico, solo cosas del día a día.",
+        ] {
+            assert_eq!(d.correct(text, 0.9), text);
+        }
+    }
+
+    #[test]
+    fn what_the_user_taught_wins_over_the_shipped_glossary() {
+        let d = Dictionary::new(Vec::<String>::new()).with_replacements([("book", "libro")]).with_tech_glossary();
+        assert_eq!(d.correct("ese book", 0.9), "ese libro");
+    }
+
+    #[test]
+    fn without_the_glossary_nothing_changes() {
+        let d = Dictionary::new(Vec::<String>::new());
+        assert_eq!(d.correct("ese book y la u i", 0.9), "ese book y la u i");
     }
 }
