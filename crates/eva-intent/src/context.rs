@@ -62,7 +62,13 @@ const LEADS: &[&str] = &["ahora", "y", "luego", "despues", "entonces", "ok", "ok
 
 /// Verbs that ask to look something up or play it.
 const SEARCH_VERBS: &[&str] =
-    &["busca", "buscar", "buscame", "pon", "ponme", "reproduce", "reproduceme", "muestrame", "encuentra"];
+    &["busca", "buscar", "buscame", "busque", "pon", "ponme", "reproduce", "reproduceme", "muestrame", "encuentra"];
+
+/// Whether `verb` is one of the search verbs, or one letter off "busca" — how
+/// speech recognition writes it in a short phrase ("buscan", "buscas").
+fn asks_to_search(verb: &str) -> bool {
+    SEARCH_VERBS.contains(&verb) || (verb.starts_with('b') && strsim::levenshtein(verb, "busca") <= 1)
+}
 
 /// What `text` — said with no wake word, in the seconds after a command —
 /// means given `recall`, if it is one of the few follow-ups that mean
@@ -86,7 +92,7 @@ pub fn follow_up(text: &str, recall: &Recall) -> Option<Intent> {
     let rest = rest.trim().trim_end_matches(['.', '!', '?']).trim();
     let rest = rest.strip_suffix("por favor").map_or(rest, str::trim_end);
 
-    if SEARCH_VERBS.contains(&verb.as_str()) && !rest.is_empty() {
+    if asks_to_search(&verb) && !rest.is_empty() {
         return recall.search(rest);
     }
     let closes_it = matches!(verb.as_str(), "cierralo" | "cierrala") && rest.is_empty()
@@ -133,6 +139,15 @@ mod tests {
             expected,
             "\"en YouTube\" is where it already is"
         );
+    }
+
+    #[test]
+    fn a_search_verb_one_letter_off_is_still_a_search() {
+        // What the speech model really wrote for "busca Naruto" in a test with a voice.
+        let searched = follow_up("buscan al otro", &opened_youtube());
+        assert_eq!(url(searched).as_deref(), Some("https://www.youtube.com/results?search_query=al%20otro"));
+        assert!(follow_up("buscas Naruto", &opened_youtube()).is_some());
+        assert_eq!(follow_up("bueno Naruto", &opened_youtube()), None, "a different word is a different word");
     }
 
     #[test]

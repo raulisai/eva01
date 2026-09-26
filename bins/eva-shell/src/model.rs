@@ -319,7 +319,11 @@ impl ShellModel {
             return Vec::new();
         }
         self.notice = None;
-        self.follow_up = None;
+        // In the conversation window EVA01 is listening for a command: it says
+        // so from the first moment, as if the wake word had already been heard.
+        if self.follow_up.take().is_some() {
+            self.wake_heard.insert(request_id);
+        }
         self.recording = Some(request_id);
         self.track(request_id, Phase::Listening, now);
         vec![Command::StartRecording(request_id)]
@@ -1928,9 +1932,18 @@ mod tests {
         let t0 = Instant::now();
         let mut model = ready_model(t0);
         model.worker_event(t0, WorkerToShell::FollowUp { request_id: Uuid::new_v4(), secs: 5 });
-        model.press(t0 + secs(1), Uuid::new_v4());
-        assert_ne!(model.overlay().unwrap().text, "¿Algo más?");
-        model.abandon_recording();
+        let id = Uuid::new_v4();
+        model.press(t0 + secs(1), id);
+        let listening = model.overlay().unwrap();
+        assert_eq!(
+            (listening.text.as_str(), listening.tone, listening.activity),
+            ("Eva", Tone::Command, Activity::Listening),
+            "in the conversation EVA is listening for a command, from the first moment"
+        );
+        model.release(t0 + secs(3));
+        model.worker_event(t0 + secs(3), state(id, WorkerState::Thinking));
+        assert_eq!(model.overlay().unwrap().text, "Eva", "and not as if it were only transcribing");
+        model.worker_event(t0 + secs(4), state(id, WorkerState::Idle));
         assert_eq!(model.overlay(), None, "the question does not come back after the user spoke");
     }
 }
