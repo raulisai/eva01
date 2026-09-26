@@ -23,6 +23,13 @@ pub trait Desktop: Send + Sync {
     fn insert_text(&self, text: &str) -> Result<(), DesktopError>;
     /// Presses a key or shortcut ("/", "cmd+l", "return") in the app in front.
     fn press_combo(&self, combo: &str) -> Result<(), DesktopError>;
+    /// Presses whatever in the window in front answers to `label`, found
+    /// through Accessibility (a button, a link, a tab…) — no picture of the
+    /// screen involved. The default cannot: it needs the real desktop.
+    fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
+        let _ = label;
+        Err(DesktopError::from(eva_macos::MacosError::UiNotAllowed))
+    }
     /// Searches *in the page or app in front*: focuses its search box with
     /// `focus` (the site's own shortcut), pastes `query` over whatever it held
     /// and presses return. Nothing is opened elsewhere.
@@ -154,6 +161,15 @@ impl Desktop for SystemDesktop {
         eva_macos::press_combo(combo).map_err(DesktopError::from)
     }
 
+    fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
+        let pid = eva_macos::frontmost_app()
+            .map(|app| app.pid)
+            .ok_or_else(|| eva_macos::MacosError::UiActionFailed(label.to_string()))?;
+        let target = eva_macos::ui::find(pid, &[label], eva_macos::ui::Want::Pressable)?
+            .ok_or_else(|| eva_macos::MacosError::UiActionFailed(label.to_string()))?;
+        eva_macos::ui::press(&target).map_err(DesktopError::from)
+    }
+
     fn has_text_target(&self) -> bool {
         let pid = eva_macos::frontmost_app().map(|app| app.pid);
         eva_macos::text_target_focused(pid) != Some(false)
@@ -186,6 +202,8 @@ pub mod mock {
         InsertText(String),
         /// [`Desktop::press_combo`] was called with this shortcut.
         PressCombo(String),
+        /// [`Desktop::click_ui`] was called with this label.
+        ClickUi(String),
         /// [`Desktop::notify`] was called with this title and body.
         Notify(String, String),
         /// [`Desktop::speak`] was called with this text.
@@ -294,6 +312,10 @@ pub mod mock {
 
         fn press_combo(&self, combo: &str) -> Result<(), DesktopError> {
             self.record(Call::PressCombo(combo.to_string()))
+        }
+
+        fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
+            self.record(Call::ClickUi(label.to_string()))
         }
 
         fn active_window(&self) -> Option<RunningAppInfo> {

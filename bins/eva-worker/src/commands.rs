@@ -54,6 +54,10 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, search_in_site(&voice, &site, &query, &url, &focus).await);
         }
+        Intent::ClickUi { label } => {
+            ctx.events.state(request_id, WorkerState::Executing);
+            report(ctx, request_id, voice.click_ui(&label).await);
+        }
         Intent::Media { step } => {
             ctx.events.state(request_id, WorkerState::Executing);
             let outcome = run_step(ctx, &voice, &step).await;
@@ -571,6 +575,21 @@ mod tests {
         assert_eq!(rig.ctx.store.trusted_wake_variants(3).unwrap(), vec!["adam".to_string()]);
         let interpreted = crate::dictation::interpret_text_for_test(&rig.ctx, "Adam agrega tests al login");
         assert_eq!(interpreted["kind"], "agent_task");
+    }
+
+    #[tokio::test]
+    async fn a_click_names_a_label_and_the_desktop_does_the_pressing() {
+        let mut rig = Rig::new();
+        let events = rig.run(typed("Adán, haz clic en Suscribirse")).await;
+        assert_eq!(rig.desktop.calls(), vec![Call::ClickUi("Suscribirse".to_string())]);
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(true), .. })));
+    }
+
+    #[tokio::test]
+    async fn a_label_nothing_answers_to_is_reported_not_silently_ignored() {
+        let mut rig = Rig::builder().desktop(eva_mcp::desktop::mock::MockDesktop::failing()).build();
+        let events = rig.run(typed("Adán, haz clic en Algo que no existe")).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })), "{events:?}");
     }
 
     #[tokio::test]

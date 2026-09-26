@@ -61,6 +61,12 @@ pub const BUILTINS: &[Builtin] = &[
         kind: "web_search",
     },
     Builtin {
+        say: "haz clic en <botón>",
+        does: "presiona lo que tenga esa etiqueta en la ventana que ves (botón, enlace, pestaña); no toca la pantalla, lee la interfaz",
+        example: "haz clic en Suscribirse",
+        kind: "click_ui",
+    },
+    Builtin {
         say: "pausa la música / siguiente canción / canción anterior / dale play",
         does: "controla Spotify o Música, la que esté abierta (la primera vez macOS pide permiso de Automatización)",
         example: "siguiente canción",

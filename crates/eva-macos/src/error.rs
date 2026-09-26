@@ -31,6 +31,15 @@ pub enum MacosError {
     #[error("no se pudo mostrar la notificación: {0}")]
     NotificationFailed(String),
 
+    /// Reading or pressing things in another app's window needs the
+    /// Accessibility permission, which EVA01 does not have.
+    #[error("EVA01 necesita el permiso de Accesibilidad para manejar ventanas")]
+    UiNotAllowed,
+
+    /// The element was found but would not do what was asked.
+    #[error("no pude usar «{0}»")]
+    UiActionFailed(String),
+
     /// The music player (Spotify or Music) could not do what was asked.
     #[error("{0}")]
     MediaFailed(String),

@@ -55,6 +55,14 @@ pub enum Intent {
         opening: bool,
     },
 
+    /// "Haz clic en Suscribirse": presses whatever in the window in front
+    /// answers to that label — a button, a link, a tab — found through
+    /// Accessibility, with no picture of the screen involved.
+    ClickUi {
+        /// The label as said, e.g. "Suscribirse".
+        label: String,
+    },
+
     /// "Adán, abre github.com/foo" — open a URL directly, no app resolution needed.
     OpenUrl {
         /// The URL as dictated (scheme added by the caller if missing).
@@ -374,6 +382,10 @@ const RULES: &[(&[&str], RuleBuilder)] = &[
     (&["abre", "abrir", "abres", "abras"], build_open),
     (&["cierra", "cerrar", "cierras", "cierres"], build_close),
     (&["busca", "buscar", "buscas", "busques"], build_search),
+    (
+        &["haz clic en", "haz click en", "dale clic a", "dale click a", "presiona", "pulsa", "clic en", "click en"],
+        build_click,
+    ),
     // Both spellings, not just the accented one: `strip_verb` (unlike the
     // wake-word gate) does not accent-fold, and this session's own testing
     // found an STT engine drop a tilde on a much more common word — no
@@ -599,6 +611,14 @@ fn build_close(rest: &str, app_index: &AppIndex) -> Intent {
 
 fn build_search(rest: &str, _app_index: &AppIndex) -> Intent {
     Intent::WebSearch { query: without_closing_punctuation(rest).to_string() }
+}
+
+fn build_click(rest: &str, _app_index: &AppIndex) -> Intent {
+    let label = without_closing_punctuation(without_leading_punctuation(rest)).to_string();
+    if label.is_empty() {
+        return Intent::AgentTask { prompt: "haz clic".to_string(), provider: None };
+    }
+    Intent::ClickUi { label }
 }
 
 fn build_continue(rest: &str, _app_index: &AppIndex) -> Intent {
@@ -1011,5 +1031,28 @@ mod tests {
         let index = AppIndex::new(vec![crate::apps::AppEntry::new("Spotify")]);
         assert!(matches!(parse("me puedes ayudar con el login", &index), Intent::AgentTask { .. }));
         assert!(matches!(parse("por favor", &index), Intent::AgentTask { .. }));
+    }
+
+    #[test]
+    fn a_click_names_the_label_and_ignores_courtesy_and_punctuation() {
+        let index = sample_index();
+        for said in [
+            "haz clic en Suscribirse",
+            "Haz clic en, Suscribirse.",
+            "dale clic a Suscribirse",
+            "pulsa Suscribirse",
+            "presiona Suscribirse",
+            "click en Suscribirse",
+        ] {
+            assert_eq!(parse(said, &index), Intent::ClickUi { label: "Suscribirse".to_string() }, "{said}");
+        }
+    }
+
+    #[test]
+    fn a_click_with_nothing_named_is_not_guessed_at() {
+        assert_eq!(
+            parse("haz clic", &sample_index()),
+            Intent::AgentTask { prompt: "haz clic".to_string(), provider: None }
+        );
     }
 }

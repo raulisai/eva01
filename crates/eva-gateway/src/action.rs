@@ -44,6 +44,7 @@ impl Action {
             ActionKind::Notify => format!("Mostrar la notificación «{subject}»"),
             ActionKind::Speak => format!("Decir en voz alta «{subject}»"),
             ActionKind::Media => format!("Música: {subject}"),
+            ActionKind::ClickUi => format!("Hacer clic en «{subject}»"),
         }
     }
 

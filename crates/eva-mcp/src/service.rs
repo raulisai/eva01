@@ -159,6 +159,13 @@ impl LocalService {
         self.gated(ActionKind::WebSearch, query, move |d| d.search_in_front(&focus, &asked)).await
     }
 
+    /// "Haz clic en Suscribirse": presses whatever answers to that label in
+    /// the window in front.
+    pub async fn click_ui(&self, label: &str) -> Outcome<()> {
+        let label = label.to_string();
+        self.gated(ActionKind::ClickUi, &label.clone(), move |d| d.click_ui(&label)).await
+    }
+
     /// Controls the music player, by voice or as a step of a command.
     pub async fn media(&self, command: eva_macos::MediaCommand) -> Outcome<()> {
         let subject = command.describe();

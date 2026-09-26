@@ -22,6 +22,7 @@ pub mod notification;
 pub mod overlay;
 pub mod paste;
 pub mod secure_input;
+pub mod ui;
 pub mod workspace;
 
 pub use ax::{focused_window_title, prompt_for_accessibility, selected_text, text_target_focused};

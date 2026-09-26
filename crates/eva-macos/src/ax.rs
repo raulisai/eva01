@@ -127,7 +127,7 @@ pub fn text_target_focused(frontmost_pid: Option<i32>) -> Option<bool> {
     Some(!NON_TEXT_ROLES.contains(&role.as_str()))
 }
 
-fn set_timeout(element: &AXUIElement) {
+pub(crate) fn set_timeout(element: &AXUIElement) {
     // SAFETY: a plain call on a valid element with a finite timeout.
     unsafe {
         let _ = element.set_messaging_timeout(MESSAGING_TIMEOUT_SECS);
@@ -137,7 +137,7 @@ fn set_timeout(element: &AXUIElement) {
 /// Reads one attribute, following the Copy rule (the caller owns the
 /// returned reference). `None` for any failure — no such attribute, no
 /// permission, an app that did not answer in time.
-fn attribute(element: &AXUIElement, name: &str) -> Option<CFRetained<CFType>> {
+pub(crate) fn attribute(element: &AXUIElement, name: &str) -> Option<CFRetained<CFType>> {
     let name = CFString::from_str(name);
     let mut value: *const CFType = std::ptr::null();
     // SAFETY: `value` points at a live, writable pointer for the call.
@@ -151,7 +151,7 @@ fn attribute(element: &AXUIElement, name: &str) -> Option<CFRetained<CFType>> {
     Some(unsafe { CFRetained::from_raw(value) })
 }
 
-fn string_attribute(element: &AXUIElement, name: &str) -> Option<String> {
+pub(crate) fn string_attribute(element: &AXUIElement, name: &str) -> Option<String> {
     let value = attribute(element, name)?;
     value.downcast_ref::<CFString>().map(ToString::to_string)
 }

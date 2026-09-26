@@ -58,11 +58,14 @@ pub enum ActionKind {
     Speak,
     /// Control the music player: play a playlist, pause, next, previous.
     Media,
+    /// Press something in the window in front by its label ("Suscribirse"),
+    /// found through Accessibility — no picture of the screen involved.
+    ClickUi,
 }
 
 impl ActionKind {
     /// Every kind, in a stable order — for listing policies.
-    pub const ALL: [ActionKind; 11] = [
+    pub const ALL: [ActionKind; 12] = [
         ActionKind::OpenApp,
         ActionKind::CloseApp,
         ActionKind::OpenUrl,
@@ -74,6 +77,7 @@ impl ActionKind {
         ActionKind::Notify,
         ActionKind::Speak,
         ActionKind::Media,
+        ActionKind::ClickUi,
     ];
 
     /// The snake_case name used in the config file and in audit entries.
@@ -90,6 +94,7 @@ impl ActionKind {
             ActionKind::Notify => "notify",
             ActionKind::Speak => "speak",
             ActionKind::Media => "media",
+            ActionKind::ClickUi => "click_ui",
         }
     }
 }
@@ -135,7 +140,10 @@ impl GatewayConfig {
 /// selected.
 fn default_policy(origin: Origin, kind: ActionKind) -> Policy {
     match (origin, kind) {
-        (Origin::Agent, ActionKind::CloseApp | ActionKind::InsertText | ActionKind::ReadSelection) => Policy::Confirm,
+        (
+            Origin::Agent,
+            ActionKind::CloseApp | ActionKind::InsertText | ActionKind::ReadSelection | ActionKind::ClickUi,
+        ) => Policy::Confirm,
         _ => Policy::Auto,
     }
 }
@@ -163,7 +171,7 @@ mod tests {
     #[test]
     fn an_agent_needs_confirmation_for_the_costly_actions_only() {
         let config = GatewayConfig::default();
-        for kind in [ActionKind::CloseApp, ActionKind::InsertText, ActionKind::ReadSelection] {
+        for kind in [ActionKind::CloseApp, ActionKind::InsertText, ActionKind::ReadSelection, ActionKind::ClickUi] {
             assert_eq!(config.policy(Origin::Agent, kind), Policy::Confirm, "{kind:?}");
         }
         for kind in [ActionKind::OpenApp, ActionKind::OpenUrl, ActionKind::Notify, ActionKind::Speak] {
