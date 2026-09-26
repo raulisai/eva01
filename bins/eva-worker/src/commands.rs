@@ -5,7 +5,7 @@
 use crate::context::WorkerContext;
 use eva_intent::Intent;
 use eva_ipc::{WorkerState, WorkerToShell};
-use eva_mcp::{DesktopService, Outcome, ServiceError};
+use eva_mcp::{DesktopService, LocalService, Outcome, ServiceError};
 use eva_store::Decision;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -49,6 +49,10 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
         Intent::WebSearch { query } => {
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, voice.web_search(&query).await);
+        }
+        Intent::SearchInSite { site, query, url, focus } => {
+            ctx.events.state(request_id, WorkerState::Executing);
+            report(ctx, request_id, search_in_site(&voice, &site, &query, &url, &focus).await);
         }
         Intent::Media { step } => {
             ctx.events.state(request_id, WorkerState::Executing);
@@ -226,6 +230,28 @@ async fn confirm_custom(
     }
     let now_custom = serde_json::to_value(Intent::Custom { phrase: phrase.clone() }).unwrap_or(serde_json::Value::Null);
     run_command(ctx, request_id, &command, now_custom).await;
+}
+
+/// "Busca Naruto" with YouTube in front: types it into the site's own search
+/// box. If the site is not what is in front any more (the user went elsewhere
+/// in the seconds since), the search page opens instead, as it always did.
+async fn search_in_site(voice: &LocalService, site: &str, query: &str, url: &str, focus: &str) -> Outcome<()> {
+    let in_front = match voice.active_window().await {
+        Ok(Some(window)) => {
+            let folded = |text: &str| eva_text::fold_diacritics(text).to_lowercase();
+            let wanted = folded(site);
+            [window.name.as_deref(), window.title.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|shown| folded(shown).contains(&wanted))
+        }
+        _ => false,
+    };
+    if in_front {
+        voice.search_in_place(focus, query).await
+    } else {
+        voice.open_url(url).await
+    }
 }
 
 /// Runs one of the user's own `[[commands]]`. Each thing it does goes through

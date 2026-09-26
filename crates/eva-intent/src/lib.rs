@@ -307,8 +307,12 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let recall = context::Recall::of(&opened);
-        let naruto = Some(InterpretResult::Command(Intent::OpenUrl {
+        // The site is open in front (a page of the browser): typed into its own search box.
+        let naruto = Some(InterpretResult::Command(Intent::SearchInSite {
+            site: "YouTube".to_string(),
+            query: "Naruto".to_string(),
             url: "https://www.youtube.com/results?search_query=Naruto".to_string(),
+            focus: "/".to_string(),
         }));
 
         // With the wake word or without it, in the seconds after.

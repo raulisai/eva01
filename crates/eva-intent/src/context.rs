@@ -36,7 +36,13 @@ impl Recall {
     pub fn search(&self, query: &str) -> Option<Intent> {
         let site = self.site?;
         let query = names_another_place(query, site)?;
-        Some(Intent::OpenUrl { url: site.search_url(&query)? })
+        let url = site.search_url(&query)?;
+        // Where the site is open decides which shortcut reaches its search box.
+        let focus = if self.app.is_some() { site.focus_app } else { site.focus_web };
+        Some(match focus {
+            Some(focus) => Intent::SearchInSite { site: site.name.to_string(), query, url, focus: focus.to_string() },
+            None => Intent::OpenUrl { url },
+        })
     }
 }
 
@@ -112,9 +118,10 @@ mod tests {
         Recall::of(&Intent::OpenUrl { url: "https://www.youtube.com".to_string() }).unwrap()
     }
 
+    /// The search page a follow-up ends up at, whether it is typed in place or opened.
     fn url(intent: Option<Intent>) -> Option<String> {
         match intent {
-            Some(Intent::OpenUrl { url }) => Some(url),
+            Some(Intent::OpenUrl { url } | Intent::SearchInSite { url, .. }) => Some(url),
             _ => None,
         }
     }
@@ -159,6 +166,28 @@ mod tests {
             url(follow_up("busca el opening de Naruto en HD", &opened_youtube())).as_deref(),
             Some("https://www.youtube.com/results?search_query=el%20opening%20de%20Naruto%20en%20HD")
         );
+    }
+
+    #[test]
+    fn where_the_site_is_open_decides_how_the_search_reaches_it() {
+        // YouTube open as an app of its own (a web app): "/" moves to its search box.
+        let app = Recall::of(&Intent::OpenApp { app: "YouTube".to_string() }).unwrap();
+        assert_eq!(
+            app.search("Naruto"),
+            Some(Intent::SearchInSite {
+                site: "YouTube".to_string(),
+                query: "Naruto".to_string(),
+                url: "https://www.youtube.com/results?search_query=Naruto".to_string(),
+                focus: "/".to_string(),
+            })
+        );
+        // Spotify's app has ⌘L for it; opened in a browser it has nothing (⌘L is the address bar).
+        let spotify_app = Recall::of(&Intent::OpenApp { app: "Spotify".to_string() }).unwrap();
+        assert!(
+            matches!(spotify_app.search("Bad Bunny"), Some(Intent::SearchInSite { focus, .. }) if focus == "cmd+l")
+        );
+        let spotify_web = Recall::of(&Intent::OpenUrl { url: "https://open.spotify.com".to_string() }).unwrap();
+        assert!(matches!(spotify_web.search("Bad Bunny"), Some(Intent::OpenUrl { .. })));
     }
 
     #[test]

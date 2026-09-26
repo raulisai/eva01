@@ -190,6 +190,14 @@ impl Doing {
                 let site = site_of(&text("url")?);
                 doing(format!("Abriendo {site}"), format!("{site} abierto"), Icon::Symbol("globe"))
             }
+            "search_in_site" => {
+                let (site, query) = (text("site")?, short(&text("query")?, 28));
+                doing(
+                    format!("Buscando {query} en {site}"),
+                    "Búsqueda lista".to_string(),
+                    Icon::Symbol("magnifyingglass"),
+                )
+            }
             "web_search" => {
                 let query = short(&text("query")?, 32);
                 doing(format!("Buscando {query}"), "Búsqueda lista".to_string(), Icon::Symbol("magnifyingglass"))

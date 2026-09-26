@@ -6,6 +6,11 @@
 use crate::error::DesktopError;
 use eva_macos::RunningAppInfo;
 
+/// How long a page needs to move the keyboard focus to its search box, and to
+/// take the pasted words, before the next key.
+const SEARCH_BOX_SETTLE: std::time::Duration =
+    if cfg!(test) { std::time::Duration::ZERO } else { std::time::Duration::from_millis(180) };
+
 /// Everything an MCP tool call can ask the desktop to do.
 pub trait Desktop: Send + Sync {
     /// Opens (or focuses) an application by name.
@@ -16,6 +21,19 @@ pub trait Desktop: Send + Sync {
     fn open_url(&self, url: &str) -> Result<(), DesktopError>;
     /// Pastes `text` at the current cursor position.
     fn insert_text(&self, text: &str) -> Result<(), DesktopError>;
+    /// Presses a key or shortcut ("/", "cmd+l", "return") in the app in front.
+    fn press_combo(&self, combo: &str) -> Result<(), DesktopError>;
+    /// Searches *in the page or app in front*: focuses its search box with
+    /// `focus` (the site's own shortcut), pastes `query` over whatever it held
+    /// and presses return. Nothing is opened elsewhere.
+    fn search_in_front(&self, focus: &str, query: &str) -> Result<(), DesktopError> {
+        self.press_combo(focus)?;
+        std::thread::sleep(SEARCH_BOX_SETTLE);
+        self.press_combo("cmd+a")?;
+        self.insert_text(query)?;
+        std::thread::sleep(SEARCH_BOX_SETTLE);
+        self.press_combo("return")
+    }
     /// The frontmost application, if one can be determined.
     fn active_window(&self) -> Option<RunningAppInfo>;
     /// Shows a system notification.
@@ -132,6 +150,10 @@ impl Desktop for SystemDesktop {
         eva_macos::is_secure_input_enabled()
     }
 
+    fn press_combo(&self, combo: &str) -> Result<(), DesktopError> {
+        eva_macos::press_combo(combo).map_err(DesktopError::from)
+    }
+
     fn has_text_target(&self) -> bool {
         let pid = eva_macos::frontmost_app().map(|app| app.pid);
         eva_macos::text_target_focused(pid) != Some(false)
@@ -162,6 +184,8 @@ pub mod mock {
         OpenUrl(String),
         /// [`Desktop::insert_text`] was called with this text.
         InsertText(String),
+        /// [`Desktop::press_combo`] was called with this shortcut.
+        PressCombo(String),
         /// [`Desktop::notify`] was called with this title and body.
         Notify(String, String),
         /// [`Desktop::speak`] was called with this text.
@@ -266,6 +290,10 @@ pub mod mock {
 
         fn insert_text(&self, text: &str) -> Result<(), DesktopError> {
             self.record(Call::InsertText(text.to_string()))
+        }
+
+        fn press_combo(&self, combo: &str) -> Result<(), DesktopError> {
+            self.record(Call::PressCombo(combo.to_string()))
         }
 
         fn active_window(&self) -> Option<RunningAppInfo> {

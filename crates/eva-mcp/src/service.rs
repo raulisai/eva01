@@ -151,6 +151,14 @@ impl LocalService {
         self.gated(ActionKind::WebSearch, query, move |d| d.open_url(&url)).await
     }
 
+    /// "Busca Naruto" while the site is in front: searches *there*, by focusing
+    /// its search box with `focus` and typing — not in a new tab of the browser.
+    /// A search like any other for the gateway.
+    pub async fn search_in_place(&self, focus: &str, query: &str) -> Outcome<()> {
+        let (focus, asked) = (focus.to_string(), query.to_string());
+        self.gated(ActionKind::WebSearch, query, move |d| d.search_in_front(&focus, &asked)).await
+    }
+
     /// Controls the music player, by voice or as a step of a command.
     pub async fn media(&self, command: eva_macos::MediaCommand) -> Outcome<()> {
         let subject = command.describe();

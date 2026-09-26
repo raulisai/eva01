@@ -67,7 +67,9 @@ pub fn interpret(ctx: &WorkerContext, text: &str, apps: &AppIndex, custom: &[&st
 /// Runs `intent`; if it opened something and nothing went wrong, opens the
 /// conversation on it and tells the island.
 pub async fn run(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Intent) {
-    let recall = Recall::of(&intent);
+    // A search typed in place leaves things as they were: the same site, still in front.
+    let recall = Recall::of(&intent)
+        .or_else(|| matches!(intent, Intent::SearchInSite { .. }).then(|| ctx.conversation.current()).flatten());
     let problems = ctx.events.problems();
     crate::commands::run_intent(ctx, request_id, intent).await;
     if let Some(recall) = recall.filter(Recall::is_useful) {
@@ -92,25 +94,56 @@ mod tests {
 
     #[tokio::test]
     async fn after_opening_youtube_the_next_search_needs_no_wake_word_and_searches_there() {
-        let mut rig = Rig::new();
+        let youtube = eva_macos::RunningAppInfo {
+            localized_name: Some("Brave Browser".to_string()),
+            bundle_identifier: Some("com.brave.Browser".to_string()),
+            pid: 1,
+            window_title: Some("YouTube - Brave".to_string()),
+        };
+        let mut rig =
+            Rig::builder().desktop(eva_mcp::desktop::mock::MockDesktop::new().with_active_window(youtube)).build();
 
         let events = rig.run(typed("Adán, abre YouTube")).await;
         assert_eq!(rig.desktop.calls(), vec![Call::OpenUrl("https://www.youtube.com".to_string())]);
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::FollowUp { secs: 5, .. })), "{events:?}");
 
+        // With YouTube in front, the search is typed into its own search box.
         rig.run(typed("ahora busca Naruto")).await;
+        let calls = rig.desktop.calls();
         assert_eq!(
-            rig.desktop.calls().last(),
-            Some(&Call::OpenUrl("https://www.youtube.com/results?search_query=Naruto".to_string()))
+            calls[1..],
+            [
+                Call::PressCombo("/".to_string()),
+                Call::PressCombo("cmd+a".to_string()),
+                Call::InsertText("Naruto".to_string()),
+                Call::PressCombo("return".to_string()),
+            ]
         );
 
-        // A search opens a page of the same site, so the conversation goes on.
+        // The conversation goes on: same site, still in front.
         let more = rig.run(typed("busca Boruto")).await;
+        assert_eq!(rig.desktop.calls().iter().filter(|c| **c == Call::InsertText("Boruto".to_string())).count(), 1);
+        assert!(more.iter().any(|e| matches!(e, WorkerToShell::FollowUp { .. })));
+    }
+
+    #[tokio::test]
+    async fn if_the_user_went_elsewhere_the_search_opens_the_page_as_before() {
+        let notes = eva_macos::RunningAppInfo {
+            localized_name: Some("Notes".to_string()),
+            bundle_identifier: Some("com.apple.Notes".to_string()),
+            pid: 1,
+            window_title: Some("Lista".to_string()),
+        };
+        let mut rig =
+            Rig::builder().desktop(eva_mcp::desktop::mock::MockDesktop::new().with_active_window(notes)).build();
+        rig.run(typed("Adán, abre YouTube")).await;
+        rig.run(typed("busca Naruto")).await;
         assert_eq!(
             rig.desktop.calls().last(),
-            Some(&Call::OpenUrl("https://www.youtube.com/results?search_query=Boruto".to_string()))
+            Some(&Call::OpenUrl("https://www.youtube.com/results?search_query=Naruto".to_string())),
+            "nothing is typed into Notes"
         );
-        assert!(more.iter().any(|e| matches!(e, WorkerToShell::FollowUp { .. })));
+        assert!(!rig.desktop.calls().iter().any(|c| matches!(c, Call::PressCombo(_))));
     }
 
     #[tokio::test]

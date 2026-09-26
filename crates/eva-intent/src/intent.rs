@@ -61,6 +61,20 @@ pub enum Intent {
         url: String,
     },
 
+    /// "Busca Naruto" while YouTube (or another site EVA01 knows) is in
+    /// front: search *there*, by moving the keyboard to its search box, and
+    /// only if that site is not in front, open the search page instead.
+    SearchInSite {
+        /// The site, as it is called on the island ("YouTube").
+        site: String,
+        /// What to look for.
+        query: String,
+        /// The site's search page: where the search goes if the site is not in front.
+        url: String,
+        /// The shortcut that moves the keyboard to the site's search box.
+        focus: String,
+    },
+
     /// "Adán, busca gatos" — a web search.
     WebSearch {
         /// The search query.

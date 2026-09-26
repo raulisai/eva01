@@ -10,6 +10,8 @@ use eva_text::fold_diacritics;
 /// A website EVA01 knows by name.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Site {
+    /// How it is called, as it is written on the island ("YouTube").
+    pub name: &'static str,
     /// How it is said, folded (no accents, lowercase).
     pub names: &'static [&'static str],
     /// Where "abre `<site>`" goes.
@@ -18,97 +20,168 @@ pub struct Site {
     pub hosts: &'static [&'static str],
     /// Its search address, with `{q}` where the (encoded) search goes.
     pub search: Option<&'static str>,
+    /// The shortcut that moves the keyboard to its search box when it is open
+    /// as a page in a browser (a lone "/" for many sites).
+    pub focus_web: Option<&'static str>,
+    /// The same when it is open as an app of its own (a web app, or a native one).
+    pub focus_app: Option<&'static str>,
 }
 
 /// The known sites.
 pub const SITES: &[Site] = &[
     Site {
+        name: "YouTube",
         names: &["youtube", "you tube", "yutub", "yutube"],
         home: "https://www.youtube.com",
         hosts: &["youtube.com", "youtu.be"],
         search: Some("https://www.youtube.com/results?search_query={q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "Spotify",
         names: &["spotify"],
         home: "https://open.spotify.com",
         hosts: &["spotify.com"],
         search: Some("https://open.spotify.com/search/{q}"),
+        focus_web: None,
+        focus_app: Some("cmd+l"),
     },
     Site {
+        name: "Gmail",
         names: &["gmail"],
         home: "https://mail.google.com",
         hosts: &["mail.google.com"],
         search: Some("https://mail.google.com/mail/u/0/#search/{q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "Google Drive",
         names: &["google drive", "drive"],
         home: "https://drive.google.com",
         hosts: &["drive.google.com"],
         search: Some("https://drive.google.com/drive/search?q={q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "Google Maps",
         names: &["google maps"],
         home: "https://www.google.com/maps",
         hosts: &["google.com/maps", "maps.google.com"],
         search: Some("https://www.google.com/maps/search/{q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "GitHub",
         names: &["github", "git hub"],
         home: "https://github.com",
         hosts: &["github.com"],
         search: Some("https://github.com/search?q={q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "Stack Overflow",
         names: &["stack overflow", "stackoverflow"],
         home: "https://stackoverflow.com",
         hosts: &["stackoverflow.com"],
         search: Some("https://stackoverflow.com/search?q={q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "Wikipedia",
         names: &["wikipedia"],
         home: "https://es.wikipedia.org",
         hosts: &["wikipedia.org"],
         search: Some("https://es.wikipedia.org/w/index.php?search={q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "Netflix",
         names: &["netflix"],
         home: "https://www.netflix.com",
         hosts: &["netflix.com"],
         search: Some("https://www.netflix.com/search?q={q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "Twitch",
         names: &["twitch"],
         home: "https://www.twitch.tv",
         hosts: &["twitch.tv"],
         search: Some("https://www.twitch.tv/search?term={q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "Reddit",
         names: &["reddit"],
         home: "https://www.reddit.com",
         hosts: &["reddit.com"],
         search: Some("https://www.reddit.com/search/?q={q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "Amazon",
         names: &["amazon"],
         home: "https://www.amazon.com.mx",
         hosts: &["amazon.com", "amazon.com.mx"],
         search: Some("https://www.amazon.com.mx/s?k={q}"),
+        focus_web: None,
+        focus_app: None,
     },
     Site {
+        name: "X",
         names: &["twitter"],
         home: "https://x.com",
         hosts: &["x.com", "twitter.com"],
         search: Some("https://x.com/search?q={q}"),
+        focus_web: Some("/"),
+        focus_app: Some("/"),
     },
     Site {
+        name: "LinkedIn",
         names: &["linkedin", "linked in"],
         home: "https://www.linkedin.com",
         hosts: &["linkedin.com"],
         search: Some("https://www.linkedin.com/search/results/all/?keywords={q}"),
+        focus_web: None,
+        focus_app: None,
     },
-    Site { names: &["instagram"], home: "https://www.instagram.com", hosts: &["instagram.com"], search: None },
-    Site { names: &["facebook"], home: "https://www.facebook.com", hosts: &["facebook.com"], search: None },
-    Site { names: &["chatgpt", "chat gpt"], home: "https://chatgpt.com", hosts: &["chatgpt.com"], search: None },
+    Site {
+        name: "Instagram",
+        names: &["instagram"],
+        home: "https://www.instagram.com",
+        hosts: &["instagram.com"],
+        search: None,
+        focus_web: None,
+        focus_app: None,
+    },
+    Site {
+        name: "Facebook",
+        names: &["facebook"],
+        home: "https://www.facebook.com",
+        hosts: &["facebook.com"],
+        search: None,
+        focus_web: None,
+        focus_app: None,
+    },
+    Site {
+        name: "ChatGPT",
+        names: &["chatgpt", "chat gpt"],
+        home: "https://chatgpt.com",
+        hosts: &["chatgpt.com"],
+        search: None,
+        focus_web: None,
+        focus_app: None,
+    },
 ];
 
 /// The site called `name` ("YouTube", "you tube"), accents and case aside.
