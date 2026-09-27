@@ -213,7 +213,14 @@ fn load_audio(config: &Config, support: &Path, wake_word: &str) -> Option<AudioC
                 let wake_word = wake_word.to_string();
                 let wanted = Arc::new(move |text: &str| {
                     let text = eva_text::filler::remove_universal_fillers(text);
+                    // A clear command, or something that reads as a follow-up search
+                    // ("busca X") even with no wake word — the seconds right after a
+                    // command that opened a site expect exactly that, and a candidate
+                    // shaped like it is worth trusting over one that merely does not
+                    // loop (`docs/PLAN.md`: a clean but unrelated sentence is as costly
+                    // to trust as a looping one, just harder to catch).
                     eva_intent::looks_like_command(&text, &wake_word, &[])
+                        || eva_intent::context::looks_like_search_phrase(&text)
                 });
                 let stt =
                     eva_audio::second_opinion::SecondOpinion::new(Arc::new(stt.with_padding(padding)), second, wanted);

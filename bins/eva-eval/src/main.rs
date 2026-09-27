@@ -133,7 +133,8 @@ fn main() {
     };
     let wake_word = cli.wake_word.clone();
     let wanted = std::sync::Arc::new(move |text: &str| {
-        eva_intent::looks_like_command(&eva_text::filler::remove_universal_fillers(text), &wake_word, &[])
+        let text = eva_text::filler::remove_universal_fillers(text);
+        eva_intent::looks_like_command(&text, &wake_word, &[]) || eva_intent::context::looks_like_search_phrase(&text)
     });
     // What EVA01 itself uses: the main model, the optional second opinion,
     // and loops collapsed.

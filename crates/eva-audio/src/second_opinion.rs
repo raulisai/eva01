@@ -366,6 +366,23 @@ mod tests {
     }
 
     #[test]
+    fn a_coherent_but_unrelated_answer_loses_to_one_that_looks_like_what_was_expected() {
+        // What happened for real: primary hallucinated a clean, unrelated
+        // sentence — no loop for `has_loop` to catch — while the second model
+        // heard something shaped like the follow-up that was actually
+        // expected ("busca …", no wake word since this is mid-conversation).
+        // Neither answer starts with the wake word, so only a `wanted` that
+        // also recognizes that shape can tell them apart.
+        let looks_like_a_search = Arc::new(|text: &str| text.to_lowercase().starts_with("busca"));
+        let stt = SecondOpinion::new(
+            Arc::new(FixedTranscript::new("Bueno, es cierto de todos modos.")),
+            Some(counting("Busca Anime.")),
+            looks_like_a_search,
+        );
+        assert_eq!(stt.transcribe(&seconds(1.0)).unwrap().text, "Busca Anime.");
+    }
+
+    #[test]
     fn without_a_second_model_a_loop_is_still_collapsed() {
         let stt =
             SecondOpinion::new(Arc::new(FixedTranscript::new("bueno, bueno, bueno, bueno.")), None, starts_with_adan());

@@ -88,11 +88,10 @@ fn asks_to_search(verb: &str) -> bool {
         || verb.chars().count() >= 4 && ["busca", "buscar"].iter().any(|w| strsim::levenshtein(verb, w) <= 2)
 }
 
-/// What `text` — said with no wake word, in the seconds after a command —
-/// means given `recall`, if it is one of the few follow-ups that mean
-/// something only there: a search where the last command left off, or
-/// closing what it opened. `None` for anything else: it is dictation.
-pub fn follow_up(text: &str, recall: &Recall) -> Option<Intent> {
+/// `text` past any polite lead-in ("ahora", "oye", "por favor"…), as
+/// `(verb, rest)`: the first real word, folded, and everything after it.
+/// `None` if `text` is only leads, or empty.
+fn after_leads(text: &str) -> Option<(String, String)> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let folded = |word: &str| fold_diacritics(word.trim_matches(|c: char| !c.is_alphanumeric())).to_lowercase();
     // "por" is only a lead as "por favor"; on its own it starts a phrase.
@@ -108,13 +107,32 @@ pub fn follow_up(text: &str, recall: &Recall) -> Option<Intent> {
     let verb = folded(words.get(start)?);
     let rest = words[start + 1..].join(" ");
     let rest = rest.trim().trim_end_matches(['.', '!', '?']).trim();
-    let rest = rest.strip_suffix("por favor").map_or(rest, str::trim_end);
+    let rest = rest.strip_suffix("por favor").map_or(rest, str::trim_end).to_string();
+    Some((verb, rest))
+}
+
+/// Whether `text` reads as "busca/buscar <algo>" (misheard first letter and
+/// all), with something to look for. Independent of any [`Recall`]: this is
+/// what lets a transcript that merely *looks like* a search be preferred over
+/// one that does not when two speech models disagree on a short clip (see
+/// `eva_audio::second_opinion`) — a clean sentence that is not what was said
+/// is exactly as costly to trust as one that loops, just harder to catch.
+pub fn looks_like_search_phrase(text: &str) -> bool {
+    after_leads(text).is_some_and(|(verb, rest)| asks_to_search(&verb) && !rest.is_empty())
+}
+
+/// What `text` — said with no wake word, in the seconds after a command —
+/// means given `recall`, if it is one of the few follow-ups that mean
+/// something only there: a search where the last command left off, or
+/// closing what it opened. `None` for anything else: it is dictation.
+pub fn follow_up(text: &str, recall: &Recall) -> Option<Intent> {
+    let (verb, rest) = after_leads(text)?;
 
     if asks_to_search(&verb) && !rest.is_empty() {
-        return recall.search(rest);
+        return recall.search(&rest);
     }
     let closes_it = matches!(verb.as_str(), "cierralo" | "cierrala") && rest.is_empty()
-        || verb == "cierra" && matches!(fold_diacritics(rest).to_lowercase().as_str(), "eso" | "esto" | "eso mismo");
+        || verb == "cierra" && matches!(fold_diacritics(&rest).to_lowercase().as_str(), "eso" | "esto" | "eso mismo");
     if closes_it {
         return recall.app.clone().map(|app| Intent::CloseApp { app });
     }
@@ -251,5 +269,15 @@ mod tests {
     fn with_no_site_search_a_follow_up_search_is_left_to_the_normal_path() {
         let notes = Recall::of(&Intent::OpenApp { app: "Notes".to_string() }).unwrap();
         assert_eq!(follow_up("busca Naruto", &notes), None);
+    }
+
+    #[test]
+    fn looks_like_search_phrase_needs_no_recall_and_tolerates_the_same_misses() {
+        for said in ["busca Naruto", "Cosca Anime.", "buscan al otro", "ahora busca algo", "por favor busca X"] {
+            assert!(looks_like_search_phrase(said), "{said}");
+        }
+        for said in ["Bueno, es cierto de todos modos.", "busca", "hola cómo estás", ""] {
+            assert!(!looks_like_search_phrase(said), "{said}");
+        }
     }
 }
