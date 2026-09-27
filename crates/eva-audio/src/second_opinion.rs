@@ -117,7 +117,7 @@ impl SpeechToText for SecondOpinion {
             _ => (self.primary.transcribe(samples), None),
         };
         let chosen = self.choose(samples, first?, other);
-        Ok(Transcript { text: collapse_loops(&chosen.text) })
+        Ok(Transcript { text: discard_if_runaway(&chosen.text) })
     }
 }
 
@@ -142,6 +142,32 @@ fn best_run(cores: &[String], start: usize) -> Option<(usize, usize)> {
             (repeats >= loop_threshold(unit)).then_some((unit, repeats))
         })
         .max_by_key(|(unit, repeats)| (unit * repeats, std::cmp::Reverse(*unit)))
+}
+
+/// A run this many times past the loop threshold is not speech looping —
+/// nobody says a word 8+ times in a row — it is the decoder spinning on
+/// audio with nothing recognizable in it, and whatever it typed is made up,
+/// not transcribed. The whole text is discarded, not just the run: a decode
+/// that got this stuck at one point is not trustworthy either side of it.
+const HALLUCINATION_FACTOR: usize = 2;
+
+/// Whether `text` contains a run so far past a loop that it is the decoder
+/// making things up rather than the speaker repeating themselves.
+fn is_runaway(text: &str) -> bool {
+    let cores: Vec<String> = text.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
+    (0..cores.len()).any(|start| {
+        best_run(&cores, start).is_some_and(|(unit, repeats)| repeats >= loop_threshold(unit) * HALLUCINATION_FACTOR)
+    })
+}
+
+/// [`collapse_loops`], but a run far past what real repeated speech looks
+/// like discards the whole text instead — see [`is_runaway`].
+fn discard_if_runaway(text: &str) -> String {
+    if is_runaway(text) {
+        String::new()
+    } else {
+        collapse_loops(text)
+    }
 }
 
 /// `text` with every run of a repeated word or group of words reduced to one
@@ -354,5 +380,17 @@ mod tests {
                 proptest::prop_assert!(text.split_whitespace().map(core).any(|w| w == word));
             }
         }
+    }
+
+    #[test]
+    fn a_run_far_past_the_loop_threshold_discards_the_whole_text_not_just_the_run() {
+        let words: Vec<&str> = std::iter::repeat_n("necesito", 20).collect();
+        let hallucinated = format!("Pero el tipo, {}.", words.join(", "));
+        assert_eq!(discard_if_runaway(&hallucinated), "", "20 repeats of one word is the decoder, not the speaker");
+
+        let mild = "Computa, bueno, bueno, bueno, bueno.";
+        assert_eq!(discard_if_runaway(mild), collapse_loops(mild), "an ordinary loop is still just collapsed");
+
+        assert_eq!(discard_if_runaway("hola, ¿cómo estás?"), "hola, ¿cómo estás?", "no loop, nothing touched");
     }
 }
