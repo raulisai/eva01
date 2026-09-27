@@ -313,6 +313,7 @@ mod tests {
             query: "Naruto".to_string(),
             url: "https://www.youtube.com/results?search_query=Naruto".to_string(),
             focus: "/".to_string(),
+            app: None,
         }));
 
         // With the wake word or without it, in the seconds after.

@@ -127,6 +127,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_web_app_opened_by_eva_is_brought_back_before_searching_even_if_focus_drifted() {
+        // A YouTube "web app" shortcut (a real .app of its own, as Brave's
+        // "Create Shortcut" makes): once opened, focus can land anywhere else
+        // (an editor, a different browser window with other tabs) without the
+        // search having to give up and open a brand new page.
+        let elsewhere = eva_macos::RunningAppInfo {
+            localized_name: Some("Brave Browser".to_string()),
+            bundle_identifier: Some("com.brave.Browser".to_string()),
+            pid: 2,
+            window_title: Some("Your Repositories - GitHub".to_string()),
+        };
+        let youtube_app = eva_macos::RunningAppInfo {
+            localized_name: Some("YouTube".to_string()),
+            bundle_identifier: Some("com.brave.app.youtube".to_string()),
+            pid: 3,
+            window_title: Some("YouTube".to_string()),
+        };
+        let apps = crate::apps::AppCatalog::fixed(AppIndex::new(vec![eva_intent::AppEntry::new("YouTube")]));
+        let desktop = eva_mcp::desktop::mock::MockDesktop::new()
+            .with_active_window(elsewhere)
+            .with_active_window_after_open_app("YouTube", youtube_app);
+        let mut rig = Rig::builder().apps(apps).desktop(desktop).build();
+
+        rig.run(typed("Adán, abre YouTube")).await;
+        // Focus drifted (the mock never moves on its own — this stands for
+        // whatever the user clicked into meanwhile).
+        rig.run(typed("busca Naruto")).await;
+
+        assert_eq!(
+            rig.desktop.calls()[1..],
+            [
+                Call::OpenApp("YouTube".to_string()),
+                Call::PressCombo("/".to_string()),
+                Call::PressCombo("cmd+a".to_string()),
+                Call::InsertText("Naruto".to_string()),
+                Call::PressCombo("return".to_string()),
+            ],
+            "reactivated before typing, never opened as a new page"
+        );
+    }
+
+    #[tokio::test]
     async fn if_the_user_went_elsewhere_the_search_opens_the_page_as_before() {
         let notes = eva_macos::RunningAppInfo {
             localized_name: Some("Notes".to_string()),

@@ -81,6 +81,12 @@ pub enum Intent {
         url: String,
         /// The shortcut that moves the keyboard to the site's search box.
         focus: String,
+        /// The app to bring to the front before searching, when the site was
+        /// opened as its own app (a web-app shortcut) rather than a browser
+        /// tab: whatever else has the user's focus by then, this is where it
+        /// was left, and reactivating an already-running app raises its
+        /// existing window rather than opening another.
+        app: Option<String>,
     },
 
     /// "Adán, busca gatos" — a web search.

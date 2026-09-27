@@ -50,9 +50,9 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
             ctx.events.state(request_id, WorkerState::Executing);
             report(ctx, request_id, voice.web_search(&query).await);
         }
-        Intent::SearchInSite { site, query, url, focus } => {
+        Intent::SearchInSite { site, query, url, focus, app } => {
             ctx.events.state(request_id, WorkerState::Executing);
-            report(ctx, request_id, search_in_site(&voice, &site, &query, &url, &focus).await);
+            report(ctx, request_id, search_in_site(&voice, &site, &query, &url, &focus, app.as_deref()).await);
         }
         Intent::ClickUi { label } => {
             ctx.events.state(request_id, WorkerState::Executing);
@@ -236,11 +236,37 @@ async fn confirm_custom(
     run_command(ctx, request_id, &command, now_custom).await;
 }
 
-/// "Busca Naruto" with YouTube in front: types it into the site's own search
-/// box. If the site is not what is in front any more (the user went elsewhere
-/// in the seconds since), the search page opens instead, as it always did.
-async fn search_in_site(voice: &LocalService, site: &str, query: &str, url: &str, focus: &str) -> Outcome<()> {
-    let in_front = match voice.active_window().await {
+/// "Busca Naruto" with YouTube open: types it into the site's own search box,
+/// wherever it is — not just if it happens to still be in front. `app` is the
+/// app to bring back first when the site was opened as its own app (a
+/// web-app shortcut): whatever else took the user's focus meanwhile, EVA
+/// reactivating an already-running app raises its existing window rather
+/// than opening another. Only when none of that lands on the site (a plain
+/// browser tab that lost focus, with no app of its own to call back) does the
+/// search page open instead, as it always did.
+async fn search_in_site(
+    voice: &LocalService,
+    site: &str,
+    query: &str,
+    url: &str,
+    focus: &str,
+    app: Option<&str>,
+) -> Outcome<()> {
+    if let Some(app) = app {
+        // Best-effort: if this fails (the app was quit meanwhile), the check
+        // below still catches it and falls back to opening the page.
+        let _ = voice.open_app(app).await;
+    }
+    if window_shows(voice, site).await {
+        return voice.search_in_place(focus, query).await;
+    }
+    voice.open_url(url).await
+}
+
+/// Whether the window in front names `site`, by the app's own name or its
+/// window's title.
+async fn window_shows(voice: &LocalService, site: &str) -> bool {
+    match voice.active_window().await {
         Ok(Some(window)) => {
             let folded = |text: &str| eva_text::fold_diacritics(text).to_lowercase();
             let wanted = folded(site);
@@ -250,11 +276,6 @@ async fn search_in_site(voice: &LocalService, site: &str, query: &str, url: &str
                 .any(|shown| folded(shown).contains(&wanted))
         }
         _ => false,
-    };
-    if in_front {
-        voice.search_in_place(focus, query).await
-    } else {
-        voice.open_url(url).await
     }
 }
 

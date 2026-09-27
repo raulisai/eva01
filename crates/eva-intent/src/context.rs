@@ -40,7 +40,13 @@ impl Recall {
         // Where the site is open decides which shortcut reaches its search box.
         let focus = if self.app.is_some() { site.focus_app } else { site.focus_web };
         Some(match focus {
-            Some(focus) => Intent::SearchInSite { site: site.name.to_string(), query, url, focus: focus.to_string() },
+            Some(focus) => Intent::SearchInSite {
+                site: site.name.to_string(),
+                query,
+                url,
+                focus: focus.to_string(),
+                app: self.app.clone(),
+            },
             None => Intent::OpenUrl { url },
         })
     }
@@ -191,13 +197,15 @@ mod tests {
                 query: "Naruto".to_string(),
                 url: "https://www.youtube.com/results?search_query=Naruto".to_string(),
                 focus: "/".to_string(),
+                app: Some("YouTube".to_string()),
             })
         );
         // Spotify's app has ⌘L for it; opened in a browser it has nothing (⌘L is the address bar).
         let spotify_app = Recall::of(&Intent::OpenApp { app: "Spotify".to_string() }).unwrap();
-        assert!(
-            matches!(spotify_app.search("Bad Bunny"), Some(Intent::SearchInSite { focus, .. }) if focus == "cmd+l")
-        );
+        assert!(matches!(
+            spotify_app.search("Bad Bunny"),
+            Some(Intent::SearchInSite { focus, app: Some(app), .. }) if focus == "cmd+l" && app == "Spotify"
+        ));
         let spotify_web = Recall::of(&Intent::OpenUrl { url: "https://open.spotify.com".to_string() }).unwrap();
         assert!(matches!(spotify_web.search("Bad Bunny"), Some(Intent::OpenUrl { .. })));
     }

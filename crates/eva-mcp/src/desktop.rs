@@ -225,7 +225,9 @@ pub mod mock {
     #[derive(Default)]
     pub struct MockDesktop {
         calls: Mutex<Vec<Call>>,
-        active_window: Option<RunningAppInfo>,
+        active_window: Mutex<Option<RunningAppInfo>>,
+        /// What [`Desktop::open_app`] with this name makes [`Desktop::active_window`] report next.
+        activates: Mutex<Option<(String, RunningAppInfo)>>,
         selection: Option<String>,
         secure_input: bool,
         no_text_target: bool,
@@ -240,8 +242,23 @@ pub mod mock {
 
         /// A mock that reports `info` from [`Desktop::active_window`].
         #[must_use]
-        pub fn with_active_window(mut self, info: RunningAppInfo) -> Self {
-            self.active_window = Some(info);
+        pub fn with_active_window(self, info: RunningAppInfo) -> Self {
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            {
+                *self.active_window.lock().unwrap() = Some(info);
+            }
+            self
+        }
+
+        /// A mock whose active window only becomes `info` once `open_app(app_name)`
+        /// is called — for testing that a follow-up reactivates the right app
+        /// instead of trusting whatever else has focus by then.
+        #[must_use]
+        pub fn with_active_window_after_open_app(self, app_name: &str, info: RunningAppInfo) -> Self {
+            #[allow(clippy::unwrap_used)] // as above
+            {
+                *self.activates.lock().unwrap() = Some((app_name.to_string(), info));
+            }
             self
         }
 
@@ -295,7 +312,14 @@ pub mod mock {
 
     impl Desktop for MockDesktop {
         fn open_app(&self, name: &str) -> Result<(), DesktopError> {
-            self.record(Call::OpenApp(name.to_string()))
+            self.record(Call::OpenApp(name.to_string()))?;
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            if let Some((wanted, info)) = self.activates.lock().unwrap().clone() {
+                if wanted == name {
+                    *self.active_window.lock().unwrap() = Some(info);
+                }
+            }
+            Ok(())
         }
 
         fn close_app(&self, name: &str) -> Result<(), DesktopError> {
@@ -319,7 +343,8 @@ pub mod mock {
         }
 
         fn active_window(&self) -> Option<RunningAppInfo> {
-            self.active_window.clone()
+            #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+            self.active_window.lock().unwrap().clone()
         }
 
         fn notify(&self, title: &str, body: &str) -> Result<(), DesktopError> {
