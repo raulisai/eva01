@@ -70,10 +70,16 @@ const LEADS: &[&str] = &["ahora", "y", "luego", "despues", "entonces", "ok", "ok
 const SEARCH_VERBS: &[&str] =
     &["busca", "buscar", "buscame", "busque", "pon", "ponme", "reproduce", "reproduceme", "muestrame", "encuentra"];
 
-/// Whether `verb` is one of the search verbs, or one letter off "busca" — how
-/// speech recognition writes it in a short phrase ("buscan", "buscas").
+/// Whether `verb` is one of the search verbs, or close enough to "busca" that
+/// it is almost certainly what was said and misheard — speech recognition
+/// gets the *first* letter wrong as often as the rest ("cosca", "buscan").
+/// Two edits of slack on a five-letter word is generous, but the words this
+/// gate ever sees are the seconds right after a command that opened a known
+/// site, so a rare false match only starts an odd search, never a paste
+/// somewhere it should not go.
 fn asks_to_search(verb: &str) -> bool {
-    SEARCH_VERBS.contains(&verb) || (verb.starts_with('b') && strsim::levenshtein(verb, "busca") <= 1)
+    SEARCH_VERBS.contains(&verb)
+        || verb.chars().count() >= 4 && ["busca", "buscar"].iter().any(|w| strsim::levenshtein(verb, w) <= 2)
 }
 
 /// What `text` — said with no wake word, in the seconds after a command —
@@ -149,12 +155,18 @@ mod tests {
     }
 
     #[test]
-    fn a_search_verb_one_letter_off_is_still_a_search() {
-        // What the speech model really wrote for "busca Naruto" in a test with a voice.
+    fn a_search_verb_misheard_even_in_its_first_letter_is_still_a_search() {
+        // What the speech model really wrote for "busca Naruto" in real attempts.
         let searched = follow_up("buscan al otro", &opened_youtube());
         assert_eq!(url(searched).as_deref(), Some("https://www.youtube.com/results?search_query=al%20otro"));
         assert!(follow_up("buscas Naruto", &opened_youtube()).is_some());
+        // "Cosca Anime." — the first letter goes too, not just an ending.
+        assert_eq!(
+            url(follow_up("Cosca Anime.", &opened_youtube())).as_deref(),
+            Some("https://www.youtube.com/results?search_query=Anime")
+        );
         assert_eq!(follow_up("bueno Naruto", &opened_youtube()), None, "a different word is a different word");
+        assert_eq!(follow_up("hola cómo estás", &opened_youtube()), None, "and an unrelated sentence is not a search");
     }
 
     #[test]
