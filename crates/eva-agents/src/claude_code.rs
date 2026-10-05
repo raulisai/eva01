@@ -23,11 +23,27 @@
 //! --fork-session is also specified", found by running it, not from its
 //! docs) — so a resumed task passes only `--resume`, and a fresh one passes
 //! only `--session-id` with the id EVA assigned.
+//!
+//! Usage: Claude Code has no separate quota endpoint either, but it is more
+//! generous than Codex about it — a `rate_limit_event` line can arrive on an
+//! ordinary, *successful* run, as an early warning before the account is
+//! actually blocked, not only on a failure. Real shape, captured on
+//! 2026-09-26 from this account's own Pro plan mid-run at 70% of its 5-hour
+//! window (`tests/fixtures/claude_ratelimit_sample.jsonl`):
+//! `{"rate_limit_info":{"status":"allowed_warning","resetsAt":1790974800,
+//! "rateLimitType":"seven_day","utilization":0.49,"isUsingOverage":false,
+//! "unifiedWindows":{"five_hour":{"utilization":0.7,"resetsAt":…},
+//! "seven_day":{...}}}}`. `status` is documented (from the CLI's own
+//! strings) as one of `"allowed"`, `"allowed_warning"`, `"rejected"` — only
+//! `"rejected"` actually blocks a run; this account never reached it, so
+//! that one shape is inferred from those strings and the schema above, not
+//! independently captured live.
 
 use crate::event::AgentEvent;
 use crate::provider::{AgentError, AgentProvider, AgentTask, McpInjection, ProviderStatus, RunningAgent};
 use crate::stream::{detect_cli, launch};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
@@ -143,8 +159,29 @@ fn parse_line(line: &str) -> Vec<AgentEvent> {
                 vec![AgentEvent::Completed { summary: result }]
             }
         }
+        RawEvent::RateLimitEvent { rate_limit_info } => vec![rate_limit_event(rate_limit_info)],
         RawEvent::Unknown => Vec::new(),
     }
+}
+
+/// Turns one `rate_limit_info` payload into a normalized [`AgentEvent`].
+/// Only `"rejected"` is a real block; `"allowed_warning"` is passed through
+/// so the panel can show it, but never stops a task from being dispatched.
+fn rate_limit_event(info: RateLimitInfo) -> AgentEvent {
+    let blocked = info.status == "rejected";
+    let resets_at = info.resets_at.and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0));
+    let window = match info.rate_limit_type.as_deref() {
+        Some("five_hour") => "de 5 horas",
+        Some("seven_day") => "semanal",
+        _ => "de uso",
+    };
+    let percent = info.utilization.map_or_else(String::new, |u| format!(" ({}% usado)", (u * 100.0).round() as i64));
+    let detail = if blocked {
+        format!("límite {window} alcanzado{percent}")
+    } else {
+        format!("cerca del límite {window}{percent}")
+    };
+    AgentEvent::RateLimit { blocked, resets_at, detail }
 }
 
 fn summarize_tool_input(input: &serde_json::Value) -> String {
@@ -175,8 +212,25 @@ enum RawEvent {
         is_error: bool,
         result: Option<String>,
     },
+    RateLimitEvent {
+        rate_limit_info: RateLimitInfo,
+    },
     #[serde(other)]
     Unknown,
+}
+
+/// The subset of `rate_limit_info` this parser reads. Every field beyond
+/// `status` and `resets_at` is informational only (kept for `eva doctor` /
+/// the panel to show, not for the blocked/not-blocked decision).
+#[derive(Debug, Deserialize)]
+struct RateLimitInfo {
+    status: String,
+    #[serde(rename = "resetsAt")]
+    resets_at: Option<i64>,
+    #[serde(rename = "rateLimitType", default)]
+    rate_limit_type: Option<String>,
+    #[serde(default)]
+    utilization: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +371,32 @@ mod tests {
                 message: "Failed to authenticate: OAuth session expired and could not be refreshed".to_string()
             }]
         );
+    }
+
+    const RATE_LIMIT_CAPTURE: &str = include_str!("../tests/fixtures/claude_ratelimit_sample.jsonl");
+
+    #[test]
+    fn a_real_warning_on_a_successful_run_is_reported_but_never_blocks() {
+        let line = RATE_LIMIT_CAPTURE.lines().next().expect("fixture has one line");
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        let AgentEvent::RateLimit { blocked, resets_at, detail } = &events[0] else {
+            panic!("expected a rate limit event, got {:?}", events[0])
+        };
+        assert!(!blocked, "allowed_warning must never block a task");
+        assert_eq!(*resets_at, chrono::DateTime::from_timestamp(1_790_974_800, 0));
+        assert!(detail.contains("49%"), "{detail}");
+    }
+
+    #[test]
+    fn a_rejected_status_blocks_and_reports_when_it_resets() {
+        // Inferred from the CLI's own strings (`status` ∈ allowed/allowed_warning/rejected) and the
+        // schema of the real capture above — this Pro account never actually hit the limit to
+        // capture a live "rejected" line, so this shape is not independently verified.
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790466000,"rateLimitType":"five_hour","utilization":1.0,"isUsingOverage":false}}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], AgentEvent::RateLimit { blocked: true, resets_at: Some(_), .. }));
     }
 
     #[test]

@@ -74,6 +74,39 @@ fn learned_dictionary(ctx: &WorkerContext) -> Dictionary {
     }
 }
 
+/// The local model that gives a dictation its second look, if it is on.
+pub(crate) fn polisher(ctx: &WorkerContext) -> Option<eva_text::polish::Polisher> {
+    if !ctx.config.dictation.polish {
+        return None;
+    }
+    eva_text::polish::Polisher::new(&ctx.config.resolver.base_url, &ctx.config.resolver.model)
+}
+
+/// How long a dictation of `words` words may wait for the model: what it
+/// took on this Mac (0.3 s short, up to 2.9 s for 150 words), with margin.
+fn polish_budget(words: usize) -> std::time::Duration {
+    std::time::Duration::from_millis((1_200 + 20 * words as u64).min(4_000))
+}
+
+/// `cleaned` with the local model's trustworthy fixes (see `eva_text::polish`).
+async fn polish(ctx: &WorkerContext, mut cleaned: eva_text::CleanedTranscript) -> eva_text::CleanedTranscript {
+    let Some(polisher) = polisher(ctx) else { return cleaned };
+    if cleaned.formatted.trim().is_empty() {
+        return cleaned;
+    }
+    let vocabulary = eva_text::polish::vocabulary(&ctx.store.list_custom_words().unwrap_or_default());
+    let text = cleaned.formatted.clone();
+    let budget = polish_budget(text.split_whitespace().count());
+    let started = std::time::Instant::now();
+    let polished =
+        tokio::task::spawn_blocking(move || polisher.polish(&text, &vocabulary, budget)).await.unwrap_or_default();
+    if !polished.trim().is_empty() && polished != cleaned.formatted {
+        tracing::info!(ms = started.elapsed().as_millis() as u64, before = %cleaned.formatted, after = %polished, "dictado pulido por el modelo local");
+        cleaned.formatted = polished;
+    }
+    cleaned
+}
+
 /// What `text` is: dictation, or a command (the user's own phrases included).
 /// Does nothing about it.
 fn classify(ctx: &WorkerContext, text: &str) -> Interpreted {
@@ -91,7 +124,8 @@ fn classify_apps(ctx: &WorkerContext, text: &str) -> Interpreted {
     // Stripping universal (never-a-real-word) fillers first is always safe
     // — see `eva_text::filler`'s own doc for why — and fixes this without
     // weakening the gate itself.
-    let gate_input = learned_dictionary(ctx).replace_learned(&eva_text::filler::remove_universal_fillers(text));
+    let gate_input = learned_dictionary(ctx)
+        .replace_learned(&eva_text::disfluency::remove_repetitions(&eva_text::filler::remove_universal_fillers(text)));
 
     // The user's own commands (fresh from disk) and every other way they have
     // taught for saying them.
@@ -165,6 +199,7 @@ async fn dictate(ctx: &Arc<WorkerContext>, request_id: Uuid, raw: &str) {
                 eva_text::clean_styled(raw, &Dictionary::new(Vec::<String>::new()), &RuleOnlyFormatter, style)
             });
 
+    let cleaned = polish(ctx, cleaned).await;
     remember(ctx, request_id, &cleaned);
     ctx.events.emit(WorkerToShell::Transcript {
         request_id,
@@ -232,7 +267,7 @@ async fn deliver(ctx: &Arc<WorkerContext>, request_id: Uuid, text: String) {
     let probe = Arc::clone(&ctx.desktop);
     let will_paste = tokio::task::spawn_blocking(move || !probe.secure_input_active() && probe.has_text_target()).await;
     if will_paste.unwrap_or(false) {
-        ctx.events.emit(WorkerToShell::AboutToPaste { request_id, in_ms: send_ms });
+        ctx.events.emit(WorkerToShell::AboutToPaste { request_id, in_ms: send_ms, text: kept.clone() });
         if send_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(send_ms)).await;
         }
@@ -243,6 +278,12 @@ async fn deliver(ctx: &Arc<WorkerContext>, request_id: Uuid, text: String) {
 
     match result {
         Ok(Ok(Delivery::Pasted)) => ctx.events.state(request_id, WorkerState::Done(true)),
+        Ok(Ok(Delivery::NotLanded)) => {
+            // The paste went out, but the field never took it: the words are
+            // now on the clipboard and on the island, with a Copy button.
+            ctx.events.emit(not_pasted("No se pegó: no había dónde"));
+            ctx.events.state(request_id, WorkerState::Done(true));
+        }
         Ok(Ok(Delivery::CopiedNoTarget)) => {
             // Not a failure: the words are already on the clipboard, and the
             // island keeps them with a Copy button in case that gets replaced.
@@ -271,6 +312,8 @@ enum Delivery {
     CopiedInstead,
     /// Nothing that takes text has the focus.
     CopiedNoTarget,
+    /// It was pasted, but the field did not take it; the text is on the clipboard.
+    NotLanded,
 }
 
 fn paste_or_copy(desktop: &dyn Desktop, text: &str) -> Result<Delivery, eva_mcp::DesktopError> {
@@ -282,7 +325,14 @@ fn paste_or_copy(desktop: &dyn Desktop, text: &str) -> Result<Delivery, eva_mcp:
         desktop.copy_text(text)?;
         return Ok(Delivery::CopiedNoTarget);
     }
-    desktop.insert_text(text).map(|()| Delivery::Pasted)
+    match desktop.insert_text_checked(text)? {
+        eva_macos::Landing::NotLanded => {
+            // The old clipboard was put back after the paste: put the words on it.
+            desktop.copy_text(text)?;
+            Ok(Delivery::NotLanded)
+        }
+        eva_macos::Landing::Landed | eva_macos::Landing::Unknown => Ok(Delivery::Pasted),
+    }
 }
 
 /// A custom command's `insert`: the user's own text, pasted through the
@@ -453,6 +503,66 @@ mod tests {
         assert_eq!(taken["kind"], "open_app", "a command is read with the corrections too: {taken}");
     }
 
+    /// A fake Ollama on localhost that answers every chat with `content`.
+    fn fake_ollama(content: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = stream.read(&mut [0u8; 16384]);
+                let payload = serde_json::json!({ "message": { "content": content } }).to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn the_local_model_fixes_a_term_and_a_restart_and_nothing_else_it_tried() {
+        // What the model answers: the real fixes, plus a change of person it must not get.
+        let url = fake_ollama("Puedes hacer una versión de tu app en Next.js.");
+        let mut rig = Rig::builder()
+            .configure(|c| {
+                c.dictation.polish = true;
+                c.resolver.base_url = url;
+            })
+            .build();
+        let events = rig.run(typed(&rig, "puedes una hacer una versión de mi app en now the yess")).await;
+        assert!(
+            events.iter().any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Puedes hacer una versión de mi app en Next.js.")),
+            "{events:?}"
+        );
+        assert_eq!(
+            rig.ctx.store.recent_transcripts(1).unwrap()[0].formatted,
+            "Puedes hacer una versión de mi app en Next.js."
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_local_model_the_dictation_is_pasted_as_the_rules_left_it() {
+        let mut rig = Rig::builder()
+            .configure(|c| {
+                c.dictation.polish = true;
+                c.resolver.base_url = "http://127.0.0.1:1/v1".to_string();
+            })
+            .build();
+        let events = rig.run(typed(&rig, "se ve la la poliana")).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerToShell::Transcript { cleaned, .. } if cleaned == "Se ve la poliana.")),
+            "{events:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_trailing_space_can_be_turned_off_in_the_config() {
         let mut rig = Rig::builder().configure(|c| c.dictation.trailing_space = false).build();
@@ -542,6 +652,35 @@ mod tests {
         let events = rig.run(typed(&rig, "hola mundo")).await;
         assert!(events.iter().any(|e| matches!(e, WorkerToShell::AboutToPaste { in_ms: 0, .. })), "{events:?}");
         assert!(started.elapsed() < std::time::Duration::from_millis(100), "no waiting at all");
+    }
+
+    #[tokio::test]
+    async fn a_paste_the_field_did_not_take_keeps_the_words_on_the_clipboard_and_the_island() {
+        let desktop = MockDesktop::new().with_paste_landing(eva_macos::Landing::NotLanded);
+        let mut rig = Rig::builder().desktop(desktop).build();
+        let events = rig.run(typed(&rig, "hola mundo")).await;
+
+        assert_eq!(
+            rig.desktop.calls(),
+            vec![Call::InsertText("Hola mundo. ".to_string()), Call::CopyText("Hola mundo. ".to_string())],
+            "pasted, found not to have landed, then copied so it is not lost"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerToShell::TextNotPasted { text, reason, .. } if text == "Hola mundo." && reason.starts_with("No se pegó")
+        )));
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_paste_that_landed_or_cannot_be_checked_is_not_second_guessed() {
+        for landing in [eva_macos::Landing::Landed, eva_macos::Landing::Unknown] {
+            let desktop = MockDesktop::new().with_paste_landing(landing);
+            let mut rig = Rig::builder().desktop(desktop).build();
+            let events = rig.run(typed(&rig, "hola mundo")).await;
+            assert!(!events.iter().any(|e| matches!(e, WorkerToShell::TextNotPasted { .. })), "{landing:?}");
+            assert_eq!(rig.desktop.calls(), vec![Call::InsertText("Hola mundo. ".to_string())]);
+        }
     }
 
     #[tokio::test]

@@ -96,12 +96,23 @@ const NON_TEXT_ROLES: &[&str] = &[
     "AXApplication",
 ];
 
-/// Whether a text can be pasted where the keyboard focus is: `Some(false)`
-/// when the focused element is certainly not a place for text (a list, a
-/// button, the desktop), `Some(true)` when it is one or might be, and `None`
-/// when that cannot be told (no permission, nothing reported) — which callers
-/// treat as "try the paste", as before.
-pub fn text_target_focused(frontmost_pid: Option<i32>) -> Option<bool> {
+/// What the focused element holds, as far as it says: its text (`AXValue`)
+/// and whether it has a text cursor. It is how a paste is checked afterwards —
+/// the text either shows up in the value or it does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusText {
+    /// The element's whole text, when it exposes one.
+    pub value: Option<String>,
+    /// Whether it reports a selection range (a text cursor).
+    pub has_cursor: bool,
+    /// Its accessibility role, when it says.
+    pub role: Option<String>,
+}
+
+/// The focused element of whatever app is in front, read for a paste: `None`
+/// when it cannot be read at all (no permission, an app that hides its tree,
+/// nothing focused).
+pub fn focused_text(frontmost_pid: Option<i32>) -> Option<FocusText> {
     if !crate::is_accessibility_trusted() {
         return None;
     }
@@ -119,12 +130,77 @@ pub fn text_target_focused(frontmost_pid: Option<i32>) -> Option<bool> {
     set_timeout(&system);
     let focused = attribute(&system, "AXFocusedUIElement")?;
     let focused = focused.downcast_ref::<AXUIElement>()?;
-    // Anything that has a text cursor says where it is.
-    if attribute(focused, "AXSelectedTextRange").is_some() {
-        return Some(true);
+    Some(FocusText {
+        value: string_attribute(focused, "AXValue"),
+        has_cursor: attribute(focused, "AXSelectedTextRange").is_some(),
+        role: string_attribute(focused, "AXRole"),
+    })
+}
+
+/// Whether what has the focus could take text at all. `false` when it is
+/// certainly not a place for text — a list, a button, a page with no field
+/// focused: it has no text of its own and no cursor, or it is a plain widget.
+/// `true` when it is one or might be.
+fn can_take_text(focus: &FocusText) -> bool {
+    if focus.has_cursor || focus.value.is_some() {
+        return true;
     }
-    let role = string_attribute(focused, "AXRole")?;
-    Some(!NON_TEXT_ROLES.contains(&role.as_str()))
+    // Readable, no cursor, no text: nothing here to type into. (An editor that
+    // hides all of that answers `None` from `focused_text`, not this; a role it
+    // does not name is given the benefit of the doubt.)
+    focus.role.is_none()
+}
+
+/// Whether a text can be pasted where the keyboard focus is: `Some(false)`
+/// when the focused element is certainly not a place for text (a list, a
+/// button, the bare desktop, a page with nothing focused), `Some(true)` when
+/// it is one or might be, and `None` when that cannot be told (no permission,
+/// nothing reported) — which callers treat as "try the paste", as before.
+pub fn text_target_focused(frontmost_pid: Option<i32>) -> Option<bool> {
+    let focus = focused_text(frontmost_pid)?;
+    if focus.role.as_deref().is_some_and(|role| NON_TEXT_ROLES.contains(&role)) {
+        return Some(false);
+    }
+    Some(can_take_text(&focus))
+}
+
+/// What became of a paste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Landing {
+    /// The text showed up where the cursor was.
+    Landed,
+    /// The field was readable and its text did not change: it went nowhere.
+    NotLanded,
+    /// It cannot be told (the app hides its text, or there is no permission).
+    #[default]
+    Unknown,
+}
+
+/// Compares the focused element's text before a paste with what it is now.
+fn landing(before: &FocusText, after: Option<&FocusText>) -> Landing {
+    let Some(before_text) = &before.value else { return Landing::Unknown };
+    match after.and_then(|a| a.value.as_ref()) {
+        Some(after_text) if after_text != before_text => Landing::Landed,
+        Some(_) => Landing::NotLanded,
+        None => Landing::Unknown,
+    }
+}
+
+/// Watches the focused field after a paste for up to `wait`: [`Landing::Landed`]
+/// as soon as its text changes; [`Landing::NotLanded`] if it stays the same;
+/// [`Landing::Unknown`] when the field's text cannot be read. `before` is
+/// [`focused_text`] taken just before the paste.
+pub fn watch_paste(frontmost_pid: Option<i32>, before: Option<&FocusText>, wait: std::time::Duration) -> Landing {
+    let Some(before) = before else { return Landing::Unknown };
+    let started = std::time::Instant::now();
+    loop {
+        let now = focused_text(frontmost_pid);
+        match landing(before, now.as_ref()) {
+            Landing::NotLanded if started.elapsed() < wait => {}
+            verdict => return verdict,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 pub(crate) fn set_timeout(element: &AXUIElement) {
@@ -169,6 +245,29 @@ mod tests {
             assert!(!NON_TEXT_ROLES.contains(&editor), "{editor} may hold text");
         }
         assert!(NON_TEXT_ROLES.contains(&"AXButton") && NON_TEXT_ROLES.contains(&"AXList"));
+    }
+
+    fn focus(value: Option<&str>, has_cursor: bool, role: Option<&str>) -> FocusText {
+        FocusText { value: value.map(String::from), has_cursor, role: role.map(String::from) }
+    }
+
+    #[test]
+    fn a_field_with_a_cursor_or_text_takes_text_and_a_bare_readable_thing_does_not() {
+        assert!(can_take_text(&focus(Some(""), false, Some("AXTextField"))));
+        assert!(can_take_text(&focus(None, true, Some("AXWebArea"))), "a cursor is enough");
+        assert!(!can_take_text(&focus(None, false, Some("AXWebArea"))), "a page with no field focused");
+        assert!(!can_take_text(&focus(None, false, Some("AXGroup"))));
+        assert!(can_take_text(&focus(None, false, None)), "unreadable role: try the paste");
+    }
+
+    #[test]
+    fn a_paste_landed_when_the_fields_text_changed_and_not_when_it_stayed_the_same() {
+        let before = focus(Some("hola"), true, Some("AXTextArea"));
+        assert_eq!(landing(&before, Some(&focus(Some("hola mundo"), true, None))), Landing::Landed);
+        assert_eq!(landing(&before, Some(&focus(Some("hola"), true, None))), Landing::NotLanded);
+        assert_eq!(landing(&before, None), Landing::Unknown, "focus gone: cannot tell");
+        let unreadable = focus(None, true, Some("AXTextArea"));
+        assert_eq!(landing(&unreadable, Some(&focus(None, true, None))), Landing::Unknown, "no text to compare");
     }
 
     #[test]

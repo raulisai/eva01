@@ -121,6 +121,10 @@ pub(crate) enum Capture {
 pub struct WorkerDeps {
     /// The history/dictionary/settings/audit database.
     pub store: Store,
+    /// Places agents have worked in, with when each was last used: what
+    /// Codex and Claude Code remember plus EVA's own tasks. Empty in tests,
+    /// which must never read the machine they run on.
+    pub project_history: Vec<(PathBuf, Option<std::time::SystemTime>)>,
     /// `config.toml`, already loaded.
     pub config: Config,
     /// Resolves spoken app names to canonical ones.
@@ -220,7 +224,11 @@ impl WorkerContext {
     pub fn new(deps: WorkerDeps) -> WorkerContext {
         let broker = Arc::new(ConfirmationBroker::new(deps.events.clone()));
         let gateway = Arc::new(Gateway::new(deps.config.gateway.clone(), deps.store.clone(), broker.clone()));
-        let projects = Arc::new(ConfiguredProjects::from_config(&deps.config, deps.base_dir.clone()));
+        let projects = Arc::new(ConfiguredProjects::from_config_with_history(
+            &deps.config,
+            deps.base_dir.clone(),
+            deps.project_history.clone(),
+        ));
         let confirm_timeout = Duration::from_secs(deps.config.gateway.confirm_timeout_secs());
 
         let service = |origin| {

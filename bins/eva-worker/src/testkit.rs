@@ -62,6 +62,8 @@ impl Rig {
         config.resolver.enabled = false;
         // Nor pause the music or silence the Mac of whoever runs them.
         config.dictation.pause_media = false;
+        // Nor send what the tests dictate to a local model.
+        config.dictation.polish = false;
         RigBuilder {
             desktop: MockDesktop::new(),
             agents: AgentRegistry::new(Vec::new()),
@@ -206,6 +208,7 @@ impl RigBuilder {
         let (events, rx) = Events::channel();
         let ctx = WorkerContext::new(WorkerDeps {
             store: Store::open_in_memory().expect("in-memory store must open"),
+            project_history: Vec::new(),
             config: self.config,
             app_index: self.apps.unwrap_or_else(|| {
                 crate::apps::AppCatalog::fixed(AppIndex::new(vec![

@@ -6,15 +6,18 @@
 //! through [`AgentProvider`], per `docs/PLAN.md` §3 and fase 6: "EVA no
 //! orquesta agentes, los invoca bien."
 
+pub mod capabilities;
 pub mod claude_code;
 pub mod codex;
 pub mod dispatch;
 pub mod event;
 pub mod mock;
+pub mod project_history;
 pub mod provider;
 mod stream;
 pub mod worktree;
 
+pub use capabilities::AgentCapabilities;
 pub use claude_code::ClaudeCodeProvider;
 pub use codex::CodexProvider;
 pub use dispatch::{AgentRegistry, DispatchError};

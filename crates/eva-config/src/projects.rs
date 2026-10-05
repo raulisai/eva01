@@ -7,6 +7,7 @@
 //! without a per-app integration for each.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// A project directory EVA knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,12 +22,17 @@ pub struct Project {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectIndex {
     projects: Vec<Project>,
+    /// Paths in the order they were last worked in, most recent first — from
+    /// what the agents' own histories say (see [`ProjectIndex::with_history`]).
+    recent: Vec<PathBuf>,
 }
 
 /// Why [`ProjectIndex::resolve_active`] chose the project it did — shown by
 /// `eva doctor` and logged, so "why did it run there?" always has an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
+    /// The user named it out loud: «en BarberiaSaas, agrega tests».
+    Named,
     /// The focused window's title names this project.
     FromWindowTitle,
     /// The configured `agents.default_project`.
@@ -49,29 +55,90 @@ pub fn is_too_broad(path: &Path) -> bool {
 impl ProjectIndex {
     /// An index over these projects (names must be unique enough to match).
     pub fn new(projects: Vec<Project>) -> ProjectIndex {
-        ProjectIndex { projects }
+        ProjectIndex { projects, recent: Vec::new() }
     }
 
-    /// Scans each root for immediate subdirectories that are git
-    /// repositories. A root that does not exist is skipped, not an error —
-    /// the default roots (`~/code`, `~/Developer`, `~/projects`) are guesses
-    /// about where a particular Mac keeps things.
+    /// Scans each root for git repositories: the immediate subdirectories, and
+    /// — when a subdirectory is not itself a repository — the repositories
+    /// one level inside it (`~/code/BarberiaSaas/barberias-saas`, a client's
+    /// folder holding its repos). A root that does not exist is skipped, not
+    /// an error — the default roots (`~/code`, `~/Developer`, `~/projects`)
+    /// are guesses about where a particular Mac keeps things.
     pub fn scan(roots: &[PathBuf]) -> ProjectIndex {
         let mut projects = Vec::new();
+        let mut add = |path: PathBuf| {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                projects.push(Project { name: name.to_string(), path });
+            }
+        };
         for root in roots {
             let Ok(entries) = std::fs::read_dir(root) else { continue };
             for entry in entries.filter_map(Result::ok) {
                 let path = entry.path();
                 if path.join(".git").exists() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        projects.push(Project { name: name.to_string(), path });
+                    add(path);
+                } else if path.is_dir() && !hidden(&path) {
+                    let Ok(inner) = std::fs::read_dir(&path) else { continue };
+                    for child in inner.filter_map(Result::ok).map(|c| c.path()) {
+                        if child.join(".git").exists() && !hidden(&child) {
+                            add(child);
+                        }
                     }
                 }
             }
         }
         projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.path.cmp(&b.path)));
         projects.dedup_by(|a, b| a.path == b.path);
-        ProjectIndex { projects }
+        ProjectIndex { projects, recent: Vec::new() }
+    }
+
+    /// [`ProjectIndex::scan`] of `roots`, then [`ProjectIndex::with_history`],
+    /// never counting a root itself (`~/code`, a folder *of* projects) as one.
+    pub fn scan_with_history(roots: &[PathBuf], history: Vec<(PathBuf, Option<SystemTime>)>) -> ProjectIndex {
+        let history = history.into_iter().filter(|(path, _)| !roots.contains(path)).collect();
+        ProjectIndex::scan(roots).with_history(history)
+    }
+
+    /// Adds the places work actually happened — what Codex and Claude Code
+    /// remember, and what EVA itself ran tasks in — as projects, and records
+    /// which were used most recently. A place already in the index only gains
+    /// its recency; a folder that no longer exists is dropped.
+    #[must_use]
+    pub fn with_history(mut self, history: Vec<(PathBuf, Option<SystemTime>)>) -> ProjectIndex {
+        let mut dated: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
+        for (path, when) in history {
+            if !path.is_dir() || is_too_broad(&path) {
+                continue;
+            }
+            match dated.iter_mut().find(|(p, _)| *p == path) {
+                Some((_, known)) => *known = (*known).max(when),
+                None => dated.push((path, when)),
+            }
+        }
+        for (path, _) in &dated {
+            if !self.projects.iter().any(|p| p.path == *path) {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    self.projects.push(Project { name: name.to_string(), path: path.clone() });
+                }
+            }
+        }
+        self.projects
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.path.cmp(&b.path)));
+        dated.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        self.recent = dated.into_iter().map(|(p, _)| p).collect();
+        self
+    }
+
+    /// The projects most recently worked in first, then the rest by name.
+    pub fn by_recency(&self) -> Vec<&Project> {
+        let mut ordered: Vec<&Project> =
+            self.recent.iter().filter_map(|path| self.projects.iter().find(|p| p.path == *path)).collect();
+        for project in &self.projects {
+            if !ordered.iter().any(|p| p.path == project.path) {
+                ordered.push(project);
+            }
+        }
+        ordered
     }
 
     /// Every known project, sorted by name.
@@ -109,6 +176,12 @@ impl ProjectIndex {
         }
         (fallback.to_path_buf(), Resolution::WorkingDirectory)
     }
+}
+
+/// Hidden and tooling folders (`.git`, `.cache`, `node_modules`): never where
+/// a project's repositories live.
+fn hidden(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.') || n == "node_modules")
 }
 
 /// Whether `needle` occurs in `haystack` bounded by non-name characters on
@@ -159,6 +232,42 @@ mod tests {
         let names: Vec<_> =
             ProjectIndex::scan(&[root.path().to_path_buf()]).projects().iter().map(|p| p.name.clone()).collect();
         assert_eq!(names, vec!["eva01", "Novoastar"]);
+    }
+
+    #[test]
+    fn scan_also_finds_the_repos_one_level_inside_a_folder_that_is_not_a_repo() {
+        let root = tempfile::tempdir().expect("tempdir");
+        repo(root.path(), "eva01");
+        std::fs::create_dir_all(root.path().join("BarberiaSaas")).expect("mkdir");
+        repo(&root.path().join("BarberiaSaas"), "barberias-saas");
+        repo(&root.path().join("BarberiaSaas"), ".hidden");
+        let names: Vec<_> =
+            ProjectIndex::scan(&[root.path().to_path_buf()]).projects().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["barberias-saas", "eva01"], "a hidden folder is never a project");
+    }
+
+    #[test]
+    fn history_adds_projects_the_scan_missed_and_orders_by_recency() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().expect("tempdir");
+        repo(root.path(), "eva01");
+        repo(root.path(), "novoastar");
+        let outside = tempfile::tempdir().expect("tempdir");
+        let extra = outside.path().join("cleanerSpace");
+        std::fs::create_dir_all(&extra).expect("mkdir");
+        let now = SystemTime::now();
+        let index = ProjectIndex::scan(&[root.path().to_path_buf()]).with_history(vec![
+            (root.path().join("eva01"), Some(now - Duration::from_secs(3_600))),
+            (extra.clone(), Some(now)),
+            (root.path().join("borrado"), Some(now)),
+            (root.path().join("novoastar"), None),
+        ]);
+        let names: Vec<_> = index.by_recency().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["cleanerSpace", "eva01", "novoastar"],
+            "recent first, undated last, a deleted folder gone"
+        );
     }
 
     #[test]

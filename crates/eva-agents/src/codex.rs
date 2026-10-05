@@ -34,7 +34,10 @@ use crate::event::AgentEvent;
 use crate::provider::{AgentError, AgentProvider, AgentTask, McpInjection, ProviderStatus, RunningAgent};
 use crate::stream::{detect_cli, launch};
 use async_trait::async_trait;
+use chrono::{Local, NaiveTime, TimeZone, Utc};
+use regex::Regex;
 use serde::Deserialize;
+use std::sync::LazyLock;
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -118,6 +121,42 @@ fn toml_string(text: &str) -> String {
     serde_json::Value::String(text.to_string()).to_string()
 }
 
+/// Codex has no separate quota endpoint in `exec` mode: this is the only
+/// signal there is, and it only arrives as the text of a failed turn — real
+/// wording captured from this account's own exhausted 5-hour window on
+/// 2026-09-26 (`tests/fixtures/codex_ratelimit_sample.jsonl`): "You've hit
+/// your usage limit. Upgrade to Pro (…) or try again at 4:50 PM." Matched by
+/// substring rather than the exact sentence, since the wording is Codex's to
+/// change; the reset time, when present, is parsed out and combined with
+/// today's date (or tomorrow's, if that clock time has already passed) —
+/// the CLI gives no date, only a wall-clock time in the account's own zone,
+/// which is this Mac's local zone.
+fn detect_rate_limit(message: &str) -> Option<AgentEvent> {
+    if !message.to_lowercase().contains("usage limit") {
+        return None;
+    }
+    static RESET_TIME: LazyLock<Regex> = LazyLock::new(|| {
+        #[allow(clippy::expect_used)] // the pattern is a fixed, known-valid literal
+        Regex::new(r"(?i)try again at (\d{1,2}):(\d{2})\s*([ap]m)").expect("static regex is always valid")
+    });
+    let resets_at = RESET_TIME.captures(message).and_then(|c| {
+        let hour12: u32 = c[1].parse().ok()?;
+        let minute: u32 = c[2].parse().ok()?;
+        let hour = match (hour12 % 12, c[3].to_lowercase().as_str()) {
+            (h, "pm") => h + 12,
+            (h, _) => h,
+        };
+        let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
+        let now = Local::now();
+        let today = now.date_naive().and_time(time);
+        let local = Local
+            .from_local_datetime(&if today > now.naive_local() { today } else { today + chrono::Duration::days(1) })
+            .single()?;
+        Some(local.with_timezone(&Utc))
+    });
+    Some(AgentEvent::RateLimit { blocked: true, resets_at, detail: message.to_string() })
+}
+
 /// Parses one line of `codex exec --json` output into zero or more
 /// [`AgentEvent`]s. An unrecognized line yields no events rather than an
 /// error.
@@ -133,8 +172,14 @@ fn parse_line(line: &str) -> Vec<AgentEvent> {
             events
         }
         RawEvent::TurnCompleted {} => vec![AgentEvent::Completed { summary: None }],
-        RawEvent::TurnFailed { error } => vec![AgentEvent::Failed { message: error.message }],
-        RawEvent::Error { message } => vec![AgentEvent::Failed { message }],
+        RawEvent::TurnFailed { error } => match detect_rate_limit(&error.message) {
+            Some(rate_limit) => vec![rate_limit, AgentEvent::Failed { message: error.message }],
+            None => vec![AgentEvent::Failed { message: error.message }],
+        },
+        RawEvent::Error { message } => match detect_rate_limit(&message) {
+            Some(rate_limit) => vec![rate_limit, AgentEvent::Failed { message }],
+            None => vec![AgentEvent::Failed { message }],
+        },
         RawEvent::ItemCompleted { item } => parse_item(item),
         RawEvent::TurnStarted {} | RawEvent::Unknown => Vec::new(),
     }
@@ -369,6 +414,36 @@ mod tests {
     #[test]
     fn turn_started_is_informational_and_yields_no_event() {
         assert_eq!(parse_line(r#"{"type":"turn.started"}"#), Vec::new());
+    }
+
+    const RATE_LIMIT_CAPTURE: &str = include_str!("../tests/fixtures/codex_ratelimit_sample.jsonl");
+
+    #[test]
+    fn a_real_exhausted_account_reports_a_rate_limit_alongside_the_failure() {
+        for needle in [r#"{"type":"error""#, r#"{"type":"turn.failed""#] {
+            let line = RATE_LIMIT_CAPTURE.lines().find(|l| l.starts_with(needle)).expect(needle);
+            let events = parse_line(line);
+            assert_eq!(events.len(), 2, "{line}");
+            let AgentEvent::RateLimit { blocked, resets_at, detail } = &events[0] else {
+                panic!("expected a rate limit event first, got {:?}", events[0])
+            };
+            assert!(*blocked);
+            assert!(detail.contains("usage limit"), "{detail}");
+            assert!(resets_at.is_some(), "the captured message names a reset time");
+            assert!(matches!(&events[1], AgentEvent::Failed { .. }));
+        }
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_never_mistaken_for_a_rate_limit() {
+        assert_eq!(parse_line(r#"{"type":"error","message":"network unreachable"}"#).len(), 1);
+    }
+
+    #[test]
+    fn the_reset_time_lands_in_the_future_today_or_tomorrow() {
+        let event = detect_rate_limit("usage limit reached, try again at 11:59 PM").expect("matches");
+        let AgentEvent::RateLimit { resets_at: Some(at), .. } = event else { panic!("expected a parsed reset time") };
+        assert!(at > chrono::Utc::now());
     }
 
     #[test]

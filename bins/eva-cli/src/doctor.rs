@@ -7,7 +7,7 @@
 //! `codex login status` and fails every task).
 
 use crate::session;
-use eva_agents::{AgentOutcome, AgentTask, ProviderStatus};
+use eva_agents::{AgentCapabilities, AgentOutcome, AgentTask, ProviderStatus};
 use eva_config::{models, support_dir, Config};
 use eva_ipc::{ShellToWorker, WorkerToShell};
 use std::time::Duration;
@@ -338,9 +338,10 @@ async fn agents(config: &Config, smoke: bool) -> Vec<Check> {
                 if id == "codex" { "codex login" } else { "claude auth login" },
             )),
             ProviderStatus::Active { version } if !smoke => {
+                let extra = capability_summary(&agent_capabilities(id));
                 checks.push(Check::ok(
                     name,
-                    format!("listo ({version}) — `eva doctor --smoke` prueba que de verdad responda"),
+                    format!("listo ({version}{extra}) — `eva doctor --smoke` prueba que de verdad responda"),
                 ));
             }
             ProviderStatus::Active { version } => checks.push(smoke_test(&registry, id, &version, name).await),
@@ -372,6 +373,38 @@ fn pretty(id: &str) -> &str {
     }
 }
 
+/// What this agent's own account and configuration say about it, read from
+/// disk (`eva_agents::capabilities`) — never a live query, never a gate on
+/// whether it can run, purely what the report shows.
+fn agent_capabilities(id: &str) -> AgentCapabilities {
+    match id {
+        "codex" => eva_agents::capabilities::codex_capabilities(),
+        "claude_code" => eva_agents::capabilities::claude_code_capabilities(),
+        _ => AgentCapabilities::default(),
+    }
+}
+
+/// `caps` as `", plan plus, gpt-5.6-terra (esfuerzo low)"` — always starting
+/// with `", "` so it drops straight into `"listo ({version}{extra})"`, and
+/// empty when nothing at all is known.
+fn capability_summary(caps: &AgentCapabilities) -> String {
+    let mut parts = Vec::new();
+    if let Some(plan) = &caps.plan {
+        parts.push(format!("plan {plan}"));
+    }
+    match (&caps.model, &caps.effort) {
+        (Some(model), Some(effort)) => parts.push(format!("{model} (esfuerzo {effort})")),
+        (Some(model), None) => parts.push(model.clone()),
+        (None, Some(effort)) => parts.push(format!("esfuerzo {effort}")),
+        (None, None) => {}
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(", "))
+    }
+}
+
 /// Makes the agent answer one word, in an empty temporary folder.
 async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &str, name: &'static str) -> Check {
     let Ok(provider) = registry.select(Some(id)).await else {
@@ -399,10 +432,16 @@ async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &st
     let secs = started.elapsed().as_secs_f32();
 
     let check = match outcome {
-        AgentOutcome::Completed { summary } => Check::ok(
-            name,
-            format!("listo ({version}) — respondió en {secs:.1} s: «{}»", summary.unwrap_or_default().trim()),
-        ),
+        AgentOutcome::Completed { summary } => {
+            let extra = capability_summary(&agent_capabilities(id));
+            Check::ok(
+                name,
+                format!(
+                    "listo ({version}{extra}) — respondió en {secs:.1} s: «{}»",
+                    summary.unwrap_or_default().trim()
+                ),
+            )
+        }
         AgentOutcome::Failed { message } => {
             let (problem, fix) = explain_agent_failure(id, &message);
             Check::fail(
@@ -636,5 +675,24 @@ mod tests {
         assert_eq!(agent_check_name("codex"), "Agente Codex");
         assert_eq!(agent_check_name("claude_code"), "Agente Claude Code");
         assert_eq!(pretty("claude_code"), "Claude Code");
+    }
+
+    #[test]
+    fn the_capability_summary_reads_naturally_in_every_combination() {
+        let none = AgentCapabilities::default();
+        assert_eq!(capability_summary(&none), "");
+
+        let full = AgentCapabilities {
+            plan: Some("plus".to_string()),
+            model: Some("gpt-5.6-terra".to_string()),
+            effort: Some("low".to_string()),
+        };
+        assert_eq!(capability_summary(&full), ", plan plus, gpt-5.6-terra (esfuerzo low)");
+
+        let plan_only = AgentCapabilities { plan: Some("claude_pro".to_string()), model: None, effort: None };
+        assert_eq!(capability_summary(&plan_only), ", plan claude_pro");
+
+        let model_no_effort = AgentCapabilities { plan: None, model: Some("sonnet".to_string()), effort: None };
+        assert_eq!(capability_summary(&model_no_effort), ", sonnet");
     }
 }

@@ -1057,13 +1057,18 @@ name = "eva-agents"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
  "libc",
  "proptest",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
@@ -1176,6 +1181,7 @@ version = "0.2.0"
 dependencies = [
  "block2",
  "dirs 5.0.1",
+ "eva-text",
  "notify-rust",
  "objc2",
  "objc2-app-kit",

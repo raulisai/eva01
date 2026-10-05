@@ -270,6 +270,10 @@ pub enum WorkerToShell {
         request_id: uuid::Uuid,
         /// Milliseconds until the paste.
         in_ms: u64,
+        /// The text about to be pasted (as it will be, without the trailing
+        /// space): the shell, which holds the Accessibility permission the
+        /// worker may not, checks that it lands and keeps it if it does not.
+        text: String,
     },
     /// The dictated text did not reach a text field (nothing to paste into, or
     /// the paste failed). The island keeps it, with a Copy button, so what the
@@ -534,7 +538,7 @@ mod tests {
             WorkerToShell::Notice { request_id, message: "copiado".into() },
             WorkerToShell::FollowUp { request_id, secs: 5 },
             WorkerToShell::WakeWordHeard { request_id },
-            WorkerToShell::AboutToPaste { request_id, in_ms: 600 },
+            WorkerToShell::AboutToPaste { request_id, in_ms: 600, text: "hola".into() },
             WorkerToShell::TextNotPasted { request_id, text: "hola".into(), reason: "No hay dónde pegar".into() },
             WorkerToShell::Pong { request_id },
         ];

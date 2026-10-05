@@ -159,7 +159,17 @@ pub async fn start_new(
     prompt: String,
     forced_provider: Option<String>,
 ) {
-    let (project_dir, why) = ctx.resolve_project().await;
+    // A project named out loud ("en BarberiaSaas, agrega tests") wins over
+    // whatever is on screen; the task is then only what came after the name.
+    let index = ctx.project_index();
+    let names: Vec<String> = index.projects().iter().map(|p| p.name.clone()).collect();
+    let (project_dir, prompt, why) = match eva_intent::project_ref::split_project_prefix(&prompt, &names) {
+        Some(named) => (index.projects()[named.index].path.clone(), named.rest, eva_config::Resolution::Named),
+        None => {
+            let (dir, why) = ctx.resolve_project().await;
+            (dir, prompt, why)
+        }
+    };
     tracing::info!(project = %project_dir.display(), ?why, "proyecto de la tarea");
     run(ctx, TaskRequest { request_id, intent_json, prompt, forced_provider, project_dir, resume: None }).await;
 }
@@ -442,6 +452,14 @@ async fn forward_events(
                     save_session(&ctx, &project_key, provider_id, session_id, &work_dir);
                 }
             }
+            // Free telemetry from a real run (`docs/PLAN.md` — nunca una
+            // consulta aparte): remembered so the very next command routes
+            // around this agent instead of trying it again and waiting for
+            // it to fail the same way. A mere warning (`blocked: false`,
+            // Claude Code's "getting close") is shown but changes nothing.
+            AgentEvent::RateLimit { blocked: true, resets_at, detail } => {
+                ctx.agents.mark_rate_limited(provider_id, *resets_at, detail.clone());
+            }
             _ => {}
         }
         let event_json = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
@@ -662,6 +680,7 @@ mod tests {
     }
 
     use crate::testkit::{registry_of, Rig};
+    use chrono::Utc;
     use eva_agents::mock::MockProvider;
     use eva_agents::{AgentOutcome, ProviderStatus};
     use eva_ipc::{ShellToWorker, WorkerState};
@@ -699,6 +718,91 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("disponible"))));
+    }
+
+    #[tokio::test]
+    async fn a_project_named_out_loud_decides_where_the_task_runs_and_what_the_agent_is_asked() {
+        let roots = tempfile::tempdir().expect("tempdir");
+        for name in ["novoastar", "eva02"] {
+            std::fs::create_dir_all(roots.path().join(name).join(".git")).expect("mkdir");
+        }
+        std::fs::create_dir_all(roots.path().join("BarberiaSaas").join("barberias-saas").join(".git")).expect("mkdir");
+        let root = roots.path().to_string_lossy().into_owned();
+        let codex = completes("codex", "listo");
+        let mut rig = Rig::builder()
+            .agents(registry_of(&[&codex]))
+            .configure(move |c| c.agents.project_roots = vec![root])
+            .build();
+
+        rig.run(ask("Adán, en barberias saas, agrega tests al login").1).await;
+        rig.run(ask("Adán, en eva cero dos y arregla el panel").1).await;
+        rig.run(ask("Adán, en el login agrega validación").1).await;
+
+        let tasks = codex.received_tasks();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks[0].project_dir.ends_with("barberias-saas"), "{:?}", tasks[0].project_dir);
+        assert_eq!(tasks[0].prompt, "agrega tests al login", "the project is not part of the task");
+        assert!(tasks[1].project_dir.ends_with("eva02"), "{:?}", tasks[1].project_dir);
+        assert_eq!(tasks[1].prompt, "arregla el panel");
+        assert_eq!(tasks[2].prompt, "en el login agrega validación", "an ordinary «en …» is left alone");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_agent_falls_back_and_the_next_command_skips_it_without_trying() {
+        let codex_out_of_quota = Arc::new(MockProvider::new(
+            "codex",
+            ProviderStatus::Active { version: "mock".into() },
+            vec![(
+                vec![AgentEvent::RateLimit {
+                    blocked: true,
+                    resets_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                    detail: "límite de 5 horas alcanzado".to_string(),
+                }],
+                AgentOutcome::Failed { message: "sin cuota".to_string() },
+            )],
+        ));
+        let claude = completes("claude_code", "3 archivos cambiados");
+        let mut rig = Rig::builder().agents(registry_of(&[&codex_out_of_quota, &claude])).build();
+
+        let (_, first) = ask("Adán, agrega tests");
+        let events = rig.run(first).await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::TaskStarted { provider, .. } if provider == "codex")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerToShell::TaskStarted { provider, .. } if provider == "claude_code")));
+        assert_eq!(finished(&events), Some((true, "3 archivos cambiados".to_string())));
+        assert_eq!(codex_out_of_quota.execution_count(), 1);
+
+        let (_, second) = ask("Adán, agrega otra prueba");
+        rig.run(second).await;
+        assert_eq!(codex_out_of_quota.execution_count(), 1, "codex is skipped, not tried and refused again");
+        assert_eq!(claude.execution_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_forced_rate_limited_agent_is_told_when_it_comes_back_instead_of_being_tried() {
+        let codex_out_of_quota = Arc::new(MockProvider::new(
+            "codex",
+            ProviderStatus::Active { version: "mock".into() },
+            vec![(
+                vec![AgentEvent::RateLimit {
+                    blocked: true,
+                    resets_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                    detail: "límite de 5 horas alcanzado".to_string(),
+                }],
+                AgentOutcome::Failed { message: "sin cuota".to_string() },
+            )],
+        ));
+        let mut rig = Rig::builder().agents(registry_of(&[&codex_out_of_quota])).build();
+        rig.run(ask("Adán, usa Codex y agrega tests").1).await;
+        assert_eq!(codex_out_of_quota.execution_count(), 1);
+
+        let events = rig.run(ask("Adán, usa Codex y agrega otra prueba").1).await;
+        assert!(
+            events.iter().any(|e| matches!(e, WorkerToShell::Error { message, .. } if message.contains("codex") && message.contains("límite de 5 horas"))),
+            "{events:?}"
+        );
+        assert_eq!(codex_out_of_quota.execution_count(), 1, "never tried a second time");
     }
 
     #[tokio::test]

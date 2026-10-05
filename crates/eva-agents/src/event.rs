@@ -54,6 +54,23 @@ pub enum AgentEvent {
         /// A human-readable description of what went wrong.
         message: String,
     },
+    /// A subscription usage/rate-limit signal the CLI itself reported —
+    /// free telemetry riding on a real run, not a separate query. Both CLIs
+    /// emit this: Codex as the error text of a failed turn ("has hit your
+    /// usage limit … try again at 4:50 PM", captured for real from this
+    /// account's own exhausted window on 2026-09-26), Claude Code as a
+    /// `rate_limit_event` line that can arrive even on a *successful* run,
+    /// as an early warning before the account is actually blocked.
+    RateLimit {
+        /// Whether requests are refused right now (`true`), or this is only
+        /// a warning that the account is close to a limit (`false`).
+        blocked: bool,
+        /// When this limit resets, if the CLI said so.
+        resets_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// The CLI's own words (or, for Codex, EVA's translation of them) —
+        /// shown to the user as-is, never invented.
+        detail: String,
+    },
 }
 
 #[cfg(test)]
@@ -89,6 +106,10 @@ mod tests {
             (
                 AgentEvent::Failed { message: "no such file".into() },
                 serde_json::json!({"kind": "failed", "message": "no such file"}),
+            ),
+            (
+                AgentEvent::RateLimit { blocked: true, resets_at: None, detail: "sin cuota".into() },
+                serde_json::json!({"kind": "rate_limit", "blocked": true, "resets_at": null, "detail": "sin cuota"}),
             ),
         ];
 

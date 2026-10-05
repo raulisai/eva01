@@ -74,6 +74,7 @@ fn dispatch(route: &str, body: &Value) -> Result<Value, String> {
         "learned" => learned(),
         "learned.forget" => learned_forget(body),
         "models" => models(),
+        "projects" => projects(),
         "resolver.test" => resolver_test(body),
         "info" => Ok(info()),
         other => Err(format!("ruta desconocida: {other}")),
@@ -424,11 +425,53 @@ fn models() -> Result<Value, String> {
             "remote": { "enabled": config.remote.enabled, "model": config.remote.model, "base_url": config.remote.base_url, "use_for": config.remote.use_for },
         },
         "resolver": {
-            "enabled": config.resolver.enabled, "base_url": config.resolver.base_url, "model": config.resolver.model,
+            "enabled": config.resolver.enabled, "polish": config.dictation.polish, "base_url": config.resolver.base_url, "model": config.resolver.model,
             "local_address": local, "running": installed_json.is_some(), "installed": installed_json, "model_ready": model_ready,
             "suggested": ["qwen2.5:3b", "qwen2.5:1.5b", "llama3.2:3b"],
         },
+        "agents": agents_json(),
     }))
+}
+
+/// The projects EVA knows — found by scanning the roots plus what the agents
+/// remember and what EVA ran — most recently used first, for the panel.
+fn projects() -> Result<Value, String> {
+    let config = Config::load().config;
+    let roots: Vec<PathBuf> = config.agents.project_roots.iter().map(|r| eva_config::expand_home(r)).collect();
+    let mut history = eva_agents::project_history::recent_projects();
+    if let Ok(store) = store() {
+        let ran: Vec<_> = store
+            .recent_tasks(200)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|task| (PathBuf::from(task.project_dir), Some(task.started_at.into())))
+            .collect();
+        history.extend(eva_agents::project_history::cleaned(ran));
+    }
+    let index = eva_config::ProjectIndex::scan_with_history(&roots, history);
+    let default = config.agents.default_project.as_deref().map(eva_config::expand_home);
+    let rows: Vec<Value> = index
+        .by_recency()
+        .iter()
+        .map(|p| json!({ "name": p.name, "path": p.path.display().to_string(), "default": default.as_ref() == Some(&p.path) }))
+        .collect();
+    Ok(json!({ "projects": rows, "roots": roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>(), "default": config.agents.default_project }))
+}
+
+/// Plan, model and effort each agent's own account/config reports, read
+/// from disk (never a live query — see `eva_agents::capabilities`), for the
+/// panel's Desarrollador page.
+fn agents_json() -> Vec<Value> {
+    [("codex", "Codex"), ("claude_code", "Claude Code")]
+        .into_iter()
+        .map(|(id, label)| {
+            let caps = match id {
+                "codex" => eva_agents::capabilities::codex_capabilities(),
+                _ => eva_agents::capabilities::claude_code_capabilities(),
+            };
+            json!({ "id": id, "label": label, "plan": caps.plan, "model": caps.model, "effort": caps.effort })
+        })
+        .collect()
 }
 
 /// Asks the configured resolver about a name, with this Mac's real apps, and
@@ -1122,6 +1165,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("feedback.send_animation_ms", Kind::Int),
     ("dictation.trailing_space", Kind::Bool),
     ("dictation.pause_media", Kind::Bool),
+    ("dictation.polish", Kind::Bool),
     ("history.save_transcripts", Kind::Bool),
     ("history.keep_days", Kind::Int),
     ("resolver.enabled", Kind::Bool),

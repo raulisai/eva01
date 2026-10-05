@@ -18,9 +18,21 @@ impl ConfiguredProjects {
     /// Scans the configured roots. `fallback` is where a task runs when
     /// nothing says otherwise (the working directory).
     pub fn from_config(config: &Config, fallback: PathBuf) -> ConfiguredProjects {
+        ConfiguredProjects::from_config_with_history(config, fallback, Vec::new())
+    }
+
+    /// Like [`ConfiguredProjects::from_config`], also knowing the places
+    /// agents have worked in (`history`, with when each was last used): the
+    /// projects a folder scan misses, and which were used most recently. A
+    /// configured root itself (`~/code`) is a folder of projects, not one.
+    pub fn from_config_with_history(
+        config: &Config,
+        fallback: PathBuf,
+        history: Vec<(PathBuf, Option<std::time::SystemTime>)>,
+    ) -> ConfiguredProjects {
         let roots: Vec<PathBuf> = config.agents.project_roots.iter().map(|r| expand_home(r)).collect();
         ConfiguredProjects {
-            index: ProjectIndex::scan(&roots),
+            index: ProjectIndex::scan_with_history(&roots, history),
             default_project: config.agents.default_project.as_deref().map(expand_home),
             fallback,
         }

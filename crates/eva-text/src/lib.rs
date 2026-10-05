@@ -12,6 +12,7 @@ pub mod app_resolver;
 pub mod apple_intelligence;
 mod cache;
 pub mod dictionary;
+pub mod disfluency;
 mod faithfulness;
 pub mod filler;
 pub mod formatter;
@@ -19,6 +20,7 @@ pub mod glossary;
 mod normalize;
 mod pieces;
 pub mod planner;
+pub mod polish;
 pub mod remote;
 mod repair;
 mod seams;
@@ -52,7 +54,8 @@ pub fn clean(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter) -> C
     clean_styled(raw, dictionary, formatter, Style::Default)
 }
 
-/// Runs the full text pipeline: strip universal fillers, correct against the
+/// Runs the full text pipeline: strip universal fillers and repetitions
+/// («la la», «agrega agregar»), correct against the
 /// personal dictionary, then hand off to `formatter` for the context-aware
 /// pass in the `style` of the app the text is going into. If `formatter`
 /// fails for any reason, falls back to [`RuleOnlyFormatter`] (in the same
@@ -60,7 +63,7 @@ pub fn clean(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter) -> C
 /// rule from `docs/PLAN.md` §3.3 point 5, enforced in code rather than left
 /// as a convention to remember.
 pub fn clean_styled(raw: &str, dictionary: &Dictionary, formatter: &dyn Formatter, style: Style) -> CleanedTranscript {
-    let after_fillers = filler::remove_universal_fillers(raw);
+    let after_fillers = disfluency::remove_repetitions(&filler::remove_universal_fillers(raw));
     let pre_formatted = seams::mend_sentence_seams(&dictionary.correct(&after_fillers, 0.88));
 
     // A long dictation goes to the formatter a piece at a time (see
@@ -114,6 +117,16 @@ mod tests {
         assert_eq!(result.raw, "eh mándale el archivo a Garcia");
         assert_eq!(result.pre_formatted, "mándale el archivo a García");
         assert_eq!(result.formatted, "Mándale el archivo a García.");
+    }
+
+    #[test]
+    fn a_word_said_twice_or_started_again_is_written_once() {
+        let result = clean(
+            "se ve la la poliana y agrega agregar un botón",
+            &Dictionary::new(Vec::<String>::new()),
+            &RuleOnlyFormatter,
+        );
+        assert_eq!(result.pre_formatted, "se ve la poliana y agregar un botón");
     }
 
     #[test]

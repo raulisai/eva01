@@ -21,6 +21,13 @@ pub trait Desktop: Send + Sync {
     fn open_url(&self, url: &str) -> Result<(), DesktopError>;
     /// Pastes `text` at the current cursor position.
     fn insert_text(&self, text: &str) -> Result<(), DesktopError>;
+    /// Pastes `text` and then checks that it *landed* — that the field it was
+    /// aimed at now holds it. A paste the app swallowed (nothing focused that
+    /// takes text) reports `NotLanded`; where the app's text cannot be read,
+    /// `Unknown`. The default cannot check, so it says `Unknown`.
+    fn insert_text_checked(&self, text: &str) -> Result<eva_macos::Landing, DesktopError> {
+        self.insert_text(text).map(|()| eva_macos::Landing::Unknown)
+    }
     /// Presses a key or shortcut ("/", "cmd+l", "return") in the app in front.
     fn press_combo(&self, combo: &str) -> Result<(), DesktopError>;
     /// Presses whatever in the window in front answers to `label`, found
@@ -119,6 +126,22 @@ impl Desktop for SystemDesktop {
         eva_macos::paste_text(text, eva_macos::DEFAULT_RESTORE_DELAY).map_err(DesktopError::from)
     }
 
+    fn insert_text_checked(&self, text: &str) -> Result<eva_macos::Landing, DesktopError> {
+        let pid = eva_macos::frontmost_app().map(|app| app.pid);
+        let before = eva_macos::focused_text(pid);
+        self.insert_text(text)?;
+        // A paste shows up in the field within a moment; a swallowed one never does.
+        let verdict = eva_macos::watch_paste(pid, before.as_ref(), std::time::Duration::from_millis(600));
+        tracing::info!(
+            ?verdict,
+            role = ?before.as_ref().and_then(|b| b.role.as_deref()),
+            readable = before.is_some(),
+            has_text = before.as_ref().is_some_and(|b| b.value.is_some()),
+            "pegado comprobado"
+        );
+        Ok(verdict)
+    }
+
     fn active_window(&self) -> Option<RunningAppInfo> {
         eva_macos::frontmost_app()
     }
@@ -164,7 +187,7 @@ impl Desktop for SystemDesktop {
     fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
         let pid = eva_macos::frontmost_app()
             .map(|app| app.pid)
-            .ok_or_else(|| eva_macos::MacosError::UiActionFailed(label.to_string()))?;
+            .ok_or(eva_macos::MacosError::UiActionFailed(label.to_string()))?;
         let target = eva_macos::ui::find(pid, &[label], eva_macos::ui::Want::Pressable)?
             .ok_or_else(|| eva_macos::MacosError::UiActionFailed(label.to_string()))?;
         eva_macos::ui::press(&target).map_err(DesktopError::from)
@@ -231,6 +254,7 @@ pub mod mock {
         selection: Option<String>,
         secure_input: bool,
         no_text_target: bool,
+        landing: eva_macos::Landing,
         should_fail: bool,
     }
 
@@ -267,6 +291,13 @@ pub mod mock {
         #[must_use]
         pub fn with_no_text_target(mut self) -> Self {
             self.no_text_target = true;
+            self
+        }
+
+        /// A mock where a paste does not land (the app swallows it).
+        #[must_use]
+        pub fn with_paste_landing(mut self, landing: eva_macos::Landing) -> Self {
+            self.landing = landing;
             self
         }
 
@@ -340,6 +371,11 @@ pub mod mock {
 
         fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
             self.record(Call::ClickUi(label.to_string()))
+        }
+
+        fn insert_text_checked(&self, text: &str) -> Result<eva_macos::Landing, DesktopError> {
+            self.record(Call::InsertText(text.to_string()))?;
+            Ok(self.landing)
         }
 
         fn active_window(&self) -> Option<RunningAppInfo> {

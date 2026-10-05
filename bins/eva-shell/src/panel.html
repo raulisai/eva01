@@ -918,7 +918,7 @@ const gb = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) 
 const hint = (cmd, label = 'Copiar comando') => `<button class="small" data-a="copyhint" data-hint="\`${esc(cmd)}\`" title="${esc(cmd)}">${label}</button>`;
 const dot = (ok, warn) => `<span class="pill ${ok ? 'ok' : warn ? 'warn' : 'mute'}">${ok ? 'activo' : warn ? 'atención' : 'apagado'}</span>`;
 RENDER.dev = async () => {
-  const [m, i] = await Promise.all([api('models'), api('info')]);
+  const [m, i, pj] = await Promise.all([api('models'), api('info'), api('projects')]);
   const s = m.stt, f = m.formatter, r = m.resolver;
   const kindName = { canary: 'Canary (NVIDIA NeMo, ONNX)', whisper: 'Whisper', none: 'ninguno' }[s.kind];
   const activeId = (s.models.find((x) => x.active) || {}).id;
@@ -949,9 +949,11 @@ RENDER.dev = async () => {
     <p class="sub" style="margin:8px 0 0">Modelo remoto: ${f.remote.enabled ? `<b>activado</b> (${esc(f.remote.model)} en ${esc(f.remote.base_url)} para ${esc(f.remote.use_for.join(', ') || '—')}). Esos textos salen de este Mac.` : 'apagado: nada sale de tu Mac.'}
       <a href="#config">Cambiar en Configuración</a></p></div>
 
-  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Resolvedor de apps (modelo local)</h2>${dot(r.enabled && r.running && r.model_ready, r.enabled)}</div>
-    <p class="sub" style="margin:6px 0 12px">Cuando «abre <i>algo</i>» no coincide con ninguna app por nombre ni por sonido, este modelo decide cuál de tus apps quisiste decir y EVA01 lo recuerda. Solo se usa un servidor de este Mac.</p>
-    <div class="toggle"><div><div class="t">Usar el modelo local</div><div class="help">Si no responde, se omite sin error.</div></div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Modelo local (Ollama)</h2>${dot((r.enabled || r.polish) && r.running && r.model_ready, r.enabled || r.polish)}</div>
+    <p class="sub" style="margin:6px 0 12px">Un modelo pequeño en este Mac para lo que las reglas no alcanzan. Solo se usa un servidor de este Mac; si no responde, se omite sin error.</p>
+    <div class="toggle"><div><div class="t">Pulir cada dictado</div><div class="help">Quita autocorrecciones («puedes una hacer» → «puedes hacer») y arregla inglés técnico que el glosario no conoce («Now the Yess» → «Next.js»). Solo acepta cambios que suenan como lo que dijiste; lo demás se descarta. Añade ~0,5–1 s.</div></div>
+      <label class="switch"><input type="checkbox" data-a="devflag" data-key="dictation.polish" ${r.polish ? 'checked' : ''}><span></span></label></div>
+    <div class="toggle"><div><div class="t">Resolver apps mal dichas</div><div class="help">Cuando «abre <i>algo</i>» no coincide con ninguna app, decide cuál de tus apps quisiste decir y lo recuerda.</div></div>
       <label class="switch"><input type="checkbox" data-a="devflag" data-key="resolver.enabled" ${r.enabled ? 'checked' : ''}><span></span></label></div>
     ${!r.local_address ? '<div class="banner warn">La dirección no es de este Mac: se ignora. Usa http://127.0.0.1:11434/v1</div>' : ''}
     ${r.running ? `<p class="sub" style="margin:8px 0">Ollama responde en ${esc(r.base_url)} · ${sel.length} modelo${sel.length === 1 ? '' : 's'} descargado${sel.length === 1 ? '' : 's'}${r.installed.some((x) => x.loaded) ? ' · cargado en memoria: <b>' + esc(r.installed.filter((x) => x.loaded).map((x) => x.name).join(', ')) + '</b>' : ''}.</p>`
@@ -963,6 +965,21 @@ RENDER.dev = async () => {
     <label class="f">Dirección (Ollama)</label><input type="text" value="${esc(r.base_url)}" data-a="devset" data-key="resolver.base_url"><div class="help">Debe ser 127.0.0.1 o localhost.</div>
     <label class="f">Probarlo con tus apps reales</label>
     <div class="row"><input type="text" id="rt-heard" placeholder="Cómo lo oye EVA01: breve, zafarí, wasap…" style="flex:1;min-width:200px"><button class="primary" data-a="rtest">Probar</button></div><div id="rt-out" class="help" style="margin-top:8px"></div></div>
+
+  <div class="card"><h2>Agentes de código</h2>
+    <p class="sub" style="margin:6px 0 12px">Lo que cada CLI dice de tu cuenta, leído de sus propios archivos (sin consultar nada en vivo). Sin modelo fijado, usa el predeterminado de tu cuenta. Cambia el modelo en <code>~/.codex/config.toml</code> o <code>~/.claude/settings.json</code>.</p>
+    <table><tr><th>Agente</th><th>Plan</th><th>Modelo</th><th>Esfuerzo</th></tr>
+    ${(m.agents || []).map((a) => `<tr><td><b>${esc(a.label)}</b></td><td>${a.plan ? `<span class="pill ok">${esc(a.plan)}</span>` : '<span class="pill mute">desconocido</span>'}</td>
+      <td>${a.model ? `<code>${esc(a.model)}</code>` : '<span class="help">predeterminado de la cuenta</span>'}</td>
+      <td>${a.effort ? esc(a.effort) : '<span class="help">predeterminado</span>'}</td></tr>`).join('')}</table></div>
+
+  <div class="card"><h2>Proyectos que conoce</h2>
+    <p class="sub" style="margin:6px 0 12px">Para mandar una tarea a un proyecto, dilo al empezar: <b>«en <i>${esc(pj.projects[0] ? pj.projects[0].name : 'mi proyecto')}</i>, agrega tests al login»</b>. Se aceptan nombres como suenan («barberias saas») y números en palabras («eva cero dos»). Sin nombrar ninguno, se usa el de la ventana en pantalla y luego el predeterminado.</p>
+    <label class="f" style="margin-top:0">Proyecto predeterminado</label>
+    <select data-a="devset" data-key="agents.default_project"><option value="">(ninguno)</option>${pj.projects.map((p) => `<option value="${esc(p.path)}" ${p.default ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+    <table style="margin-top:12px"><tr><th>Proyecto (más reciente primero)</th><th>Carpeta</th></tr>
+    ${pj.projects.map((p) => `<tr><td><b>${esc(p.name)}</b>${p.default ? ' <span class="pill ok">predeterminado</span>' : ''}</td><td><code>${esc(p.path)}</code></td></tr>`).join('') || '<tr><td class="sub" colspan="2">Ninguno todavía.</td></tr>'}</table>
+    <div class="help" style="margin-top:8px">Se buscan en ${pj.roots.map((r) => `<code>${esc(r)}</code>`).join(', ')} (hasta 2 niveles) y en lo que Codex, Claude Code y EVA01 han usado.</div></div>
 
   <div class="card"><h2>Versión y archivos</h2>
     <p class="sub" style="margin-top:0">EVA01 ${esc(i.version)}</p>

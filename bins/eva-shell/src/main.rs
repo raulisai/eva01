@@ -15,6 +15,7 @@ mod hotkeys;
 mod icons;
 mod model;
 mod panel_ui;
+mod paste_watch;
 mod supervisor;
 mod tray;
 
@@ -91,6 +92,7 @@ fn main() {
     }
 
     let supervisor = Supervisor::spawn(worker_binary_path());
+    let paste_watch = paste_watch::PasteWatch::new();
     let mut shown_overlay: Option<OverlayContent> = None;
     let started = Instant::now();
 
@@ -146,6 +148,9 @@ fn main() {
                 }
                 SupervisorEvent::WorkerEvent(worker_event) => {
                     log_worker_event(&worker_event);
+                    if let eva_ipc::WorkerToShell::AboutToPaste { in_ms, text, .. } = &worker_event {
+                        paste_watch.watch(text.clone(), *in_ms);
+                    }
                     commands.extend(model.worker_event(now, worker_event));
                 }
             }
@@ -172,7 +177,21 @@ fn main() {
             notify(&notification.title, &notification.body);
         }
 
+        for outcome in paste_watch.outcomes() {
+            // Only a paste that was read and found not to have landed. A field
+            // the app hides cannot be told either way, and is left alone.
+            if outcome.landing == eva_macos::Landing::NotLanded {
+                if let Err(e) = eva_macos::copy_text(&outcome.text) {
+                    tracing::warn!("no se pudo copiar el texto no pegado: {e}");
+                }
+                model.text_not_pasted(now, outcome.text, outcome.reason.to_string());
+            }
+        }
+
         for command in commands {
+            if matches!(command, Command::StartRecording(_)) {
+                paste_watch.prime();
+            }
             match to_wire(command) {
                 Some(message) => supervisor.send(message),
                 None => supervisor.restart_worker(),

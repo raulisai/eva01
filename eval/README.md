@@ -233,3 +233,20 @@ No hay una meta de tamaño fija — el corpus crece con lo que realmente te
 falló, que es la parte que importa medir. El historial de texto se guarda en
 este equipo 30 días (`[history]` en la configuración; los marcados no se
 borran) y se puede apagar del todo con `save_transcripts = false`.
+
+## El pulido con el modelo local
+
+`eva_text::polish` le da a cada dictado una segunda pasada con el modelo de
+Ollama de `[resolver]`. El modelo solo propone; `polish::accept` se queda con
+los términos técnicos que suenan como lo dicho, los ecos y las erratas
+cercanas, y descarta todo lo demás. Para ver qué cambiaría en tus dictados
+reales y cuánto tarda:
+
+```bash
+sqlite3 ~/Library/Application\ Support/EVA01/eva.sqlite3 \
+    "select replace(raw, char(10), ' ') from transcripts where raw != ''" > /tmp/raws.txt
+cargo run --release -p eva-text --example polish_probe -- /tmp/raws.txt qwen2.5:3b
+```
+
+Medido el 25 sep 2026 con `qwen2.5:3b` sobre 194 dictados: 13 cambiados, 0 a
+peor tras endurecer el guardián, 0,76 s de media.

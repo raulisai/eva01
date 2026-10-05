@@ -80,6 +80,12 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
     });
     drop(recording);
     quiet_the_mac(ctx, true);
+    // The local model loaded while the user talks, not after.
+    if let Some(polisher) = crate::dictation::polisher(ctx) {
+        // Not a job: nothing waits on it, and a model that is not there must
+        // not hold up anything.
+        tokio::task::spawn_blocking(move || polisher.warm_up());
+    }
     ctx.events.state(request_id, WorkerState::Listening);
     spawn_peek(ctx, request_id, Arc::clone(&buffer));
     #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy

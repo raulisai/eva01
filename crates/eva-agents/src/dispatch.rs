@@ -2,9 +2,24 @@
 //! Codex ▸ Claude Code, forzable por voz." This is the only place that
 //! priority order is encoded — everything else in this crate treats every
 //! provider identically through [`AgentProvider`].
+//!
+//! Also the one place that remembers a real [`crate::AgentEvent::RateLimit`]
+//! reported during a run: a provider marked here is skipped by
+//! [`AgentRegistry::candidates`] until its cooldown passes, so a voice
+//! command right after Codex ran out of quota goes straight to Claude Code
+//! instead of trying Codex again and waiting for it to fail — and, if the
+//! user forces that exhausted agent by name, the answer is immediate and
+//! names when it comes back, instead of spending a whole attempt to find out.
 
 use crate::provider::{AgentProvider, ProviderStatus};
+use chrono::{DateTime, Local, Utc};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use thiserror::Error;
+
+/// How long a provider is skipped after a rate limit that named no reset
+/// time — better than retrying it on the very next command.
+const DEFAULT_COOLDOWN: chrono::Duration = chrono::Duration::minutes(30);
 
 /// Why [`AgentRegistry::select`] could not return a provider to run a task.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -16,22 +31,86 @@ pub enum DispatchError {
     /// usable.
     #[error("{0} no está listo ahora mismo")]
     RequestedProviderNotReady(String),
+    /// The explicitly-requested provider is active but is known, from a
+    /// recent real run, to be out of quota right now.
+    #[error("{0} no tiene cuota ahora mismo: {1}")]
+    RequestedProviderRateLimited(String, String),
     /// No provider, forced or otherwise, is active.
     #[error("no hay ningún agente disponible; revisa Settings → Agentes")]
     NoActiveProvider,
+    /// Every provider that is installed and logged in is presently out of
+    /// quota — different from [`DispatchError::NoActiveProvider`] because
+    /// there is nothing to fix in Settings here, only a wait.
+    #[error("ningún agente tiene cuota ahora mismo: {0}")]
+    AllProvidersRateLimited(String),
+}
+
+/// A provider known to be rate-limited, and why — from a real
+/// [`crate::AgentEvent::RateLimit`] seen on an actual run, never guessed.
+#[derive(Debug, Clone)]
+struct Cooldown {
+    until: DateTime<Utc>,
+    reason: String,
+}
+
+impl Cooldown {
+    /// `reason`, plus when it lifts, e.g. "límite de 5 horas alcanzado
+    /// (vuelve a las 16:50)".
+    fn describe(&self) -> String {
+        format!("{} (vuelve a las {})", self.reason, format_reset(self.until))
+    }
+}
+
+/// `until`, in this Mac's local time: `"16:50"` for later today, `"03 oct
+/// 09:00"` for another day (Claude's weekly window can reset days out).
+fn format_reset(until: DateTime<Utc>) -> String {
+    let local = until.with_timezone(&Local);
+    if local.date_naive() == Local::now().date_naive() {
+        local.format("%H:%M").to_string()
+    } else {
+        local.format("%d %b %H:%M").to_string()
+    }
 }
 
 /// An ordered set of agent providers, queried in priority order.
 pub struct AgentRegistry {
     /// Ordered highest-priority first, per `docs/PLAN.md` fase 6.
     providers: Vec<Box<dyn AgentProvider>>,
+    /// Providers a real run has reported as out of quota, keyed by id.
+    cooldowns: Mutex<HashMap<&'static str, Cooldown>>,
 }
 
 impl AgentRegistry {
     /// Builds a registry. `providers` is used in the order given — put the
     /// higher-priority provider first.
     pub fn new(providers: Vec<Box<dyn AgentProvider>>) -> Self {
-        AgentRegistry { providers }
+        AgentRegistry { providers, cooldowns: Mutex::new(HashMap::new()) }
+    }
+
+    /// Remembers that `id` reported being out of quota, until `until` (or,
+    /// if the CLI gave no reset time, [`DEFAULT_COOLDOWN`] from now).
+    /// Idempotent to call again with a fresher signal — the latest report
+    /// replaces the last one rather than stacking.
+    pub fn mark_rate_limited(&self, id: &'static str, until: Option<DateTime<Utc>>, reason: String) {
+        let until = until.unwrap_or_else(|| Utc::now() + DEFAULT_COOLDOWN);
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        self.cooldowns.lock().unwrap().insert(id, Cooldown { until, reason });
+    }
+
+    /// `id`'s current cooldown, if any and still in force — a cooldown whose
+    /// time has passed is forgotten right here, so it never needs a separate
+    /// sweep.
+    fn cooldown_of(&self, id: &str) -> Option<Cooldown> {
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        let mut cooldowns = self.cooldowns.lock().unwrap();
+        match cooldowns.get(id) {
+            Some(cooldown) if cooldown.until > Utc::now() => Some(cooldown.clone()),
+            Some(_) => {
+                cooldowns.remove(id);
+                None
+            }
+            None => None,
+        }
     }
 
     /// Picks the provider to run a task with: the first of
@@ -59,8 +138,11 @@ impl AgentRegistry {
     /// # Errors
     /// [`DispatchError::UnknownProvider`] if `forced_id` does not match any
     /// registered provider; [`DispatchError::RequestedProviderNotReady`] if
-    /// it does but is not active; [`DispatchError::NoActiveProvider`] if no
-    /// provider is forced and none are active.
+    /// it does but is not active; [`DispatchError::RequestedProviderRateLimited`]
+    /// if it is active but a real run recently reported it out of quota;
+    /// [`DispatchError::NoActiveProvider`] if no provider is forced and none
+    /// are active; [`DispatchError::AllProvidersRateLimited`] if at least one
+    /// is active but every active one is presently out of quota.
     pub async fn candidates(&self, forced_id: Option<&str>) -> Result<Vec<&dyn AgentProvider>, DispatchError> {
         if let Some(forced_id) = forced_id {
             let provider = self
@@ -69,24 +151,35 @@ impl AgentRegistry {
                 .find(|p| p.id() == forced_id)
                 .ok_or_else(|| DispatchError::UnknownProvider(forced_id.to_string()))?;
 
-            return if provider.detect().await.is_active() {
-                Ok(vec![provider.as_ref()])
-            } else {
-                Err(DispatchError::RequestedProviderNotReady(forced_id.to_string()))
+            if !provider.detect().await.is_active() {
+                return Err(DispatchError::RequestedProviderNotReady(forced_id.to_string()));
+            }
+            return match self.cooldown_of(forced_id) {
+                Some(cooldown) => {
+                    Err(DispatchError::RequestedProviderRateLimited(forced_id.to_string(), cooldown.describe()))
+                }
+                None => Ok(vec![provider.as_ref()]),
             };
         }
 
         let mut active = Vec::new();
+        let mut rate_limited = Vec::new();
         for provider in &self.providers {
-            if provider.detect().await.is_active() {
-                active.push(provider.as_ref());
+            if !provider.detect().await.is_active() {
+                continue;
+            }
+            match self.cooldown_of(provider.id()) {
+                Some(cooldown) => rate_limited.push(format!("{}: {}", provider.id(), cooldown.describe())),
+                None => active.push(provider.as_ref()),
             }
         }
 
-        if active.is_empty() {
-            Err(DispatchError::NoActiveProvider)
-        } else {
+        if !active.is_empty() {
             Ok(active)
+        } else if !rate_limited.is_empty() {
+            Err(DispatchError::AllProvidersRateLimited(rate_limited.join("; ")))
+        } else {
+            Err(DispatchError::NoActiveProvider)
         }
     }
 
@@ -193,6 +286,54 @@ mod tests {
     async fn candidates_with_nothing_active_is_the_no_provider_error() {
         let registry = AgentRegistry::new(vec![Box::new(inactive("codex"))]);
         assert!(matches!(registry.candidates(None).await, Err(DispatchError::NoActiveProvider)));
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_provider_is_skipped_but_a_working_one_still_runs() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex")), Box::new(active("claude_code"))]);
+        registry.mark_rate_limited("codex", None, "límite de 5 horas alcanzado".to_string());
+        let ids: Vec<_> =
+            registry.candidates(None).await.expect("claude_code still active").iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["claude_code"]);
+    }
+
+    #[tokio::test]
+    async fn every_provider_rate_limited_is_a_distinct_error_from_no_active_provider() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex")), Box::new(active("claude_code"))]);
+        let reset = Utc::now() + chrono::Duration::hours(1);
+        registry.mark_rate_limited("codex", Some(reset), "límite de 5 horas alcanzado".to_string());
+        registry.mark_rate_limited("claude_code", Some(reset), "límite semanal alcanzado".to_string());
+        let Err(error) = registry.candidates(None).await else { panic!("both are cooling down") };
+        assert!(matches!(error, DispatchError::AllProvidersRateLimited(_)));
+        assert!(error.to_string().contains("codex") && error.to_string().contains("claude_code"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn forcing_a_rate_limited_provider_names_when_it_comes_back_instead_of_trying_it() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex"))]);
+        let reset = Utc::now() + chrono::Duration::minutes(10);
+        registry.mark_rate_limited("codex", Some(reset), "límite de 5 horas alcanzado".to_string());
+        let Err(error) = registry.select(Some("codex")).await else { panic!("codex is cooling down") };
+        assert!(matches!(error, DispatchError::RequestedProviderRateLimited(..)));
+        assert!(error.to_string().contains("límite de 5 horas alcanzado"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_cooldown_that_has_passed_is_forgotten_and_the_provider_runs_again() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex"))]);
+        registry.mark_rate_limited("codex", Some(Utc::now() - chrono::Duration::seconds(1)), "ya pasó".to_string());
+        let ids: Vec<_> = registry.candidates(None).await.expect("cooldown expired").iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["codex"]);
+    }
+
+    #[tokio::test]
+    async fn a_fresher_rate_limit_report_replaces_the_older_one() {
+        let registry = AgentRegistry::new(vec![Box::new(active("codex")), Box::new(active("claude_code"))]);
+        registry.mark_rate_limited("codex", Some(Utc::now() + chrono::Duration::hours(1)), "primero".to_string());
+        registry.mark_rate_limited("codex", Some(Utc::now() - chrono::Duration::seconds(1)), "ya pasó".to_string());
+        let ids: Vec<_> =
+            registry.candidates(None).await.expect("the newer, expired report wins").iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["codex", "claude_code"]);
     }
 
     #[tokio::test]

@@ -83,6 +83,7 @@
 # Corrige el inglés técnico que el modelo escribe como español: «book» → «bug»,
 # «dash board» → «dashboard», «u i» → «UI». Solo grafías que no son palabras del español.
 # tech_glossary = true
+# polish = true          # segunda pasada con el modelo local de [resolver]: autocorrecciones y términos técnicos
 # pause_media = true      # pausa la música y silencia el Mac mientras dictas; lo devuelve al soltar
 
 [history]

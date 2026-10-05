@@ -399,6 +399,13 @@ impl ShellModel {
         }
     }
 
+    /// Words that reached no text field: kept on the island, with a Copy
+    /// button, for a while. Said by the worker, or found out by the shell when
+    /// it watched a paste not land.
+    pub fn text_not_pasted(&mut self, now: Instant, text: String, reason: String) {
+        self.held = Some(HeldText { text, reason, until: now + HELD_TEXT });
+    }
+
     /// The text a click on Copy asked to put on the clipboard, once.
     pub fn take_copy(&mut self) -> Option<String> {
         self.pending_copy.take()
@@ -517,10 +524,8 @@ impl ShellModel {
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
-            WorkerToShell::TextNotPasted { text, reason, .. } => {
-                self.held = Some(HeldText { text, reason, until: now + HELD_TEXT });
-            }
-            WorkerToShell::AboutToPaste { request_id, in_ms } => {
+            WorkerToShell::TextNotPasted { text, reason, .. } => self.text_not_pasted(now, text, reason),
+            WorkerToShell::AboutToPaste { request_id, in_ms, .. } => {
                 if self.requests.contains_key(&request_id) {
                     self.sending.insert(request_id, u32::try_from(in_ms).unwrap_or(u32::MAX));
                 }
@@ -1733,7 +1738,7 @@ mod tests {
         let typing = model.overlay().unwrap();
         assert_eq!((typing.text.as_str(), typing.activity, typing.icon), ("", Activity::Thinking, Icon::None));
 
-        model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 120 });
+        model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 120, text: "hola".into() });
         let sent = model.overlay().unwrap();
         assert_eq!(
             (sent.text.as_str(), sent.activity, sent.icon.clone()),
@@ -1863,7 +1868,7 @@ mod tests {
                 },
             );
             if announced {
-                model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 0 });
+                model.worker_event(t0, WorkerToShell::AboutToPaste { request_id: id, in_ms: 0, text: "hola".into() });
             }
             model.worker_event(t0, state(id, WorkerState::Done(true)));
             let shown = model.overlay();

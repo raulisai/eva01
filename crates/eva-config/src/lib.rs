@@ -209,11 +209,17 @@ pub struct DictationConfig {
     /// Spanish: «book» → «bug», «dash board» → «dashboard», «u i» → «UI»,
     /// «git hub» → «GitHub». Only spellings that are not Spanish words.
     pub tech_glossary: bool,
+    /// Give each dictation a second look with the local model of
+    /// `[resolver]` (Ollama): self-corrections («puedes una hacer» → «puedes
+    /// hacer») and technical English no glossary knows («Now the Yess» →
+    /// «Next.js»). Only changes that pass `eva_text::polish::accept` are
+    /// taken; if the model is not there or is slow, the text is pasted as is.
+    pub polish: bool,
 }
 
 impl Default for DictationConfig {
     fn default() -> Self {
-        DictationConfig { trailing_space: true, pause_media: true, tech_glossary: true }
+        DictationConfig { trailing_space: true, pause_media: true, tech_glossary: true, polish: true }
     }
 }
 

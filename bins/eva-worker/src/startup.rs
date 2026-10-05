@@ -99,7 +99,9 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
     let audio = load_audio(&config, &support, &wake_word);
     let app_catalog =
         crate::apps::AppCatalog::new(scan_applications).with_learned(store.list_app_aliases().unwrap_or_default());
+    let project_history = project_history(&store);
     let ctx = Arc::new(WorkerContext::new(WorkerDeps {
+        project_history,
         store,
         app_index: app_catalog,
         wake_word,
@@ -129,6 +131,12 @@ pub async fn build() -> Result<Started, Box<dyn std::error::Error>> {
         endpoint.serve(&ctx);
     }
     warm_up_formatter(&ctx.formatter);
+    if let Some(polisher) = crate::dictation::polisher(&ctx) {
+        tokio::task::spawn_blocking(move || {
+            let answered = polisher.warm_up();
+            tracing::info!(answered, "modelo local para pulir dictados precargado");
+        });
+    }
     Ok(Started { ctx, events: rx, gateway_socket })
 }
 
@@ -279,6 +287,20 @@ fn second_opinion_model(
             None
         }
     }
+}
+
+/// Where agents have worked: what Codex and Claude Code remember, and the
+/// folders EVA itself ran tasks in (most recent use wins for each).
+fn project_history(store: &eva_store::Store) -> Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> {
+    let mut history = eva_agents::project_history::recent_projects();
+    let ran: Vec<_> = store
+        .recent_tasks(200)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|task| (std::path::PathBuf::from(task.project_dir), Some(task.started_at.into())))
+        .collect();
+    history.extend(eva_agents::project_history::cleaned(ran));
+    history
 }
 
 /// The applications EVA can open by name: everything `eva_macos::installed_apps`
