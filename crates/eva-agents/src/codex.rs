@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use chrono::{Local, NaiveTime, TimeZone, Utc};
 use regex::Regex;
 use serde::Deserialize;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -45,7 +45,20 @@ use tokio::sync::mpsc::UnboundedSender;
 const BINARY: &str = "codex";
 
 /// Talks to the `codex` CLI in non-interactive, streaming mode.
-pub struct CodexProvider;
+#[derive(Default)]
+pub struct CodexProvider {
+    /// A model of Codex's own catalog to use instead of the configured one,
+    /// once the configured one was rejected (see [`AgentProvider::recover`]).
+    /// Only for this process: the user's `~/.codex/config.toml` is never written.
+    model: Mutex<Option<String>>,
+}
+
+impl CodexProvider {
+    fn model(&self) -> Option<String> {
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        self.model.lock().unwrap().clone()
+    }
+}
 
 #[async_trait]
 impl AgentProvider for CodexProvider {
@@ -58,20 +71,80 @@ impl AgentProvider for CodexProvider {
     }
 
     async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {
-        launch("codex", build_command(task), events, parse_line)
+        launch("codex", build_command(task, self.model().as_deref()), events, parse_line)
     }
+
+    /// A configured model Codex will not run (one the account does not
+    /// take, or one this CLI is too old for — both seen for real) is replaced,
+    /// for this process, by the best model of Codex's own catalog
+    /// (`codex debug models`): the first listed one other than any already
+    /// tried. Proven on this Mac: `gpt-6.1-sol` was refused, `gpt-6-astra`
+    /// from the catalog answered.
+    async fn recover(&self, failure: crate::failure::FailureKind) -> Option<String> {
+        if failure != crate::failure::FailureKind::ModelRejected {
+            return None;
+        }
+        let output = Command::new(BINARY).args(["debug", "models"]).output().await.ok()?;
+        let catalog = String::from_utf8_lossy(&output.stdout);
+        let tried = self.model();
+        let best = best_listed_model(&catalog, tried.as_deref())?;
+        #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
+        {
+            *self.model.lock().unwrap() = Some(best.clone());
+        }
+        Some(format!("Codex no aceptó el modelo configurado; uso {best}"))
+    }
+
+    fn sign_in_command(&self) -> Option<&'static [&'static str]> {
+        Some(&["codex", "login"])
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Codex"
+    }
+}
+
+/// One entry of `codex debug models`; only what choosing needs.
+#[derive(Deserialize)]
+struct CatalogModel {
+    slug: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    priority: i64,
+}
+
+#[derive(Deserialize)]
+struct Catalog {
+    models: Vec<CatalogModel>,
+}
+
+/// The model Codex itself ranks first among those it shows (`visibility:
+/// "list"`, lowest `priority`), skipping `except` (one already tried).
+fn best_listed_model(catalog_json: &str, except: Option<&str>) -> Option<String> {
+    let catalog: Catalog = serde_json::from_str(catalog_json).ok()?;
+    catalog
+        .models
+        .into_iter()
+        .filter(|m| m.visibility == "list" && Some(m.slug.as_str()) != except)
+        .min_by_key(|m| m.priority)
+        .map(|m| m.slug)
 }
 
 /// The exact command line for `task` — separate from
 /// [`CodexProvider::execute`] so the argument order (which differs between a
 /// fresh run and a resume) is unit-testable without spawning anything.
-fn build_command(task: &AgentTask) -> Command {
+/// `model`, when set, overrides the configured model for this run only.
+fn build_command(task: &AgentTask, model: Option<&str>) -> Command {
     let mut command = Command::new(BINARY);
     command.arg("exec");
     if task.resume_session_id.is_some() {
         command.arg("resume");
     }
     command.arg("--json").arg("--skip-git-repo-check");
+    if let Some(model) = model {
+        command.arg("-m").arg(model);
+    }
 
     if task.resume_session_id.is_none() {
         command.arg("-C").arg(&task.project_dir).arg("-s").arg("workspace-write");
@@ -301,7 +374,7 @@ mod tests {
 
     #[test]
     fn a_fresh_task_runs_exec_in_the_project_with_a_workspace_write_sandbox() {
-        let args = args_of(&build_command(&task(None, None)));
+        let args = args_of(&build_command(&task(None, None), None));
         assert_eq!(args[0], "exec");
         assert!(!args.contains(&"resume".to_string()));
         let c = args.iter().position(|a| a == "-C").expect("must pass -C");
@@ -316,7 +389,7 @@ mod tests {
         // `codex exec "prompt" … resume <id>` is not the CLI's grammar; the
         // real one is `codex exec resume <SESSION_ID> <PROMPT>`.
         let id = Uuid::parse_str("01a0c7b4-347f-7dd3-8108-1649df00c5a6").expect("uuid");
-        let args = args_of(&build_command(&task(Some(id), None)));
+        let args = args_of(&build_command(&task(Some(id), None), None));
         assert_eq!(&args[..2], ["exec", "resume"]);
         let tail = &args[args.len() - 3..];
         assert_eq!(tail, ["--", "01a0c7b4-347f-7dd3-8108-1649df00c5a6", "arregla el login"]);
@@ -324,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_resumed_task_avoids_the_flags_resume_does_not_accept() {
-        let args = args_of(&build_command(&task(Some(Uuid::new_v4()), None)));
+        let args = args_of(&build_command(&task(Some(Uuid::new_v4()), None), None));
         assert!(!args.contains(&"-C".to_string()), "`codex exec resume` has no -C");
         assert!(!args.contains(&"-s".to_string()), "`codex exec resume` has no -s");
         assert!(args.contains(&"sandbox_mode=\"workspace-write\"".to_string()));
@@ -334,7 +407,7 @@ mod tests {
     fn a_prompt_starting_with_a_dash_cannot_be_read_as_a_flag() {
         let mut t = task(None, None);
         t.prompt = "--help".to_string();
-        let args = args_of(&build_command(&t));
+        let args = args_of(&build_command(&t, None));
         let dashes = args.iter().position(|a| a == "--").expect("must separate positionals");
         assert_eq!(args[dashes + 1], "--help");
     }
@@ -351,7 +424,7 @@ mod tests {
         assert_eq!(overrides[1], r#"mcp_servers.eva.args=["--gateway","/tmp/eva.sock"]"#);
         assert_eq!(overrides[2], r#"mcp_servers.eva.env={EVA_GATEWAY_TOKEN="abc"}"#);
 
-        let args = args_of(&build_command(&task(None, Some(mcp))));
+        let args = args_of(&build_command(&task(None, Some(mcp)), None));
         assert_eq!(overrides[3], r#"mcp_servers.eva.default_tools_approval_mode="approve""#);
         assert_eq!(args.iter().filter(|a| *a == "-c").count(), 4);
     }
@@ -512,5 +585,38 @@ mod tests {
         fn parse_line_never_panics_on_arbitrary_input(line in ".*") {
             let _ = parse_line(&line);
         }
+    }
+
+    #[test]
+    fn the_best_listed_model_of_the_catalog_is_chosen_skipping_the_one_already_tried() {
+        // The shape of the real `codex debug models` on this Mac, trimmed.
+        let catalog = r#"{"models":[
+            {"slug":"gpt-6-sol","visibility":"list","priority":3},
+            {"slug":"gpt-reserve","visibility":"hide","priority":1},
+            {"slug":"gpt-6-astra","visibility":"list","priority":2},
+            {"slug":"gpt-5.6-luna","visibility":"list","priority":9}
+        ]}"#;
+        assert_eq!(best_listed_model(catalog, None).as_deref(), Some("gpt-6-astra"), "hidden ones are not offered");
+        assert_eq!(best_listed_model(catalog, Some("gpt-6-astra")).as_deref(), Some("gpt-6-sol"));
+        assert_eq!(best_listed_model("no es json", None), None);
+    }
+
+    #[test]
+    fn a_recovered_model_is_passed_for_the_run_and_nothing_otherwise() {
+        let with = args_of(&build_command(&task(None, None), Some("gpt-6-astra")));
+        let m = with.iter().position(|a| a == "-m").expect("-m when a model was chosen");
+        assert_eq!(with[m + 1], "gpt-6-astra");
+        assert!(!args_of(&build_command(&task(None, None), None)).contains(&"-m".to_string()));
+        // A resume takes it too: the session was started with the model that worked.
+        assert!(
+            args_of(&build_command(&task(Some(Uuid::new_v4()), None), Some("gpt-6-astra"))).contains(&"-m".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_rejected_model_is_something_codex_can_recover_from() {
+        let codex = CodexProvider::default();
+        assert_eq!(codex.recover(crate::failure::FailureKind::SignedOut).await, None);
+        assert_eq!(codex.recover(crate::failure::FailureKind::Other).await, None);
     }
 }

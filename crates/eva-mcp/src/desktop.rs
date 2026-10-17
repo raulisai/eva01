@@ -48,6 +48,14 @@ pub trait Desktop: Send + Sync {
         std::thread::sleep(SEARCH_BOX_SETTLE);
         self.press_combo("return")
     }
+    /// Starts an agent CLI's own sign-in (`command`, as the provider names
+    /// it) in a Terminal window the user can see and complete. Not an MCP
+    /// tool and not something an agent can ask for: only EVA itself, after a
+    /// yes on screen, to bring a signed-out agent back. The default cannot.
+    fn open_sign_in(&self, title: &str, command: &[&str]) -> Result<(), DesktopError> {
+        let _ = (title, command);
+        Err(DesktopError::from(eva_macos::MacosError::LaunchFailed(title.to_string())))
+    }
     /// The frontmost application, if one can be determined.
     fn active_window(&self) -> Option<RunningAppInfo>;
     /// Shows a system notification.
@@ -184,6 +192,10 @@ impl Desktop for SystemDesktop {
         eva_macos::press_combo(combo).map_err(DesktopError::from)
     }
 
+    fn open_sign_in(&self, title: &str, command: &[&str]) -> Result<(), DesktopError> {
+        eva_macos::open_in_terminal(title, command).map_err(DesktopError::from)
+    }
+
     fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
         let pid = eva_macos::frontmost_app()
             .map(|app| app.pid)
@@ -227,6 +239,8 @@ pub mod mock {
         PressCombo(String),
         /// [`Desktop::click_ui`] was called with this label.
         ClickUi(String),
+        /// [`Desktop::open_sign_in`] was called with this command line.
+        OpenSignIn(String),
         /// [`Desktop::notify`] was called with this title and body.
         Notify(String, String),
         /// [`Desktop::speak`] was called with this text.
@@ -371,6 +385,10 @@ pub mod mock {
 
         fn click_ui(&self, label: &str) -> Result<(), DesktopError> {
             self.record(Call::ClickUi(label.to_string()))
+        }
+
+        fn open_sign_in(&self, _title: &str, command: &[&str]) -> Result<(), DesktopError> {
+            self.record(Call::OpenSignIn(command.join(" ")))
         }
 
         fn insert_text_checked(&self, text: &str) -> Result<eva_macos::Landing, DesktopError> {

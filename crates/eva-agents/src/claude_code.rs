@@ -61,9 +61,19 @@ impl AgentProvider for ClaudeCodeProvider {
     }
 
     async fn detect(&self) -> ProviderStatus {
-        // `claude doctor` exits non-zero when there is no usable
-        // authentication; a zero exit is treated as "has an active session".
-        detect_cli(BINARY, &["doctor"]).await
+        // `claude auth status` exits non-zero when signed out. `claude doctor`
+        // does not: it exited 0 with the session expired (`"loggedIn": false`
+        // from `auth status`, checked on this Mac), so every task went to an
+        // agent that could only fail.
+        detect_cli(BINARY, &["auth", "status"]).await
+    }
+
+    fn sign_in_command(&self) -> Option<&'static [&'static str]> {
+        Some(&["claude", "auth", "login"])
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Claude Code"
     }
 
     async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {

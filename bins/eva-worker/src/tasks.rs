@@ -6,7 +6,8 @@
 //! limit, and telling the user how it went (`docs/PLAN.md` fase 6 and 7).
 
 use crate::context::WorkerContext;
-use eva_agents::{AgentEvent, AgentOutcome, AgentProvider, AgentTask, Workspace, Worktree};
+use crate::reconnect::Reconnected;
+use eva_agents::{AgentEvent, AgentOutcome, AgentProvider, AgentTask, FailureKind, Workspace, Worktree};
 use eva_config::{ActionKind, Origin};
 use eva_gateway::{Action, Verdict};
 use eva_ipc::{TaskInfo, TaskState, WorkerToShell};
@@ -235,7 +236,7 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
     };
 
     let forced = req.forced_provider.as_deref().or(req.resume.as_ref().map(|r| r.provider_id.as_str()));
-    let candidates = match ctx.agents.candidates(forced).await {
+    let candidates = match candidates_or_reconnect(ctx, id, forced).await {
         Ok(candidates) => candidates,
         Err(e) => {
             ctx.gateway.record_result(&ticket, &format!("sin agente disponible: {e}"));
@@ -265,7 +266,10 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
     }
     let mut outcome = AgentOutcome::Failed { message: "no se pudo iniciar ningún agente".to_string() };
     let mut last_provider = first.id();
-    for (index, provider) in candidates.iter().enumerate() {
+    let mut index = 0;
+    // Each provider gets one second try, after fixing what stopped it.
+    let mut retried = false;
+    while let Some(provider) = candidates.get(index).copied() {
         let is_last = index + 1 == candidates.len();
         last_provider = provider.id();
         let cancel_rx = ctx.tasks.register(id, provider.id(), &req.prompt);
@@ -280,7 +284,7 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
             prompt: req.prompt.clone(),
         });
 
-        let attempt = run_one(ctx, *provider, &req, &prepared, &project_key, cancel_rx).await;
+        let attempt = run_one(ctx, provider, &req, &prepared, &project_key, cancel_rx).await;
         let (attempt_outcome, did_work, timed_out) = match attempt {
             Attempt::NotStarted(message) => (AgentOutcome::Failed { message }, false, false),
             Attempt::Ran { outcome, did_work, timed_out } => (outcome, did_work, timed_out),
@@ -294,17 +298,93 @@ pub async fn run(ctx: &Arc<WorkerContext>, req: TaskRequest) {
         // to route around, and the next agent would get the same limit again.
         let failed_early = matches!(attempt_outcome, AgentOutcome::Failed { .. }) && !did_work && !timed_out;
         outcome = attempt_outcome;
-        if failed_early && !is_last && forced.is_none() {
-            let next = candidates[index + 1].id();
-            let reason =
-                if let AgentOutcome::Failed { message } = &outcome { short(message, 120) } else { String::new() };
-            emit_notice(ctx, id, &format!("{} no pudo arrancar ({reason}); pruebo con {next}", provider.id()));
+        if !failed_early {
+            break;
+        }
+        let message = if let AgentOutcome::Failed { message } = &outcome { message.clone() } else { String::new() };
+        let has_next = !is_last && forced.is_none();
+        if !retried && second_try(ctx, id, provider, &message, has_next).await {
+            retried = true;
+            continue;
+        }
+        if has_next {
+            let next = candidates[index + 1].display_name();
+            emit_notice(
+                ctx,
+                id,
+                &format!("{} no pudo arrancar ({}); pruebo con {next}", provider.display_name(), short(&message, 120)),
+            );
+            index += 1;
+            retried = false;
             continue;
         }
         break;
     }
 
     finish(ctx, &req, &prepared, &ticket, last_provider, outcome).await;
+}
+
+/// The agents that may take the task. When none can because the one wanted
+/// is signed out — the user's own pick, or the only one installed — that
+/// agent is offered a sign-in first, and the task waits for it.
+async fn candidates_or_reconnect<'a>(
+    ctx: &'a Arc<WorkerContext>,
+    request_id: Uuid,
+    forced: Option<&str>,
+) -> Result<Vec<&'a dyn AgentProvider>, eva_agents::DispatchError> {
+    let error = match ctx.agents.candidates(forced).await {
+        Ok(candidates) => return Ok(candidates),
+        Err(error) => error,
+    };
+    let signed_out = ctx.agents.signed_out().await;
+    let wanted = match (&error, forced) {
+        (eva_agents::DispatchError::RequestedProviderNotReady(_), Some(forced)) => {
+            signed_out.iter().find(|p| p.id() == forced).map(|p| p.id())
+        }
+        (eva_agents::DispatchError::NoActiveProvider, None) => signed_out.first().map(|p| p.id()),
+        _ => None,
+    };
+    match wanted {
+        Some(provider_id) if crate::reconnect::offer(ctx, request_id, provider_id).await == Reconnected::Yes => {
+            ctx.agents.candidates(forced).await
+        }
+        _ => Err(error),
+    }
+}
+
+/// What to do about an agent that failed before doing anything, beyond
+/// trying the next one: `true` if it is worth running the task on it again
+/// right now. A model the CLI rejected is swapped for one of its own catalog;
+/// a sign-in that expired is offered again — at once if there is no other
+/// agent to fall back on (the task waits for it), in the background if there
+/// is (the next agent takes this task; the sign-in serves the next one).
+async fn second_try(
+    ctx: &Arc<WorkerContext>,
+    request_id: Uuid,
+    provider: &dyn AgentProvider,
+    message: &str,
+    has_next: bool,
+) -> bool {
+    let kind = eva_agents::classify_failure(message);
+    tracing::info!(provider = provider.id(), ?kind, message, "el agente falló antes de hacer nada");
+    match kind {
+        FailureKind::ModelRejected => match provider.recover(kind).await {
+            Some(note) => {
+                emit_notice(ctx, request_id, &note);
+                true
+            }
+            None => false,
+        },
+        FailureKind::SignedOut if has_next => {
+            let (ctx, id) = (Arc::clone(ctx), provider.id());
+            tokio::spawn(async move {
+                crate::reconnect::offer(&ctx, request_id, id).await;
+            });
+            false
+        }
+        FailureKind::SignedOut => crate::reconnect::offer(ctx, request_id, provider.id()).await == Reconnected::Yes,
+        FailureKind::Other => false,
+    }
 }
 
 /// Where a task runs: the worktree made for it, the directory its session
@@ -777,6 +857,131 @@ mod tests {
         rig.run(second).await;
         assert_eq!(codex_out_of_quota.execution_count(), 1, "codex is skipped, not tried and refused again");
         assert_eq!(claude.execution_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_model_the_cli_rejects_is_swapped_and_the_same_agent_tries_again() {
+        let codex = Arc::new(
+            MockProvider::new(
+                "codex",
+                ProviderStatus::Active { version: "mock".into() },
+                vec![
+                    (
+                        Vec::new(),
+                        AgentOutcome::Failed {
+                            message:
+                                "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+                                    .to_string(),
+                        },
+                    ),
+                    (Vec::new(), AgentOutcome::Completed { summary: Some("listo".to_string()) }),
+                ],
+            )
+            .recovering_with("Codex no aceptó el modelo configurado; uso gpt-6-astra"),
+        );
+        let mut rig = Rig::builder().agents(registry_of(&[&codex])).build();
+
+        let (_, command) = ask("Adán, agrega tests");
+        let events = rig.run(command).await;
+
+        assert_eq!(codex.execution_count(), 2, "tried again on the same agent");
+        assert_eq!(finished(&events), Some((true, "listo".to_string())));
+    }
+
+    #[tokio::test]
+    async fn an_expired_sign_in_with_no_other_agent_is_offered_and_the_task_goes_on_after_it() {
+        let claude = Arc::new(
+            MockProvider::new(
+                "claude_code",
+                ProviderStatus::Active { version: "mock".into() },
+                vec![
+                    (
+                        Vec::new(),
+                        AgentOutcome::Failed {
+                            message: "Failed to authenticate: OAuth session expired and could not be refreshed"
+                                .to_string(),
+                        },
+                    ),
+                    (Vec::new(), AgentOutcome::Completed { summary: Some("listo".to_string()) }),
+                ],
+            )
+            .with_sign_in(),
+        );
+        let mut rig = Rig::builder().agents(registry_of(&[&claude])).build();
+
+        let (_, command) = ask("Adán, agrega tests");
+        let events = rig.run_answering(command, true).await;
+
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { title, .. } if title.contains("perdió la sesión"))), "{events:?}");
+        assert!(rig.desktop.calls().contains(&Call::OpenSignIn("mock login".to_string())));
+        assert_eq!(claude.execution_count(), 2);
+        assert_eq!(finished(&events), Some((true, "listo".to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_signed_out_agent_is_signed_in_before_the_task_when_nothing_else_can_take_it() {
+        let claude = Arc::new(
+            MockProvider::new(
+                "claude_code",
+                ProviderStatus::InstalledNoSession { version: None },
+                vec![(Vec::new(), AgentOutcome::Completed { summary: Some("listo".to_string()) })],
+            )
+            .with_sign_in(),
+        );
+        let mut rig = Rig::builder().agents(registry_of(&[&claude])).build();
+        let flips = Arc::clone(&claude);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            flips.set_status(ProviderStatus::Active { version: "mock".into() });
+        });
+
+        let (_, command) = ask("Adán, agrega tests");
+        let events = rig.run_answering(command, true).await;
+
+        assert_eq!(claude.execution_count(), 1, "ran once it was signed in");
+        assert_eq!(finished(&events), Some((true, "listo".to_string())));
+    }
+
+    #[tokio::test]
+    async fn an_expired_sign_in_falls_back_at_once_and_offers_the_sign_in_on_the_side() {
+        let claude = Arc::new(
+            MockProvider::new(
+                "claude_code",
+                ProviderStatus::Active { version: "mock".into() },
+                vec![(
+                    Vec::new(),
+                    AgentOutcome::Failed {
+                        message: "Failed to authenticate: OAuth session expired and could not be refreshed".to_string(),
+                    },
+                )],
+            )
+            .with_sign_in(),
+        );
+        let codex = completes("codex", "hecho por codex");
+        let mut rig = Rig::builder().agents(registry_of(&[&claude, &codex])).build();
+
+        let (_, command) = ask("Adán, agrega tests");
+        let events = rig.run(command).await;
+        assert_eq!(finished(&events), Some((true, "hecho por codex".to_string())), "the task did not wait");
+
+        // The offer runs on the side: it may already be up, or come a moment later.
+        let mut seen = events.clone();
+        if !seen.iter().any(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })) {
+            seen.extend(rig.until(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })).await);
+        }
+        let offer = seen.iter().find_map(|e| match e {
+            WorkerToShell::ConfirmationRequested { confirmation_id, title, .. } => {
+                Some((*confirmation_id, title.clone()))
+            }
+            _ => None,
+        });
+        let (confirmation_id, title) = offer.expect("the sign-in is offered");
+        assert!(title.starts_with("claude_code") && title.contains("perdió la sesión"), "{title}");
+        crate::handler::handle(
+            &rig.ctx,
+            ShellToWorker::ConfirmationResponse { confirmation_id, approved: false },
+            None,
+        );
     }
 
     #[tokio::test]

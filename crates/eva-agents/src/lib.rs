@@ -11,6 +11,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod dispatch;
 pub mod event;
+pub mod failure;
 pub mod mock;
 pub mod project_history;
 pub mod provider;
@@ -22,13 +23,14 @@ pub use claude_code::ClaudeCodeProvider;
 pub use codex::CodexProvider;
 pub use dispatch::{AgentRegistry, DispatchError};
 pub use event::AgentEvent;
+pub use failure::{classify as classify_failure, FailureKind};
 pub use provider::{AgentError, AgentOutcome, AgentProvider, AgentTask, McpInjection, ProviderStatus, RunningAgent};
 pub use worktree::{Workspace, Worktree};
 
 /// Builds the standard registry for production use: Codex first, then
 /// Claude Code, matching the priority order in `docs/PLAN.md` fase 6.
 pub fn default_registry() -> AgentRegistry {
-    AgentRegistry::new(vec![Box::new(CodexProvider), Box::new(ClaudeCodeProvider)])
+    AgentRegistry::new(vec![Box::new(CodexProvider::default()), Box::new(ClaudeCodeProvider)])
 }
 
 /// The standard registry, ordered by the user's `agents.priority` (ids
@@ -37,7 +39,8 @@ pub fn default_registry() -> AgentRegistry {
 /// never picked first — and an unknown id is ignored (the config validator
 /// reports it).
 pub fn registry_with_priority(priority: &[String]) -> AgentRegistry {
-    let mut remaining: Vec<Box<dyn AgentProvider>> = vec![Box::new(CodexProvider), Box::new(ClaudeCodeProvider)];
+    let mut remaining: Vec<Box<dyn AgentProvider>> =
+        vec![Box::new(CodexProvider::default()), Box::new(ClaudeCodeProvider)];
     let mut ordered: Vec<Box<dyn AgentProvider>> = Vec::with_capacity(remaining.len());
     for id in priority {
         if let Some(position) = remaining.iter().position(|p| p.id() == id) {

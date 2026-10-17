@@ -183,6 +183,26 @@ impl AgentRegistry {
         }
     }
 
+    /// The provider registered as `id`.
+    pub fn provider(&self, id: &str) -> Option<&dyn AgentProvider> {
+        self.providers.iter().find(|p| p.id() == id).map(AsRef::as_ref)
+    }
+
+    /// The providers that are installed but signed out and can be signed in
+    /// again (they name their sign-in command), in priority order — what to
+    /// offer to reconnect when no agent can take a task.
+    pub async fn signed_out(&self) -> Vec<&dyn AgentProvider> {
+        let mut signed_out = Vec::new();
+        for provider in &self.providers {
+            if provider.sign_in_command().is_some()
+                && matches!(provider.detect().await, ProviderStatus::InstalledNoSession { .. })
+            {
+                signed_out.push(provider.as_ref());
+            }
+        }
+        signed_out
+    }
+
     /// Detects every registered provider's status, in priority order — the
     /// data behind the `eva doctor` health report (`docs/PLAN.md` §3.4) and
     /// the "Re-detectar" button.

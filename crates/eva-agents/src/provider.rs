@@ -258,6 +258,28 @@ pub trait AgentProvider: Send + Sync {
     /// [`AgentEvent::Failed`] on `events` and an [`AgentOutcome::Failed`]
     /// from [`RunningAgent::wait`], not as an `Err` here.
     async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError>;
+
+    /// Tries to fix, on its own, what made a run fail before doing anything
+    /// (`failure`, as [`crate::failure::classify`] read it). `Some` with a
+    /// line for the user if the same task is worth trying again on this
+    /// provider now; `None` if there is nothing this provider can do about
+    /// it (the default).
+    async fn recover(&self, failure: crate::failure::FailureKind) -> Option<String> {
+        let _ = failure;
+        None
+    }
+
+    /// The CLI's own sign-in, as a command line to run in a terminal the user
+    /// can see — it opens the browser, and may ask for something there. Only
+    /// the user can complete it; EVA only starts it and waits for it.
+    fn sign_in_command(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// How the user knows this agent, for what EVA says and shows.
+    fn display_name(&self) -> &'static str {
+        self.id()
+    }
 }
 
 #[cfg(test)]

@@ -108,6 +108,20 @@ impl Rig {
         events
     }
 
+    /// Waits for the next confirmation the worker asks for and answers it,
+    /// the way the overlay would. Returns every event seen until then.
+    pub async fn answer_next_confirmation(&mut self, approve: bool) -> Vec<WorkerToShell> {
+        let seen = self.until(|e| matches!(e, WorkerToShell::ConfirmationRequested { .. })).await;
+        if let Some(WorkerToShell::ConfirmationRequested { confirmation_id, .. }) = seen.last() {
+            handle(
+                &self.ctx,
+                ShellToWorker::ConfirmationResponse { confirmation_id: *confirmation_id, approved: approve },
+                None,
+            );
+        }
+        seen
+    }
+
     /// Every event already waiting.
     pub fn drain(&mut self) -> Vec<WorkerToShell> {
         let mut events = Vec::new();
@@ -286,6 +300,18 @@ impl AgentProvider for SharedProvider {
         events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<RunningAgent, eva_agents::AgentError> {
         self.0.execute(task, events).await
+    }
+
+    async fn recover(&self, failure: eva_agents::FailureKind) -> Option<String> {
+        self.0.recover(failure).await
+    }
+
+    fn sign_in_command(&self) -> Option<&'static [&'static str]> {
+        self.0.sign_in_command()
+    }
+
+    fn display_name(&self) -> &'static str {
+        self.0.display_name()
     }
 }
 

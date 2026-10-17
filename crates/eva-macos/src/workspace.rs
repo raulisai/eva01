@@ -166,6 +166,43 @@ fn app_bundles(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<PathBuf> {
     apps
 }
 
+/// Runs `command` in a new Terminal window the user can see — how an agent
+/// CLI's own sign-in is started: it opens the browser and may ask for a code
+/// there, which only the person at the keyboard can answer. The window says
+/// what it is for, and that it can be closed once done. A login shell, so the
+/// CLIs installed in the user's own `PATH` (`~/.local/bin`) are found.
+///
+/// # Errors
+/// [`MacosError::LaunchFailed`] if the script could not be written or opened.
+pub fn open_in_terminal(title: &str, command: &[&str]) -> Result<(), MacosError> {
+    let failed = |e: std::io::Error| MacosError::LaunchFailed(format!("{title}: {e}"));
+    let quoted: Vec<String> = command.iter().map(|arg| shell_quote(arg)).collect();
+    let script = format!(
+        "#!/bin/zsh -l\nprintf '%s\\n\\n' {}\n{}\nprintf '\\n%s\\n' 'Listo. Ya puedes cerrar esta ventana.'\n",
+        shell_quote(title),
+        quoted.join(" ")
+    );
+    let path = std::env::temp_dir().join(format!("eva01-{}.command", std::process::id()));
+    std::fs::write(&path, script).map_err(failed)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(failed)?;
+    }
+    let status = std::process::Command::new("open").arg("-a").arg("Terminal").arg(&path).status().map_err(failed)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(MacosError::LaunchFailed(title.to_string()))
+    }
+}
+
+/// `text` as one shell word: in single quotes, with any single quote closed,
+/// escaped and reopened.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// The name of the app that opens `url` by default — the default browser for
 /// `https://`, the mail app for `mailto:` — as its bundle's file name
 /// ("Google Chrome"), or `None` if there is none.
@@ -286,5 +323,11 @@ mod tests {
         // one above.
         let result = open_url("a url with spaces and no valid scheme");
         assert!(matches!(result, Err(MacosError::InvalidUrl(_))));
+    }
+
+    #[test]
+    fn a_word_is_quoted_for_the_shell_even_with_a_quote_in_it() {
+        assert_eq!(shell_quote("claude"), "'claude'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 }

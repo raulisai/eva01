@@ -13,7 +13,11 @@ use tokio::sync::mpsc::UnboundedSender;
 /// A scripted, in-memory [`AgentProvider`] for tests.
 pub struct MockProvider {
     id: &'static str,
-    status: ProviderStatus,
+    status: Mutex<ProviderStatus>,
+    /// What [`AgentProvider::recover`] answers, once (then `None`).
+    recovers_with: Mutex<Option<String>>,
+    /// Whether it names a sign-in command, like the real CLIs.
+    signs_in: bool,
     /// The events (and final outcome) to emit on the *next* call to
     /// [`AgentProvider::execute`]. Consumed in order across calls, so a test
     /// can script a sequence of different runs from the same mock.
@@ -36,7 +40,9 @@ impl MockProvider {
     pub fn new(id: &'static str, status: ProviderStatus, scripts: Vec<(Vec<AgentEvent>, AgentOutcome)>) -> Self {
         MockProvider {
             id,
-            status,
+            status: Mutex::new(status),
+            recovers_with: Mutex::new(None),
+            signs_in: false,
             scripts: Mutex::new(scripts),
             executions: AtomicUsize::new(0),
             received_tasks: Mutex::new(Vec::new()),
@@ -69,6 +75,32 @@ impl MockProvider {
         )
     }
 
+    /// A mock whose next [`AgentProvider::recover`] succeeds with `note`.
+    #[must_use]
+    pub fn recovering_with(self, note: &str) -> Self {
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        {
+            *self.recovers_with.lock().unwrap() = Some(note.to_string());
+        }
+        self
+    }
+
+    /// A mock that names a sign-in command, like the real CLIs do.
+    #[must_use]
+    pub fn with_sign_in(mut self) -> Self {
+        self.signs_in = true;
+        self
+    }
+
+    /// Changes what [`AgentProvider::detect`] reports from now on — the user
+    /// signing in, in a test.
+    pub fn set_status(&self, status: ProviderStatus) {
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        {
+            *self.status.lock().unwrap() = status;
+        }
+    }
+
     /// How many times [`AgentProvider::execute`] has been called on this mock.
     pub fn execution_count(&self) -> usize {
         self.executions.load(Ordering::SeqCst)
@@ -82,7 +114,17 @@ impl AgentProvider for MockProvider {
     }
 
     async fn detect(&self) -> ProviderStatus {
-        self.status.clone()
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        self.status.lock().unwrap().clone()
+    }
+
+    async fn recover(&self, _failure: crate::failure::FailureKind) -> Option<String> {
+        #[allow(clippy::unwrap_used)] // a poisoned test-only mutex means an earlier test already panicked
+        self.recovers_with.lock().unwrap().take()
+    }
+
+    fn sign_in_command(&self) -> Option<&'static [&'static str]> {
+        self.signs_in.then_some(&["mock", "login"][..])
     }
 
     async fn execute(&self, task: &AgentTask, events: UnboundedSender<AgentEvent>) -> Result<RunningAgent, AgentError> {

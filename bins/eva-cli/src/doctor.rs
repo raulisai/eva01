@@ -347,7 +347,9 @@ async fn agents(config: &Config, smoke: bool) -> Vec<Check> {
             ProviderStatus::Active { version } => checks.push(smoke_test(&registry, id, &version, name).await),
         }
     }
-    if checks.iter().all(|c| c.verdict != Verdict::Ok) {
+    // An agent EVA01 has to correct (a rejected model it swaps on its own) still takes tasks.
+    let usable = |c: &Check| c.verdict == Verdict::Ok || c.detail.starts_with(WORKS_CORRECTED);
+    if !checks.iter().any(usable) {
         checks.push(Check::fail(
             "Agentes",
             "ninguno está listo: no se pueden despachar tareas por voz",
@@ -405,6 +407,10 @@ fn capability_summary(caps: &AgentCapabilities) -> String {
     }
 }
 
+/// How the report starts the line of an agent that works only once EVA01
+/// corrects it — and so still counts as an agent that can take tasks.
+const WORKS_CORRECTED: &str = "funciona, pero no con su configuración";
+
 /// Makes the agent answer one word, in an empty temporary folder.
 async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &str, name: &'static str) -> Check {
     let Ok(provider) = registry.select(Some(id)).await else {
@@ -420,18 +426,37 @@ async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &st
         resume_session_id: None,
         mcp: None,
     };
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let started = std::time::Instant::now();
-    let running = match provider.execute(&task, tx).await {
-        Ok(running) => running,
+    let mut outcome = match answer_once(provider, &task).await {
+        Ok(outcome) => outcome,
         Err(e) => {
             return finish_smoke(&dir, Check::fail(name, format!("no arrancó: {e}"), "revisa la instalación del CLI"))
         }
     };
-    let outcome = running.wait_or_cancel(tokio::time::sleep(Duration::from_secs(120))).await;
+    // What EVA01 does on a real task, done here too: a model the CLI rejects
+    // is swapped for one of its own catalog, and the agent asked again.
+    let mut recovered = None;
+    if let AgentOutcome::Failed { message } = &outcome {
+        let kind = eva_agents::classify_failure(message);
+        if let Some(note) = provider.recover(kind).await {
+            if let Ok(again) = answer_once(provider, &task).await {
+                outcome = again;
+                recovered = Some(note);
+            }
+        }
+    }
     let secs = started.elapsed().as_secs_f32();
 
     let check = match outcome {
+        AgentOutcome::Completed { summary } if recovered.is_some() => Check::warn(
+            name,
+            format!(
+                "{WORKS_CORRECTED}: {} — respondió en {secs:.1} s: «{}»",
+                recovered.unwrap_or_default(),
+                summary.unwrap_or_default().trim()
+            ),
+            "EVA01 ya lo corrige solo en cada tarea; para que Codex también lo haga a mano, cambia `model` en ~/.codex/config.toml",
+        ),
         AgentOutcome::Completed { summary } => {
             let extra = capability_summary(&agent_capabilities(id));
             Check::ok(
@@ -453,6 +478,16 @@ async fn smoke_test(registry: &eva_agents::AgentRegistry, id: &str, version: &st
         AgentOutcome::Cancelled => Check::warn(name, "no respondió en dos minutos", "revisa tu conexión"),
     };
     finish_smoke(&dir, check)
+}
+
+/// Runs `task` on `provider` once, giving it two minutes.
+async fn answer_once(
+    provider: &dyn eva_agents::AgentProvider,
+    task: &AgentTask,
+) -> Result<AgentOutcome, eva_agents::AgentError> {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let running = provider.execute(task, tx).await?;
+    Ok(running.wait_or_cancel(tokio::time::sleep(Duration::from_secs(120))).await)
 }
 
 /// What went wrong with an agent, in one line, and what to do about it.

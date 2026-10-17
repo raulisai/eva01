@@ -455,7 +455,9 @@ fn projects() -> Result<Value, String> {
         .iter()
         .map(|p| json!({ "name": p.name, "path": p.path.display().to_string(), "default": default.as_ref() == Some(&p.path) }))
         .collect();
-    Ok(json!({ "projects": rows, "roots": roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>(), "default": config.agents.default_project }))
+    Ok(
+        json!({ "projects": rows, "roots": roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>(), "default": config.agents.default_project }),
+    )
 }
 
 /// Plan, model and effort each agent's own account/config reports, read

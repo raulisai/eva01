@@ -172,6 +172,8 @@ pub struct WorkerContext {
     pub app_index: AppCatalog,
     /// What was just opened, for the few seconds a follow-up leans on it.
     pub conversation: crate::conversation::Conversation,
+    /// Agents being signed in again (see `crate::reconnect`).
+    pub reconnects: crate::reconnect::Reconnects,
     /// The configured wake word.
     pub wake_word: String,
     /// The working directory.
@@ -250,6 +252,7 @@ impl WorkerContext {
             config: deps.config,
             app_index: deps.app_index,
             conversation: Default::default(),
+            reconnects: Default::default(),
             wake_word: deps.wake_word,
             base_dir: deps.base_dir,
             desktop: deps.desktop,

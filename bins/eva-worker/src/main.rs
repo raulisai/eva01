@@ -17,6 +17,7 @@ mod harvest;
 mod housekeeping;
 mod orphans;
 mod plan;
+mod reconnect;
 mod recording;
 mod rpc;
 mod startup;

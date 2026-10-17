@@ -37,8 +37,8 @@ pub use overlay::{Activity, Choice, Icon, Overlay, OverlayContent, Tone, SEND_TA
 pub use paste::{copy_selection, copy_text, paste_text, DEFAULT_RESTORE_DELAY};
 pub use secure_input::{is_accessibility_trusted, is_secure_input_enabled};
 pub use workspace::{
-    app_bundle_path, close_app, default_app_for, frontmost_app, installed_apps, is_app_running, open_app, open_url,
-    RunningAppInfo,
+    app_bundle_path, close_app, default_app_for, frontmost_app, installed_apps, is_app_running, open_app,
+    open_in_terminal, open_url, RunningAppInfo,
 };
 
 /// The text selected in the frontmost app: read through Accessibility when
