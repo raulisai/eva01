@@ -54,6 +54,8 @@ pub struct Config {
     pub remote: RemoteConfig,
     /// The local model that works out which app a misheard name means.
     pub resolver: ResolverConfig,
+    /// Talking with EVA: staying in conversation, spoken replies, answers.
+    pub conversation: ConversationConfig,
     /// The user's own voice commands (`[[commands]]`).
     pub commands: Vec<CommandConfig>,
 }
@@ -167,7 +169,9 @@ impl Default for AgentsConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FeedbackConfig {
-    /// The `say` voice used to announce results.
+    /// The `say` voice EVA speaks with. `"auto"` picks the most natural
+    /// Spanish voice installed (a Premium one, then an Enhanced one, Mexican
+    /// Spanish first), so downloading a better voice is all it takes.
     pub voice: String,
     /// Speak a short summary when an agent task finishes.
     pub speak_task_results: bool,
@@ -184,7 +188,7 @@ pub struct FeedbackConfig {
 impl Default for FeedbackConfig {
     fn default() -> Self {
         FeedbackConfig {
-            voice: "Mónica".to_string(),
+            voice: "auto".to_string(),
             speak_task_results: true,
             notify_task_results: true,
             task_timeout_secs: 30 * 60,
@@ -395,6 +399,32 @@ impl Default for ResolverConfig {
             planner: true,
             confirm_plans: true,
         }
+    }
+}
+
+/// Talking with EVA. Once a command has been said, EVA stays in conversation
+/// for a while ("modo Eva"): what is said next needs no wake word and is
+/// always a command or a question for her — never pasted as dictation — until
+/// the time runs out or the user says goodbye ("gracias", "eso es todo").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConversationConfig {
+    /// Seconds EVA stays in conversation after each exchange. `0` keeps only
+    /// the short follow-up after opening something.
+    pub stay_secs: u64,
+    /// Say out loud, briefly, what she did ("Listo, abrí YouTube").
+    pub speak_replies: bool,
+    /// Answer a question ("¿qué es un worktree?") out loud with the local
+    /// model of `[resolver]` instead of handing it to a coding agent.
+    pub answer_questions: bool,
+    /// After she speaks, listen for the next thing for a few seconds without
+    /// the key being held; it stops by itself when you stop talking.
+    pub listen_after_reply: bool,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        ConversationConfig { stay_secs: 20, speak_replies: true, answer_questions: true, listen_after_reply: true }
     }
 }
 
@@ -747,6 +777,7 @@ mod tests {
             "history",
             "styles",
             "remote",
+            "conversation",
         ] {
             assert!(
                 template.contains(&format!("[{section}]")) || template.contains(&format!("# [{section}]")),

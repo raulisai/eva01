@@ -62,6 +62,12 @@ pub trait Desktop: Send + Sync {
     fn notify(&self, title: &str, body: &str) -> Result<(), DesktopError>;
     /// Speaks `text` aloud.
     fn speak(&self, text: &str) -> Result<(), DesktopError>;
+    /// Speaks `text` aloud and returns only once it has been said — what
+    /// listening right after a reply needs, so the microphone does not hear
+    /// EVA herself. The default does not wait.
+    fn speak_and_wait(&self, text: &str) -> Result<(), DesktopError> {
+        self.speak(text)
+    }
     /// The text selected in the frontmost app, or `None` if nothing is.
     fn selected_text(&self) -> Result<Option<String>, DesktopError>;
     /// Puts `text` on the clipboard without pasting it — what to do with a
@@ -93,10 +99,10 @@ pub trait Desktop: Send + Sync {
 
 /// The real, production [`Desktop`]: `eva-macos` for app/window/paste
 /// control, `notify-rust` for notifications, and the system `say` command
-/// for speech — by default the voice chosen in `docs/PLAN.md` fase 7 (Mónica,
-/// one of the two "premium" Spanish voices confirmed installed via `say -v
-/// '?'` on this Mac, as opposed to the "novelty" ones that also match
-/// `es_ES`). The voice comes from the config (`feedback.voice`).
+/// for speech, with the voice of the config (`feedback.voice`) — by default
+/// `"auto"`, the most natural Spanish voice installed
+/// (`eva_macos::voices::resolve`), so downloading a Premium voice is all it
+/// takes to sound like a person instead of the compact Mónica or Paulina.
 pub struct SystemDesktop {
     voice: String,
     /// Quiets the Mac while dictating; remembers a crash through a state file.
@@ -107,13 +113,16 @@ impl SystemDesktop {
     /// A desktop that speaks with `voice` (any name `say -v '?'` lists).
     pub fn with_voice(voice: impl Into<String>) -> SystemDesktop {
         let state_file = eva_config::support_dir().join("media-duck.state");
-        SystemDesktop { voice: voice.into(), quiet: eva_macos::duck::MediaDucker::for_this_mac(state_file) }
+        SystemDesktop {
+            voice: eva_macos::voices::resolve(&voice.into()),
+            quiet: eva_macos::duck::MediaDucker::for_this_mac(state_file),
+        }
     }
 }
 
 impl Default for SystemDesktop {
     fn default() -> Self {
-        SystemDesktop::with_voice("Mónica")
+        SystemDesktop::with_voice("auto")
     }
 }
 
@@ -168,6 +177,17 @@ impl Desktop for SystemDesktop {
             .arg(text)
             .spawn()
             .map(|_child| ())
+            .map_err(DesktopError::from)
+    }
+
+    fn speak_and_wait(&self, text: &str) -> Result<(), DesktopError> {
+        std::process::Command::new("say")
+            .arg("-v")
+            .arg(&self.voice)
+            .arg("--")
+            .arg(text)
+            .status()
+            .map(|_status| ())
             .map_err(DesktopError::from)
     }
 

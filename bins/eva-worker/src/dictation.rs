@@ -43,7 +43,14 @@ pub async fn process_text(ctx: &Arc<WorkerContext>, request_id: Uuid, text: &str
         ),
     }
     match result {
+        InterpretResult::Dictation if ctx.conversation.heard(request_id) == Some(true) => {
+            // Heard without the key: never typed into whatever is in front.
+            tracing::info!(%request_id, "lo oído sin la tecla no era para Eva; no se escribe");
+            ctx.conversation.forget_heard(request_id);
+            ctx.events.state(request_id, WorkerState::Idle);
+        }
         InterpretResult::Dictation => {
+            ctx.conversation.forget_heard(request_id);
             // So the shell can say "Escribiendo" instead of a bare "Pensando".
             ctx.events.emit(WorkerToShell::IntentRecognized {
                 request_id,

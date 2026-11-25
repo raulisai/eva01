@@ -84,6 +84,9 @@ pub async fn run_intent(ctx: &Arc<WorkerContext>, request_id: Uuid, intent: Inte
         Intent::EditSelection { instruction } => {
             crate::dictation::edit_selection(ctx, request_id, instruction, intent_json).await;
         }
+        Intent::Ask { question } => crate::conversation::answer(ctx, request_id, &question, intent_json).await,
+        // Normally taken by `conversation::run`, which also says goodbye.
+        Intent::EndConversation => ctx.events.state(request_id, WorkerState::Done(true)),
     }
 }
 

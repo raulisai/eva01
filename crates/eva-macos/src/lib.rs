@@ -23,6 +23,7 @@ pub mod overlay;
 pub mod paste;
 pub mod secure_input;
 pub mod ui;
+pub mod voices;
 pub mod workspace;
 
 pub use ax::{

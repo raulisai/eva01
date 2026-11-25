@@ -66,8 +66,11 @@
 # confirm_timeout_secs = 30
 
 [feedback]
-# Voz de `say -v '?'` para avisar cuando una tarea termina.
-# voice = "Mónica"
+# Voz con la que habla EVA. "auto" elige la más natural instalada en español
+# (Premium, luego Mejorada; México primero). Para una voz mucho más natural:
+# Ajustes del Sistema → Accesibilidad → Contenido leído → Voz del sistema →
+# Gestionar voces → Español (México) → Paulina (Premium). O un nombre de `say -v '?'`.
+# voice = "auto"
 # speak_task_results = true
 # notify_task_results = true
 # Segundos antes de detener una tarea de agente; 0 = sin límite.
@@ -131,6 +134,16 @@
 # api_key_env = "OPENAI_API_KEY"
 # model = "gpt-4o-mini"
 # use_for = ["edit"]   # "edit" (reescribir selección) y/o "format" (cada dictado)
+
+[conversation]
+# Modo Eva: después de una orden, EVA se queda en conversación estos segundos. Lo que
+# digas entonces no necesita «Eva» y siempre es una orden o una pregunta para ella
+# (nunca se pega como dictado), hasta que pase el tiempo o digas «gracias» / «eso es todo».
+# 0 = solo los 5 s tras abrir algo.
+# stay_secs = 20
+# speak_replies = true        # dice en voz alta, breve, lo que hizo («Listo, abrí YouTube»)
+# answer_questions = true     # responde preguntas en voz alta con el modelo local de [resolver]
+# listen_after_reply = true   # tras hablar, escucha unos segundos sin la tecla; para cuando dejas de hablar
 
 [resolver]
 # Cuando «abre <algo>» no coincide con ninguna app, un modelo local pequeño decide

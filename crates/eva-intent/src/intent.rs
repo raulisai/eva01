@@ -155,6 +155,16 @@ pub enum Intent {
         step: String,
     },
 
+    /// "Eva, ¿qué es un worktree?": a question (or small talk) for EVA to
+    /// answer out loud herself, briefly — not work for a coding agent.
+    Ask {
+        /// What was asked, as said.
+        question: String,
+    },
+
+    /// "Gracias", "eso es todo": the end of the conversation with EVA.
+    EndConversation,
+
     /// "Adán, continúa" (or "…y agrega también X") — resume the last agent
     /// session for the active project, per `docs/PLAN.md` fase 7. Which
     /// session that is, and whether one even exists, is `eva-worker`'s job
@@ -171,7 +181,10 @@ impl Intent {
     /// Whether this is something said on purpose — not the fallback that
     /// hands anything else to an agent, nor a blocked request.
     pub fn is_clear_command(&self) -> bool {
-        !matches!(self, Intent::AgentTask { provider: None, .. } | Intent::Blocked { .. } | Intent::Dictation)
+        !matches!(
+            self,
+            Intent::AgentTask { provider: None, .. } | Intent::Ask { .. } | Intent::Blocked { .. } | Intent::Dictation
+        )
     }
 }
 
@@ -272,6 +285,10 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
         return Intent::EditSelection { instruction: trimmed.to_string() };
     }
 
+    if crate::talk::is_goodbye(trimmed, "") {
+        return Intent::EndConversation;
+    }
+
     if let Some((provider, task)) = split_provider_prefix(trimmed) {
         return Intent::AgentTask { prompt: task.to_string(), provider: Some(provider.to_string()) };
     }
@@ -286,6 +303,9 @@ pub fn parse(command_text: &str, app_index: &AppIndex) -> Intent {
         }
     }
 
+    if crate::talk::looks_like_question(trimmed) {
+        return Intent::Ask { question: trimmed.to_string() };
+    }
     Intent::AgentTask { prompt: trimmed.to_string(), provider: None }
 }
 

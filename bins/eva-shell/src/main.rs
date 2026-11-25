@@ -335,6 +335,7 @@ fn to_wire(command: Command) -> Option<ShellToWorker> {
     Some(match command {
         Command::StartRecording(request_id) => ShellToWorker::StartRecording { request_id },
         Command::StopRecording(request_id) => ShellToWorker::StopRecording { request_id },
+        Command::StartListening(request_id) => ShellToWorker::StartListening { request_id },
         Command::Cancel(request_id) => ShellToWorker::Cancel { request_id },
         Command::Confirm { id, approved } => ShellToWorker::ConfirmationResponse { confirmation_id: id, approved },
         Command::CancelAllTasks => ShellToWorker::CancelAllTasks,

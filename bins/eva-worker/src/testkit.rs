@@ -64,6 +64,11 @@ impl Rig {
         config.dictation.pause_media = false;
         // Nor send what the tests dictate to a local model.
         config.dictation.polish = false;
+        // No "modo Eva" and nothing said out loud: tests of the conversation
+        // turn them on, the rest see each command on its own.
+        config.conversation.stay_secs = 0;
+        config.conversation.speak_replies = false;
+        config.conversation.listen_after_reply = false;
         RigBuilder {
             desktop: MockDesktop::new(),
             agents: AgentRegistry::new(Vec::new()),

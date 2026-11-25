@@ -38,7 +38,9 @@ pub fn render(event: &WorkerToShell) -> Option<Line> {
         | WorkerToShell::WakeWordHeard { .. }
         | WorkerToShell::AboutToPaste { .. }
         | WorkerToShell::FollowUp { .. }
+        | WorkerToShell::ListenAgain { .. }
         | WorkerToShell::Pong { .. } => None,
+        WorkerToShell::Reply { text, .. } => Line::out(format!("Eva: {text}")),
         WorkerToShell::TextNotPasted { text, reason, .. } => Line::out(format!("{reason}; el texto: {text}")),
         WorkerToShell::DictationFlagged { message, .. } | WorkerToShell::Notice { message, .. } => {
             Line::out(message.clone())

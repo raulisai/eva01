@@ -23,6 +23,7 @@ pub fn handle(ctx: &Arc<WorkerContext>, command: ShellToWorker, gateway_socket: 
         ShellToWorker::InterpretText { request_id, text } => dictation::interpret_text(ctx, request_id, &text),
         ShellToWorker::StartRecording { request_id } => recording::start(ctx, request_id),
         ShellToWorker::StopRecording { request_id } => recording::stop(ctx, request_id),
+        ShellToWorker::StartListening { request_id } => recording::start_listening(ctx, request_id),
         ShellToWorker::Cancel { request_id } => {
             // A request id names either a recording in progress or a running
             // agent task; a cancel for neither (already finished) just
