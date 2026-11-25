@@ -132,6 +132,67 @@ pub fn start(ctx: &Arc<WorkerContext>, request_id: Uuid) {
     });
 }
 
+/// Hands-free listening, in conversation once EVA has finished speaking: a
+/// recording started without the key, that stops by itself when the user
+/// stops talking — or is dropped if nobody says anything.
+pub fn start_listening(ctx: &Arc<WorkerContext>, request_id: Uuid) {
+    if ctx.audio.is_none() || ctx.recording().is_some() {
+        // No model, or the key is down already: that recording wins.
+        ctx.events.state(request_id, WorkerState::Idle);
+        return;
+    }
+    ctx.conversation.mark_heard(request_id, true);
+    start(ctx, request_id);
+    let Some(buffer) = ctx.recording().as_ref().filter(|s| s.request_id == request_id).map(|s| Arc::clone(&s.buffer))
+    else {
+        ctx.conversation.forget_heard(request_id);
+        return;
+    };
+    let job_ctx = Arc::clone(ctx);
+    // Lives as long as the recording, like the wake-word peek.
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(LISTEN_POLL).await;
+            if !still_recording(&job_ctx, request_id) {
+                return; // the key, a cancel or a failure ended it
+            }
+            #[allow(clippy::unwrap_used)] // only poisoned if the capture callback panicked, forbidden by workspace policy
+            let heard = eva_audio::segment::endpoint(&buffer.lock().unwrap());
+            let waited = started.elapsed();
+            match heard {
+                eva_audio::segment::Endpoint::Waiting if waited >= LISTEN_FOR_SPEECH => {
+                    tracing::info!(%request_id, "nadie habló después de Eva; se deja de escuchar");
+                    if cancel(&job_ctx, request_id) {
+                        job_ctx.conversation.forget_heard(request_id);
+                        job_ctx.events.state(request_id, WorkerState::Idle);
+                    }
+                    return;
+                }
+                eva_audio::segment::Endpoint::Ended => {
+                    tracing::info!(%request_id, ms = waited.as_millis() as u64, "fin de lo dicho sin la tecla");
+                    stop(&job_ctx, request_id);
+                    return;
+                }
+                _ if waited >= LISTEN_AT_MOST => {
+                    stop(&job_ctx, request_id);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// How often hands-free listening checks whether the user has finished.
+const LISTEN_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+/// How long hands-free listening waits for someone to start talking.
+const LISTEN_FOR_SPEECH: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_millis(600) } else { std::time::Duration::from_secs(6) };
+/// The longest a hands-free request is listened to.
+const LISTEN_AT_MOST: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_secs(3) } else { std::time::Duration::from_secs(20) };
+
 /// Listens to the first seconds of a recording *while it is still going*, and
 /// says [`WorkerToShell::WakeWordHeard`] if they start with the wake word.
 /// Purely a hint for the island: what the recording turns out to be is still
@@ -284,6 +345,7 @@ pub fn stop(ctx: &Arc<WorkerContext>, request_id: Uuid) {
     #[allow(clippy::unwrap_used)] // only poisoned if a holder panicked, forbidden by workspace policy
     let streaming = session.streaming.lock().unwrap().take();
     ctx.events.state(request_id, WorkerState::Thinking);
+    ctx.conversation.mark_heard(request_id, false);
 
     let job_ctx = Arc::clone(ctx);
     ctx.spawn_job(async move {
@@ -407,6 +469,50 @@ mod tests {
     /// One second of "speech" — loud enough to clear the silence gate.
     fn speech() -> Vec<f32> {
         vec![0.2; 16_000]
+    }
+
+    /// Speech, then the pause of someone who has finished.
+    fn said_and_paused() -> Vec<f32> {
+        let mut samples = vec![0.0; 4_800];
+        samples.extend(vec![0.2; 16_000]);
+        samples.extend(vec![0.0; 19_200]);
+        samples
+    }
+
+    #[tokio::test]
+    async fn listening_without_the_key_stops_when_the_user_stops_talking() {
+        let mut rig = Rig::builder().audio(audio(said_and_paused(), "Adán, abre Brave")).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartListening { request_id }).await;
+        let events = rig
+            .until(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Done(_), request_id: Some(id) } if *id == request_id))
+            .await;
+        assert!(events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Thinking, .. })));
+        assert_eq!(rig.desktop.calls(), vec![Call::OpenApp("Brave Browser".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn listening_without_the_key_types_nothing() {
+        let mut rig = Rig::builder().audio(audio(said_and_paused(), "y entonces le dije que no")).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartListening { request_id }).await;
+        rig.until(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Idle, request_id: Some(id) } if *id == request_id))
+            .await;
+        rig.ctx.wait_idle().await;
+        assert!(rig.desktop.calls().is_empty(), "{:?}", rig.desktop.calls());
+    }
+
+    #[tokio::test]
+    async fn listening_without_the_key_gives_up_when_nobody_talks() {
+        let mut rig = Rig::builder().audio(audio(vec![0.0; 16_000], "nunca")).build();
+        let request_id = Uuid::new_v4();
+        rig.run(ShellToWorker::StartListening { request_id }).await;
+        let events = rig
+            .until(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Idle, request_id: Some(id) } if *id == request_id))
+            .await;
+        assert!(!events.iter().any(|e| matches!(e, WorkerToShell::StateChanged { state: WorkerState::Thinking, .. })));
+        assert!(rig.ctx.recording().is_none());
+        assert_eq!(rig.ctx.conversation.heard(request_id), None);
     }
 
     #[tokio::test]

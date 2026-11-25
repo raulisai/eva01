@@ -114,6 +114,66 @@ pub fn cut_while_recording(samples: &[f32]) -> Option<usize> {
     (samples.len() >= MAX_LEN + STREAM_GUARD).then(|| quietest_point(samples, MAX_LEN - SEARCH_LEN, MAX_LEN))
 }
 
+/// Where an utterance said without holding the key stands, so listening can
+/// stop on its own: nothing said yet, someone talking, or done talking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endpoint {
+    /// No speech yet.
+    Waiting,
+    /// Speech has started and has not ended.
+    Speaking,
+    /// Speech started and has been followed by a long enough pause.
+    Ended,
+}
+
+/// 30 ms frames for telling speech from room noise.
+const EP_FRAME: usize = RATE * 3 / 100;
+/// Speech needs this many voiced frames in a row to count (180 ms): a cough or
+/// a click is not someone starting to talk.
+const EP_ONSET_FRAMES: usize = 6;
+/// A pause this long after speech ends the utterance (900 ms): longer than the
+/// breath between phrases, short enough not to feel slow.
+const EP_END_FRAMES: usize = 30;
+/// A frame is voiced above this RMS whatever the room (speech on a laptop mic
+/// is well above it), or above three times the room's own quiet level.
+const EP_MIN_RMS: f32 = 0.012;
+/// …but never above this, so a loud room cannot raise the bar over a voice.
+const EP_MAX_THRESHOLD: f32 = 0.035;
+
+/// Where the utterance in `samples` (16 kHz mono, from the start of the
+/// listening) stands. The room's quiet level is its quietest tenth — low
+/// enough that nine seconds of talking before the first pause still leave it
+/// at the room, not at the voice.
+pub fn endpoint(samples: &[f32]) -> Endpoint {
+    let rms: Vec<f32> = samples
+        .chunks(EP_FRAME)
+        .filter(|frame| frame.len() == EP_FRAME)
+        .map(|frame| (frame.iter().map(|s| s * s).sum::<f32>() / EP_FRAME as f32).sqrt())
+        .collect();
+    if rms.is_empty() {
+        return Endpoint::Waiting;
+    }
+    let mut sorted = rms.clone();
+    sorted.sort_by(f32::total_cmp);
+    let quiet = sorted[sorted.len() / 10];
+    let threshold = EP_MIN_RMS.max(quiet * 3.0).min(EP_MAX_THRESHOLD);
+    let voiced: Vec<bool> = rms.iter().map(|r| *r >= threshold).collect();
+
+    let mut run = 0;
+    let onset = voiced.iter().position(|v| {
+        run = if *v { run + 1 } else { 0 };
+        run >= EP_ONSET_FRAMES
+    });
+    let Some(onset) = onset else { return Endpoint::Waiting };
+    let after = &voiced[onset + 1..];
+    let trailing_quiet = after.iter().rev().take_while(|v| !**v).count();
+    if trailing_quiet >= EP_END_FRAMES {
+        Endpoint::Ended
+    } else {
+        Endpoint::Speaking
+    }
+}
+
 /// The middle of the quietest 50 ms window that starts in `earliest..latest`
 /// (the latest one on a tie, so pieces come out as long as they can).
 fn quietest_point(samples: &[f32], earliest: usize, latest: usize) -> usize {
@@ -231,6 +291,47 @@ mod tests {
         let samples = vec![0.3; 22 * RATE];
         let cut = cut_while_recording(&samples).unwrap();
         assert!(cut <= MAX_LEN && cut > MAX_LEN - SEARCH_LEN, "cut at {cut}");
+    }
+
+    /// `seconds` of something: speech-level noise or room quiet.
+    fn stretch(seconds: f32, loud: bool) -> Vec<f32> {
+        let n = (seconds * RATE as f32) as usize;
+        (0..n).map(|i| if loud { 0.08 * ((i as f32) * 0.3).sin() } else { 0.002 * ((i as f32) * 0.7).sin() }).collect()
+    }
+
+    #[test]
+    fn listening_waits_while_nothing_is_said_and_a_click_does_not_count() {
+        assert_eq!(endpoint(&[]), Endpoint::Waiting);
+        assert_eq!(endpoint(&stretch(3.0, false)), Endpoint::Waiting);
+        let mut click = stretch(1.0, false);
+        click.extend(stretch(0.06, true));
+        click.extend(stretch(1.0, false));
+        assert_eq!(endpoint(&click), Endpoint::Waiting, "60 ms is a click, not someone talking");
+    }
+
+    #[test]
+    fn speech_followed_by_a_long_enough_pause_ends_the_utterance() {
+        let mut said = stretch(0.5, false);
+        said.extend(stretch(1.2, true));
+        assert_eq!(endpoint(&said), Endpoint::Speaking);
+        said.extend(stretch(0.4, false));
+        assert_eq!(endpoint(&said), Endpoint::Speaking, "a breath between phrases is not the end");
+        said.extend(stretch(0.7, false));
+        assert_eq!(endpoint(&said), Endpoint::Ended);
+    }
+
+    #[test]
+    fn a_long_sentence_before_the_first_pause_still_ends() {
+        let mut said = stretch(0.3, false);
+        said.extend(stretch(7.0, true));
+        said.extend(stretch(1.0, false));
+        assert_eq!(endpoint(&said), Endpoint::Ended);
+    }
+
+    #[test]
+    fn a_noisy_room_raises_the_bar_instead_of_counting_as_speech() {
+        let noisy: Vec<f32> = (0..3 * RATE).map(|i| 0.02 * ((i as f32) * 0.9).sin()).collect();
+        assert_eq!(endpoint(&noisy), Endpoint::Waiting);
     }
 
     proptest::proptest! {

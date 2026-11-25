@@ -22,15 +22,30 @@ fn main() {
         let c = eva_text::clean(line, &dict, &eva_text::RuleOnlyFormatter);
         let t = Instant::now();
         let out = p.polish(&c.formatted, &vocab, Duration::from_secs(6));
-        total += t.elapsed(); n += 1;
+        total += t.elapsed();
+        n += 1;
         if out != c.formatted {
             changed += 1;
             let a: Vec<&str> = c.formatted.split_whitespace().collect();
             let b: Vec<&str> = out.split_whitespace().collect();
-            let mut i = 0; while i < a.len().min(b.len()) && a[i] == b[i] { i += 1; }
-            let (mut ea, mut eb) = (a.len(), b.len()); while ea > i && eb > i && a[ea-1] == b[eb-1] { ea -= 1; eb -= 1; }
+            let mut i = 0;
+            while i < a.len().min(b.len()) && a[i] == b[i] {
+                i += 1;
+            }
+            let (mut ea, mut eb) = (a.len(), b.len());
+            while ea > i && eb > i && a[ea - 1] == b[eb - 1] {
+                ea -= 1;
+                eb -= 1;
+            }
             let lo = i.saturating_sub(3);
-            println!("[{:.2}s] … {} [{}] {} …  →  [{}]", t.elapsed().as_secs_f64(), a[lo..i].join(" "), a[i..ea].join(" "), a[ea..(ea+3).min(a.len())].join(" "), b[i..eb].join(" "));
+            println!(
+                "[{:.2}s] … {} [{}] {} …  →  [{}]",
+                t.elapsed().as_secs_f64(),
+                a[lo..i].join(" "),
+                a[i..ea].join(" "),
+                a[ea..(ea + 3).min(a.len())].join(" "),
+                b[i..eb].join(" ")
+            );
         }
     }
     println!("{n} dictados, {changed} cambiados por el pulido, media {:.2}s", total.as_secs_f64() / n as f64);

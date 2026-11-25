@@ -29,6 +29,13 @@ pub enum ShellToWorker {
         /// Correlates this recording with the [`WorkerToShell`] events it produces.
         request_id: uuid::Uuid,
     },
+    /// In conversation, after EVA has spoken: listen without the key held.
+    /// The worker stops by itself once the user has finished talking, or
+    /// gives up if nothing is said (see [`WorkerToShell::ListenAgain`]).
+    StartListening {
+        /// Correlates this recording with the [`WorkerToShell`] events it produces.
+        request_id: uuid::Uuid,
+    },
     /// The hotkey was released: stop capturing and begin processing.
     StopRecording {
         /// Must match the `request_id` of the [`ShellToWorker::StartRecording`] it closes.
@@ -310,11 +317,25 @@ pub enum WorkerToShell {
     /// A command went well and EVA01 stays "in conversation" for `secs`
     /// seconds: the island asks "¿Algo más?", and what is said next may lean
     /// on what was just done ("ahora busca Naruto" after opening YouTube).
+    /// `secs: 0` ends the conversation ("gracias").
     FollowUp {
         /// The command that opened the conversation.
         request_id: uuid::Uuid,
         /// How long it stays open, from when its result has been shown.
         secs: u64,
+    },
+    /// What EVA answered out loud, to show on the island while she says it.
+    Reply {
+        /// The question it answers.
+        request_id: uuid::Uuid,
+        /// The answer, as spoken.
+        text: String,
+    },
+    /// EVA has finished speaking and the conversation is still open: listen
+    /// for the next thing without the key ([`ShellToWorker::StartListening`]).
+    ListenAgain {
+        /// The exchange that just ended.
+        request_id: uuid::Uuid,
     },
     /// Response to [`ShellToWorker::FlagLastDictation`] when it worked.
     DictationFlagged {
@@ -443,6 +464,7 @@ mod tests {
         let request_id = uuid::Uuid::nil();
         let messages = vec![
             ShellToWorker::StartRecording { request_id },
+            ShellToWorker::StartListening { request_id },
             ShellToWorker::StopRecording { request_id },
             ShellToWorker::Cancel { request_id },
             ShellToWorker::RunIntentText { request_id, text: "Adán, abre brave".into() },
@@ -537,6 +559,8 @@ mod tests {
             WorkerToShell::DictationFlagged { request_id, message: "guardado".into() },
             WorkerToShell::Notice { request_id, message: "copiado".into() },
             WorkerToShell::FollowUp { request_id, secs: 5 },
+            WorkerToShell::Reply { request_id, text: "Canberra.".into() },
+            WorkerToShell::ListenAgain { request_id },
             WorkerToShell::WakeWordHeard { request_id },
             WorkerToShell::AboutToPaste { request_id, in_ms: 600, text: "hola".into() },
             WorkerToShell::TextNotPasted { request_id, text: "hola".into(), reason: "No hay dónde pegar".into() },

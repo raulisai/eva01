@@ -8,6 +8,7 @@
 //! is independently testable (see each module's unit tests); [`clean`] wires
 //! them together the way `eva-worker` uses them in production.
 
+pub mod answerer;
 pub mod app_resolver;
 pub mod apple_intelligence;
 mod cache;
@@ -26,6 +27,7 @@ mod repair;
 mod seams;
 pub mod style;
 
+pub use answerer::Answerer;
 pub use app_resolver::{AppResolver, InstalledModel};
 pub use apple_intelligence::AppleIntelligenceFormatter;
 pub use cache::CachingFormatter;

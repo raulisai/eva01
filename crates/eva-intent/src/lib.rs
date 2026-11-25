@@ -17,6 +17,7 @@ pub mod sites;
 pub mod sound;
 pub mod spoken;
 pub mod steps;
+pub mod talk;
 pub mod wake;
 
 pub use apps::{AppEntry, AppIndex};

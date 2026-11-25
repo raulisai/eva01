@@ -43,6 +43,11 @@ const CLIPBOARD_NOTICE: Duration = Duration::from_millis(4_000);
 const HELD_TEXT: Duration = Duration::from_secs(45);
 /// How long "Copiado" stays after the click.
 const COPIED_NOTICE: Duration = Duration::from_millis(1_800);
+/// What EVA answered stays at least this long, plus [`REPLY_PER_CHAR`] per
+/// character — about the time it takes to say it.
+const REPLY_NOTICE: Duration = Duration::from_millis(2_500);
+const REPLY_PER_CHAR: Duration = Duration::from_millis(65);
+const REPLY_NOTICE_MAX: Duration = Duration::from_secs(14);
 /// "Ejecutando en Claude Code" stays this long: the task itself runs on.
 const TASK_START_NOTICE: Duration = Duration::from_millis(2_500);
 const TASK_RESULT_NOTICE: Duration = Duration::from_millis(5_000);
@@ -54,6 +59,9 @@ pub enum Command {
     StartRecording(Uuid),
     /// Stop capturing and process what was said.
     StopRecording(Uuid),
+    /// Listen without the key, in conversation: the worker stops by itself
+    /// when the user stops talking.
+    StartListening(Uuid),
     /// Abandon a recording or stop waiting on a request.
     Cancel(Uuid),
     /// The user's answer to a confirmation.
@@ -216,6 +224,8 @@ impl Doing {
                 };
                 doing(now, "Tarea enviada".to_string(), Icon::Symbol("sparkles"))
             }
+            "ask" => doing("Pensando la respuesta".to_string(), "Respondido".to_string(), Icon::Symbol("bubble.left")),
+            "end_conversation" => doing("Hasta luego".to_string(), "Hasta luego".to_string(), Icon::Symbol("hand.wave")),
             "dictation" => Some(Doing {
                 now: "Escribiendo".to_string(),
                 done: "Listo".to_string(),
@@ -260,6 +270,8 @@ pub struct ShellModel {
     ready: bool,
     restarting: bool,
     recording: Option<Uuid>,
+    /// The recording in progress was started by EVA (hands-free), not the key.
+    listening_alone: bool,
     requests: HashMap<Uuid, Tracked>,
     /// What each command that is running is doing, by request.
     doing: HashMap<Uuid, Doing>,
@@ -294,6 +306,7 @@ impl ShellModel {
             ready: false,
             restarting: false,
             recording: None,
+            listening_alone: false,
             requests: HashMap::new(),
             doing: HashMap::new(),
             wake_heard: HashSet::new(),
@@ -318,6 +331,11 @@ impl ShellModel {
     /// The dictation key went down. Starts a recording if the worker is up
     /// and nothing else has the user's attention.
     pub fn press(&mut self, now: Instant, request_id: Uuid) -> Vec<Command> {
+        if self.recording.is_some() && std::mem::take(&mut self.listening_alone) {
+            // EVA was already listening: the key takes that recording over,
+            // and its release ends it.
+            return Vec::new();
+        }
         if self.confirmation.is_some() || self.recording.is_some() {
             return Vec::new();
         }
@@ -339,6 +357,9 @@ impl ShellModel {
 
     /// The dictation key came up. Stops the recording, if one is running.
     pub fn release(&mut self, now: Instant) -> Vec<Command> {
+        if self.listening_alone {
+            return Vec::new(); // not the key's recording
+        }
         let Some(id) = self.recording.take() else { return Vec::new() };
         self.track(id, Phase::Thinking, now);
         vec![Command::StopRecording(id)]
@@ -359,6 +380,7 @@ impl ShellModel {
     pub fn abandon_recording(&mut self) -> Vec<Command> {
         match self.recording.take() {
             Some(id) => {
+                self.listening_alone = false;
                 self.requests.remove(&id);
                 vec![Command::Cancel(id)]
             }
@@ -431,6 +453,7 @@ impl ShellModel {
         self.ready = false;
         self.restarting = true;
         self.recording = None;
+        self.listening_alone = false;
         self.requests.clear();
         self.tasks.clear();
         self.confirmation = None;
@@ -516,11 +539,24 @@ impl ShellModel {
                     until: now + CLIPBOARD_NOTICE,
                 });
             }
+            // Zero: the conversation is over.
+            WorkerToShell::FollowUp { secs: 0, .. } => self.follow_up = None,
             WorkerToShell::FollowUp { secs, .. } => {
                 // The result ("Spotify abierto") is shown first; the question
                 // gets its full time after it.
                 self.follow_up = Some(now + OK_NOTICE + Duration::from_secs(secs));
             }
+            WorkerToShell::Reply { text, .. } => {
+                let chars = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+                let lasts = (REPLY_NOTICE + REPLY_PER_CHAR * chars).min(REPLY_NOTICE_MAX);
+                self.notice = Some(Notice {
+                    text: short(&text, 220),
+                    tone: Tone::Command,
+                    icon: Icon::Symbol("waveform"),
+                    until: now + lasts,
+                });
+            }
+            WorkerToShell::ListenAgain { .. } => return self.listen_again(now),
             WorkerToShell::DictationFlagged { message, .. } => {
                 self.set_notice(now, &format!("✓ {}", short(&message, 90)), Tone::Ok, TASK_RESULT_NOTICE);
             }
@@ -557,6 +593,21 @@ impl ShellModel {
             | WorkerToShell::Ack { .. } => {}
         }
         Vec::new()
+    }
+
+    /// EVA finished speaking in conversation: listen for the next thing,
+    /// without the key — unless the user is busy with something else.
+    fn listen_again(&mut self, now: Instant) -> Vec<Command> {
+        let busy = self.requests.values().any(|t| t.phase == Phase::Listening);
+        if !self.ready || self.restarting || self.confirmation.is_some() || self.recording.is_some() || busy {
+            return Vec::new();
+        }
+        let id = Uuid::new_v4();
+        self.recording = Some(id);
+        self.listening_alone = true;
+        self.wake_heard.insert(id);
+        self.track(id, Phase::Listening, now);
+        vec![Command::StartListening(id)]
     }
 
     /// Pings a ready worker every [`PING_EVERY`]; one that has not answered
@@ -603,7 +654,14 @@ impl ShellModel {
         }
         match state {
             WorkerState::Listening => self.track(id, Phase::Listening, now),
-            WorkerState::Thinking => self.track(id, Phase::Thinking, now),
+            WorkerState::Thinking => {
+                // A recording EVA started ends when the worker hears the user stop.
+                if self.recording == Some(id) {
+                    self.recording = None;
+                    self.listening_alone = false;
+                }
+                self.track(id, Phase::Thinking, now)
+            }
             WorkerState::Executing => self.track(id, Phase::Executing, now),
             WorkerState::Idle => self.forget(id),
             WorkerState::Done(success) => {
@@ -647,6 +705,7 @@ impl ShellModel {
         self.sending.remove(&id);
         if self.recording == Some(id) {
             self.recording = None;
+            self.listening_alone = false;
         }
     }
 
@@ -685,6 +744,7 @@ impl ShellModel {
                     // The key-up never arrived. Stop as if it had, so what
                     // was said is not lost.
                     self.recording = None;
+                    self.listening_alone = false;
                     self.track(id, Phase::Thinking, now);
                     commands.push(Command::StopRecording(id));
                     self.notifications.push(Notification {
@@ -1958,5 +2018,69 @@ mod tests {
         assert_eq!(model.overlay().unwrap().text, "Eva", "and not as if it were only transcribing");
         model.worker_event(t0 + secs(4), state(id, WorkerState::Idle));
         assert_eq!(model.overlay(), None, "the question does not come back after the user spoke");
+    }
+
+    // ---- talking with EVA ----
+
+    #[test]
+    fn what_eva_answers_stays_on_the_island_about_as_long_as_it_takes_to_say() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let answer = "Un worktree es una copia de trabajo extra de tu repositorio.";
+        model.worker_event(t0, WorkerToShell::Reply { request_id: Uuid::new_v4(), text: answer.to_string() });
+        let shown = model.overlay().unwrap();
+        assert_eq!((shown.text.as_str(), shown.icon), (answer, Icon::Symbol("waveform")));
+        tick(&mut model, t0 + secs(5));
+        assert!(model.overlay().is_some(), "a sentence takes a few seconds to say");
+        tick(&mut model, t0 + secs(15));
+        assert_eq!(model.overlay(), None);
+    }
+
+    #[test]
+    fn when_eva_has_spoken_she_listens_without_the_key_until_the_worker_hears_the_end() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let commands = model.worker_event(t0, WorkerToShell::ListenAgain { request_id: Uuid::new_v4() });
+        let [Command::StartListening(id)] = commands.as_slice() else { panic!("{commands:?}") };
+        let id = *id;
+        let listening = model.overlay().unwrap();
+        assert_eq!((listening.text.as_str(), listening.activity), ("Eva", Activity::Listening));
+        assert!(model.wants_cancel_key(), "the no key drops it");
+
+        // Not the key's recording: its release does not stop it.
+        assert!(model.release(t0 + secs(1)).is_empty());
+        model.worker_event(t0 + secs(2), state(id, WorkerState::Thinking));
+        assert!(!model.wants_cancel_key(), "the worker stopped it: no recording any more");
+        let next = Uuid::new_v4();
+        assert_eq!(model.press(t0 + secs(3), next), vec![Command::StartRecording(next)]);
+    }
+
+    #[test]
+    fn the_key_takes_over_eva_listening_and_its_release_ends_it() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        let commands = model.worker_event(t0, WorkerToShell::ListenAgain { request_id: Uuid::new_v4() });
+        let [Command::StartListening(id)] = commands.as_slice() else { panic!("{commands:?}") };
+        let id = *id;
+        assert!(model.press(t0 + secs(1), Uuid::new_v4()).is_empty(), "already listening");
+        assert_eq!(model.release(t0 + secs(2)), vec![Command::StopRecording(id)]);
+    }
+
+    #[test]
+    fn eva_does_not_listen_over_a_question_or_a_recording() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.press(t0, Uuid::new_v4());
+        assert!(model.worker_event(t0, WorkerToShell::ListenAgain { request_id: Uuid::new_v4() }).is_empty());
+    }
+
+    #[test]
+    fn a_goodbye_ends_the_question_at_once() {
+        let t0 = Instant::now();
+        let mut model = ready_model(t0);
+        model.worker_event(t0, WorkerToShell::FollowUp { request_id: Uuid::new_v4(), secs: 20 });
+        assert_eq!(text(&model).as_deref(), Some("¿Algo más?"));
+        model.worker_event(t0 + secs(1), WorkerToShell::FollowUp { request_id: Uuid::new_v4(), secs: 0 });
+        assert_eq!(model.overlay(), None);
     }
 }
